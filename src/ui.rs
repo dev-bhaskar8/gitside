@@ -515,7 +515,10 @@ fn render_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     frame.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: false }).block(
             Block::default()
-                .title(format!(" {}  [Esc close · e editor] ", preview.title))
+                .title(format!(
+                    " {}  [j/k hunk · Space stage · Esc close · e editor] ",
+                    preview.title
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(BLUE)),
         ),

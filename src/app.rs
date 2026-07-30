@@ -58,6 +58,9 @@ pub struct Preview {
     pub title: String,
     pub body: String,
     pub scroll: u16,
+    pub change: Option<Change>,
+    pub hunks: Vec<String>,
+    pub selected_hunk: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -139,7 +142,10 @@ impl App {
             let branches = repo.branches().await?;
             let remotes = repo.remotes().await?;
             let github = GitHub::new(repo.root());
-            let github_available = github.available().await;
+            let has_github_remote = remotes.iter().any(|remote| {
+                remote.fetch_url.contains("github.com") || remote.push_url.contains("github.com")
+            });
+            let github_available = has_github_remote && github.available().await;
             repos.push(RepoView {
                 repo,
                 status,
@@ -258,10 +264,12 @@ impl App {
             KeyCode::Char('p') => self.run_remote("Pushing", RemoteAction::Push).await,
             KeyCode::Char('s') => self.run_stash().await,
             KeyCode::Char('e') => {
-                if self.selected_change().is_some() {
+                if self.editor_change().is_some() {
                     return EventOutcome::OpenEditor;
                 }
             }
+            KeyCode::Char(']') => self.switch_repo(1).await,
+            KeyCode::Char('[') => self.switch_repo(-1).await,
             KeyCode::Char('d') => self.request_discard(),
             KeyCode::Char('i') if self.focus == Focus::GitHub => {
                 self.github_show_issues = !self.github_show_issues;
@@ -404,8 +412,11 @@ impl App {
             Ok(body) => {
                 self.preview = Some(Preview {
                     title: change.path.display().to_string(),
+                    hunks: split_diff_hunks(&body),
                     body,
                     scroll: 0,
+                    change: Some(change),
+                    selected_hunk: 0,
                 });
                 self.focus = Focus::Preview;
             }
@@ -424,6 +435,9 @@ impl App {
                     title: format!("{} {}", short_oid(&commit.oid), commit.subject),
                     body,
                     scroll: 0,
+                    change: None,
+                    hunks: Vec::new(),
+                    selected_hunk: 0,
                 });
                 self.focus = Focus::Preview;
             }
@@ -432,6 +446,10 @@ impl App {
     }
 
     async fn toggle_stage(&mut self) {
+        if self.focus == Focus::Preview {
+            self.toggle_preview_hunk().await;
+            return;
+        }
         let Some(change) = self.selected_change().cloned() else {
             return;
         };
@@ -567,7 +585,7 @@ impl App {
 
     pub async fn open_selected_in_editor(&mut self) -> Result<()> {
         let change = self
-            .selected_change()
+            .editor_change()
             .cloned()
             .context("no changed file selected")?;
         let absolute = self.active().repo.root().join(change.path);
@@ -646,6 +664,29 @@ impl App {
     }
 
     fn move_selection(&mut self, amount: isize) {
+        if self.focus == Focus::Preview {
+            if let Some(preview) = &mut self.preview {
+                if preview.hunks.is_empty() {
+                    preview.scroll = if amount.is_negative() {
+                        preview.scroll.saturating_sub(amount.unsigned_abs() as u16)
+                    } else {
+                        preview.scroll.saturating_add(amount as u16)
+                    };
+                } else {
+                    let max = preview.hunks.len().saturating_sub(1);
+                    preview.selected_hunk = if amount.is_negative() {
+                        preview.selected_hunk.saturating_sub(amount.unsigned_abs())
+                    } else {
+                        preview
+                            .selected_hunk
+                            .saturating_add(amount as usize)
+                            .min(max)
+                    };
+                    preview.scroll = hunk_line_offset(&preview.body, preview.selected_hunk);
+                }
+            }
+            return;
+        }
         let current = self.current_selection();
         let max = self.current_len().saturating_sub(1);
         let value = if amount.is_negative() {
@@ -712,6 +753,64 @@ impl App {
             body: message,
         });
     }
+
+    fn editor_change(&self) -> Option<&Change> {
+        self.preview
+            .as_ref()
+            .and_then(|preview| preview.change.as_ref())
+            .or_else(|| self.selected_change())
+    }
+
+    async fn toggle_preview_hunk(&mut self) {
+        let Some(preview) = self.preview.as_ref() else {
+            return;
+        };
+        let Some(change) = preview.change.clone() else {
+            self.status_line = "Commit previews cannot be staged".into();
+            return;
+        };
+        let Some(patch) = preview.hunks.get(preview.selected_hunk).cloned() else {
+            self.status_line = "This diff has no independently stageable text hunks".into();
+            return;
+        };
+        let repo = self.active().repo.clone();
+        let result = repo.apply_cached_patch(&patch, change.staged).await;
+        if result.is_ok() {
+            self.preview = None;
+            self.focus = if change.staged {
+                Focus::Staged
+            } else {
+                Focus::Changes
+            };
+        }
+        self.finish_action(
+            result,
+            if change.staged {
+                "Unstaged hunk"
+            } else {
+                "Staged hunk"
+            },
+        )
+        .await;
+    }
+
+    async fn switch_repo(&mut self, amount: isize) {
+        if self.repos.len() < 2 {
+            self.status_line = "Only one repository is open".into();
+            return;
+        }
+        self.active_repo = if amount.is_negative() {
+            self.active_repo
+                .checked_sub(1)
+                .unwrap_or(self.repos.len() - 1)
+        } else {
+            (self.active_repo + 1) % self.repos.len()
+        };
+        self.preview = None;
+        self.focus = Focus::Changes;
+        self.clamp_selections();
+        self.status_line = format!("Opened {}", self.active().repo.name());
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -744,4 +843,50 @@ fn executable_available(program: &str) -> Option<PathBuf> {
             candidate.is_file().then_some(candidate)
         })
     })
+}
+
+fn split_diff_hunks(diff: &str) -> Vec<String> {
+    let lines: Vec<&str> = diff.split_inclusive('\n').collect();
+    let Some(first_hunk) = lines.iter().position(|line| line.starts_with("@@")) else {
+        return Vec::new();
+    };
+    let header: String = lines[..first_hunk].concat();
+    let starts: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| line.starts_with("@@").then_some(index))
+        .collect();
+    starts
+        .iter()
+        .enumerate()
+        .map(|(index, start)| {
+            let end = starts.get(index + 1).copied().unwrap_or(lines.len());
+            format!("{}{}", header, lines[*start..end].concat())
+        })
+        .collect()
+}
+
+fn hunk_line_offset(diff: &str, selected_hunk: usize) -> u16 {
+    diff.lines()
+        .enumerate()
+        .filter(|(_, line)| line.starts_with("@@"))
+        .nth(selected_hunk)
+        .map(|(index, _)| index.saturating_sub(2) as u16)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_patch_into_independently_applicable_hunks() {
+        let diff =
+            "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n@@ -9 +9 @@\n-x\n+y\n";
+        let hunks = split_diff_hunks(diff);
+        assert_eq!(hunks.len(), 2);
+        assert!(hunks[0].contains("-old"));
+        assert!(!hunks[0].contains("-x"));
+        assert!(hunks[1].starts_with("diff --git"));
+    }
 }

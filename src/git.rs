@@ -217,17 +217,31 @@ impl GitRepo {
             )
             .await;
         if result.is_err() {
-            self.command(
-                [
-                    OsStr::new("reset"),
-                    OsStr::new("-q"),
-                    OsStr::new("HEAD"),
-                    OsStr::new("--"),
-                    path.as_os_str(),
-                ],
-                None,
-            )
-            .await?;
+            let reset = self
+                .command(
+                    [
+                        OsStr::new("reset"),
+                        OsStr::new("-q"),
+                        OsStr::new("HEAD"),
+                        OsStr::new("--"),
+                        path.as_os_str(),
+                    ],
+                    None,
+                )
+                .await;
+            if reset.is_err() {
+                self.command(
+                    [
+                        OsStr::new("rm"),
+                        OsStr::new("--cached"),
+                        OsStr::new("-q"),
+                        OsStr::new("--"),
+                        path.as_os_str(),
+                    ],
+                    None,
+                )
+                .await?;
+            }
         }
         Ok(())
     }
@@ -298,6 +312,15 @@ impl GitRepo {
     pub async fn stash(&self) -> Result<()> {
         self.command(["stash", "push", "--include-untracked"], None)
             .await?;
+        Ok(())
+    }
+
+    pub async fn apply_cached_patch(&self, patch: &str, reverse: bool) -> Result<()> {
+        let mut args = vec!["apply", "--cached", "--recount", "--whitespace=nowarn"];
+        if reverse {
+            args.push("--reverse");
+        }
+        self.command(args, Some(patch.as_bytes())).await?;
         Ok(())
     }
 }
@@ -513,6 +536,8 @@ fn parse_remotes(input: &[u8]) -> Vec<Remote> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn parses_porcelain_v2_status() {
@@ -536,5 +561,61 @@ mod tests {
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].subject, "Subject");
         assert_eq!(commits[0].decorations.len(), 2);
+    }
+
+    async fn repository() -> (TempDir, GitRepo) {
+        let directory = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "Sourcepane Test"],
+            vec!["config", "user.email", "sourcepane@example.invalid"],
+        ] {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(directory.path())
+                .status()
+                .await
+                .unwrap();
+            assert!(status.success());
+        }
+        let repo = GitRepo::discover(directory.path()).await.unwrap();
+        (directory, repo)
+    }
+
+    #[tokio::test]
+    async fn stages_commits_and_reads_real_repository() {
+        let (directory, repo) = repository().await;
+        fs::write(directory.path().join("hello.txt"), "hello\n").unwrap();
+
+        let status = repo.status().await.unwrap();
+        assert_eq!(status.unstaged[0].kind, ChangeKind::Untracked);
+
+        repo.stage(Path::new("hello.txt")).await.unwrap();
+        let status = repo.status().await.unwrap();
+        assert_eq!(status.staged.len(), 1);
+
+        repo.commit("Initial test commit", false, false)
+            .await
+            .unwrap();
+        let history = repo.history(10).await.unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].subject, "Initial test commit");
+
+        fs::write(directory.path().join("hello.txt"), "hello\nworld\n").unwrap();
+        let status = repo.status().await.unwrap();
+        assert_eq!(status.unstaged[0].kind, ChangeKind::Modified);
+        let diff = repo.diff(&status.unstaged[0]).await.unwrap();
+        assert!(diff.contains("+world"));
+    }
+
+    #[tokio::test]
+    async fn unstages_files_before_first_commit() {
+        let (directory, repo) = repository().await;
+        fs::write(directory.path().join("new.txt"), "new\n").unwrap();
+        repo.stage(Path::new("new.txt")).await.unwrap();
+        repo.unstage(Path::new("new.txt")).await.unwrap();
+        let status = repo.status().await.unwrap();
+        assert!(status.staged.is_empty());
+        assert_eq!(status.unstaged[0].kind, ChangeKind::Untracked);
     }
 }
