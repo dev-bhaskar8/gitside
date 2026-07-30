@@ -1,0 +1,37 @@
+# Architecture
+
+Sourcepane is a presentation and orchestration layer over the command-line tools
+developers already trust. It never implements a competing Git object database.
+
+## Data flow
+
+1. The CLI resolves one or more repository paths.
+2. `GitRepo` invokes Git without a shell and parses stable machine-readable
+   formats such as porcelain v2 with NUL separators.
+3. `App` owns a snapshot of status, history, refs, remotes, and optional GitHub
+   data.
+4. Input events become typed actions. Mutating actions run through the adapter
+   and refresh the snapshot afterward.
+5. `ui` renders the snapshot for the current terminal dimensions and records
+   mouse hit regions for the next event.
+
+No repository-provided string is interpolated into a shell command. Credentials
+are inherited by child processes and never copied into Sourcepane state or logs.
+
+## Responsive model
+
+- Under 58 columns, one focused view occupies the body.
+- From 58 through 99 columns, sections are stacked for tall side panes.
+- From 100 through 159 columns, navigation and detail are shown side by side.
+- At 160 columns and above, changes, history, and detail can be visible together.
+
+The renderer recalculates geometry and hit regions for every frame, including
+tmux pane resize events.
+
+## Process model
+
+Read commands capture stdout and stderr. Actions that may require an interactive
+editor, credential prompt, or pinentry temporarily leave the alternate screen
+and inherit the terminal. Git and `gh` retain responsibility for authentication,
+hooks, signing, SSH, LFS, and transport behavior.
+

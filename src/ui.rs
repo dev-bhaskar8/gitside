@@ -1,0 +1,658 @@
+use ratatui::{
+    Frame,
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+};
+
+use crate::{
+    app::{App, Focus, HitRegion, Overlay, UiAction},
+    config::LayoutPreference,
+    model::{Change, ChangeKind},
+};
+
+const BG: Color = Color::Rgb(24, 24, 24);
+const PANEL: Color = Color::Rgb(31, 31, 31);
+const BORDER: Color = Color::Rgb(62, 62, 62);
+const TEXT: Color = Color::Rgb(204, 204, 204);
+const MUTED: Color = Color::Rgb(145, 145, 145);
+const BLUE: Color = Color::Rgb(74, 144, 226);
+const SELECTED: Color = Color::Rgb(38, 79, 120);
+const GREEN: Color = Color::Rgb(115, 201, 145);
+const RED: Color = Color::Rgb(244, 113, 116);
+const ORANGE: Color = Color::Rgb(206, 145, 120);
+
+pub fn render(frame: &mut Frame<'_>, app: &mut App) {
+    let area = frame.area();
+    frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
+    app.hits.clear();
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(if area.height < 20 { 3 } else { 5 }),
+            Constraint::Min(5),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
+    render_header(frame, app, rows[0]);
+    render_commit(frame, app, rows[1]);
+    let compact = app.settings.layout == LayoutPreference::Compact
+        || (app.settings.layout == LayoutPreference::Auto && area.width < 100);
+    let force_wide = app.settings.layout == LayoutPreference::Wide;
+    if app.preview.is_some() && (compact || area.width < 160) {
+        render_preview(frame, app, rows[2]);
+    } else if compact && !force_wide {
+        render_compact_body(frame, app, rows[2]);
+    } else {
+        render_wide_body(frame, app, rows[2], area.width >= 160);
+    }
+    render_status(frame, app, rows[3]);
+    if let Some(overlay) = app.overlay.clone() {
+        render_overlay(frame, app, area, overlay);
+    }
+}
+
+fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let active = app.active();
+    let branch = active.status.branch.head.as_deref().unwrap_or("detached");
+    let sync = match (active.status.branch.ahead, active.status.branch.behind) {
+        (0, 0) => String::new(),
+        (ahead, behind) => format!("  ↑{ahead} ↓{behind}"),
+    };
+    let title = if area.width < 58 {
+        format!(" {}  {}", active.repo.name(), branch)
+    } else {
+        format!(
+            " Sourcepane  │  {}  │  {}{}",
+            active.repo.name(),
+            branch,
+            sync
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(title)
+            .style(
+                Style::default()
+                    .fg(TEXT)
+                    .bg(PANEL)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(
+                Block::default()
+                    .borders(Borders::BOTTOM)
+                    .border_style(Style::default().fg(BORDER)),
+            ),
+        area,
+    );
+
+    let buttons = if area.width >= 75 {
+        vec![
+            (" Fetch ", UiAction::Fetch),
+            (" Pull ", UiAction::Pull),
+            (" Push ", UiAction::Push),
+            (" ↻ ", UiAction::Refresh),
+        ]
+    } else {
+        vec![(" ↻ ", UiAction::Refresh)]
+    };
+    let mut right = area.right().saturating_sub(1);
+    for (label, action) in buttons.into_iter().rev() {
+        let width = label.chars().count() as u16;
+        let rect = Rect::new(right.saturating_sub(width), area.y, width, 1);
+        frame.render_widget(
+            Paragraph::new(label).style(Style::default().fg(BLUE).bg(PANEL)),
+            rect,
+        );
+        app.hits.push(HitRegion { rect, action });
+        right = rect.x;
+    }
+}
+
+fn render_commit(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::Commit;
+    let border = if focused { BLUE } else { BORDER };
+    let message = if app.commit_message.is_empty() && !focused {
+        Text::from(Line::from(Span::styled(
+            "Message (c to edit, Ctrl+Enter to commit)",
+            Style::default().fg(MUTED),
+        )))
+    } else {
+        Text::from(app.commit_message.clone())
+    };
+    let block = Block::default()
+        .title(" Commit ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border))
+        .style(Style::default().bg(PANEL));
+    frame.render_widget(
+        Paragraph::new(message)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+    app.hits.push(HitRegion {
+        rect: area,
+        action: UiAction::Focus(Focus::Commit),
+    });
+    let button_width = if area.width >= 58 { 10 } else { 4 };
+    let button = Rect::new(
+        area.right().saturating_sub(button_width + 1),
+        area.bottom().saturating_sub(2),
+        button_width,
+        1,
+    );
+    frame.render_widget(
+        Paragraph::new(if button_width > 4 {
+            " ✓ Commit "
+        } else {
+            " ✓ "
+        })
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Color::White).bg(SELECTED)),
+        button,
+    );
+    app.hits.push(HitRegion {
+        rect: button,
+        action: UiAction::Commit,
+    });
+}
+
+fn render_compact_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    if area.width < 58 || area.height < 20 {
+        match app.focus {
+            Focus::Staged => render_changes(frame, app, area, true),
+            Focus::Graph => render_graph(frame, app, area),
+            Focus::Branches => render_branches(frame, app, area),
+            Focus::GitHub => render_github(frame, app, area),
+            Focus::Preview => render_preview(frame, app, area),
+            _ => render_changes(frame, app, area, false),
+        }
+        return;
+    }
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(44), Constraint::Percentage(56)])
+        .split(area);
+    if !app.active().status.staged.is_empty() && app.focus == Focus::Staged {
+        render_changes(frame, app, sections[0], true);
+    } else {
+        render_changes(frame, app, sections[0], false);
+    }
+    match app.focus {
+        Focus::Branches => render_branches(frame, app, sections[1]),
+        Focus::GitHub => render_github(frame, app, sections[1]),
+        _ => render_graph(frame, app, sections[1]),
+    }
+}
+
+fn render_wide_body(frame: &mut Frame<'_>, app: &mut App, area: Rect, three: bool) {
+    if three {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(28),
+                Constraint::Percentage(34),
+                Constraint::Percentage(38),
+            ])
+            .split(area);
+        let changes = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+            .split(columns[0]);
+        render_changes(frame, app, changes[0], false);
+        render_changes(frame, app, changes[1], true);
+        render_graph(frame, app, columns[1]);
+        if app.preview.is_some() {
+            render_preview(frame, app, columns[2]);
+        } else if app.focus == Focus::GitHub {
+            render_github(frame, app, columns[2]);
+        } else {
+            render_branches(frame, app, columns[2]);
+        }
+    } else {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+            .split(area);
+        let left = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+            .split(columns[0]);
+        render_changes(frame, app, left[0], app.focus == Focus::Staged);
+        render_graph(frame, app, left[1]);
+        if app.preview.is_some() {
+            render_preview(frame, app, columns[1]);
+        } else if app.focus == Focus::GitHub {
+            render_github(frame, app, columns[1]);
+        } else {
+            render_branches(frame, app, columns[1]);
+        }
+    }
+}
+
+fn render_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect, staged: bool) {
+    let changes = if staged {
+        app.active().status.staged.clone()
+    } else {
+        app.active().status.unstaged.clone()
+    };
+    let focused = app.focus
+        == if staged {
+            Focus::Staged
+        } else {
+            Focus::Changes
+        };
+    let selected = if staged {
+        app.selected_staged
+    } else {
+        app.selected_change
+    };
+    let title = if staged {
+        format!(" Staged Changes ({}) ", changes.len())
+    } else {
+        format!(" Changes ({}) ", changes.len())
+    };
+    let items = changes
+        .iter()
+        .enumerate()
+        .map(|(index, change)| {
+            let selected_row = focused && selected == index;
+            ListItem::new(change_line(change, area.width.saturating_sub(4))).style(
+                if selected_row {
+                    Style::default().fg(Color::White).bg(SELECTED)
+                } else {
+                    Style::default().fg(TEXT)
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if focused { BLUE } else { BORDER }));
+    frame.render_widget(List::new(items).block(block), area);
+    let visible = area.height.saturating_sub(2) as usize;
+    for (row, _) in changes.iter().take(visible).enumerate() {
+        app.hits.push(HitRegion {
+            rect: Rect::new(
+                area.x + 1,
+                area.y + 1 + row as u16,
+                area.width.saturating_sub(2),
+                1,
+            ),
+            action: UiAction::SelectChange { staged, index: row },
+        });
+    }
+    if area.width >= 28 {
+        let action = if staged {
+            UiAction::UnstageAll
+        } else {
+            UiAction::StageAll
+        };
+        let label = if staged { " − All " } else { " + All " };
+        let rect = Rect::new(area.right().saturating_sub(8), area.y, 7, 1);
+        frame.render_widget(Paragraph::new(label).style(Style::default().fg(BLUE)), rect);
+        app.hits.push(HitRegion { rect, action });
+    }
+}
+
+fn render_graph(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::Graph;
+    let items = app
+        .active()
+        .history
+        .iter()
+        .enumerate()
+        .map(|(index, commit)| {
+            let oid = commit.oid.get(..7).unwrap_or(&commit.oid);
+            let decorations = if commit.decorations.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", commit.decorations.join(", "))
+            };
+            let line = format!(
+                "● {} {}{}  {}",
+                oid, commit.subject, decorations, commit.author
+            );
+            ListItem::new(line).style(if focused && index == app.selected_commit {
+                Style::default().fg(Color::White).bg(SELECTED)
+            } else {
+                Style::default().fg(TEXT)
+            })
+        })
+        .collect::<Vec<_>>();
+    let block = Block::default()
+        .title(format!(" Graph ({}) ", app.active().history.len()))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if focused { BLUE } else { BORDER }));
+    frame.render_widget(List::new(items).block(block), area);
+    for row in 0..app
+        .active()
+        .history
+        .len()
+        .min(area.height.saturating_sub(2) as usize)
+    {
+        app.hits.push(HitRegion {
+            rect: Rect::new(
+                area.x + 1,
+                area.y + 1 + row as u16,
+                area.width.saturating_sub(2),
+                1,
+            ),
+            action: UiAction::SelectCommit(row),
+        });
+    }
+}
+
+fn render_branches(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::Branches;
+    let items = app
+        .active()
+        .branches
+        .iter()
+        .enumerate()
+        .map(|(index, branch)| {
+            let marker = if branch.current {
+                "●"
+            } else if branch.remote {
+                "☁"
+            } else {
+                "○"
+            };
+            ListItem::new(format!("{marker} {}", branch.name)).style(
+                if focused && index == app.selected_branch {
+                    Style::default().fg(Color::White).bg(SELECTED)
+                } else if branch.current {
+                    Style::default().fg(BLUE)
+                } else {
+                    Style::default().fg(TEXT)
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .title(format!(" Branches ({}) ", app.active().branches.len()))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(if focused { BLUE } else { BORDER })),
+        ),
+        area,
+    );
+    for row in 0..app
+        .active()
+        .branches
+        .len()
+        .min(area.height.saturating_sub(2) as usize)
+    {
+        app.hits.push(HitRegion {
+            rect: Rect::new(
+                area.x + 1,
+                area.y + 1 + row as u16,
+                area.width.saturating_sub(2),
+                1,
+            ),
+            action: UiAction::SelectBranch(row),
+        });
+    }
+}
+
+fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::GitHub;
+    if !app.active().github_available {
+        frame.render_widget(
+            Paragraph::new("GitHub CLI is unavailable.\n\nInstall `gh` and run `gh auth login`.")
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .title(" GitHub ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(if focused { BLUE } else { BORDER })),
+                ),
+            area,
+        );
+        return;
+    }
+    let items: Vec<ListItem<'_>> = if app.github_show_issues {
+        app.active()
+            .issues
+            .iter()
+            .enumerate()
+            .map(|(index, issue)| {
+                ListItem::new(format!(
+                    "#{} {}  @{}",
+                    issue.number, issue.title, issue.author
+                ))
+                .style(if focused && index == app.selected_github {
+                    Style::default().fg(Color::White).bg(SELECTED)
+                } else {
+                    Style::default().fg(TEXT)
+                })
+            })
+            .collect()
+    } else {
+        app.active()
+            .pull_requests
+            .iter()
+            .enumerate()
+            .map(|(index, pr)| {
+                let draft = if pr.is_draft { " [draft]" } else { "" };
+                ListItem::new(format!(
+                    "#{} {}{}  {} → {}",
+                    pr.number, pr.title, draft, pr.head, pr.base
+                ))
+                .style(if focused && index == app.selected_github {
+                    Style::default().fg(Color::White).bg(SELECTED)
+                } else {
+                    Style::default().fg(TEXT)
+                })
+            })
+            .collect()
+    };
+    let mode = if app.github_show_issues {
+        "Issues"
+    } else {
+        "Pull Requests"
+    };
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .title(format!(" GitHub · {mode} (i to switch) "))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(if focused { BLUE } else { BORDER })),
+        ),
+        area,
+    );
+    let count = if app.github_show_issues {
+        app.active().issues.len()
+    } else {
+        app.active().pull_requests.len()
+    };
+    for row in 0..count.min(area.height.saturating_sub(2) as usize) {
+        app.hits.push(HitRegion {
+            rect: Rect::new(
+                area.x + 1,
+                area.y + 1 + row as u16,
+                area.width.saturating_sub(2),
+                1,
+            ),
+            action: if app.github_show_issues {
+                UiAction::SelectIssue(row)
+            } else {
+                UiAction::SelectPullRequest(row)
+            },
+        });
+    }
+}
+
+fn render_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let Some(preview) = app.preview.as_ref() else {
+        return;
+    };
+    let lines = preview
+        .body
+        .lines()
+        .skip(preview.scroll as usize)
+        .map(|line| {
+            let style = if line.starts_with('+') && !line.starts_with("+++") {
+                Style::default().fg(GREEN)
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                Style::default().fg(RED)
+            } else if line.starts_with("@@") {
+                Style::default().fg(BLUE)
+            } else if line.starts_with("diff ") || line.starts_with("commit ") {
+                Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            Line::styled(line.to_owned(), style)
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .title(format!(" {}  [Esc close · e editor] ", preview.title))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(BLUE)),
+        ),
+        area,
+    );
+}
+
+fn render_status(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let help = if area.width >= 70 {
+        "  ? Help  │  Tab Focus  │  Space Stage  │  q Quit"
+    } else {
+        "  ?  Tab  Space  q"
+    };
+    let available = area.width.saturating_sub(help.len() as u16) as usize;
+    let mut status = app.status_line.clone();
+    status.truncate(available);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!(" {status}"), Style::default().fg(MUTED).bg(PANEL)),
+            Span::styled(help, Style::default().fg(TEXT).bg(PANEL)),
+        ]))
+        .style(Style::default().bg(PANEL)),
+        area,
+    );
+    let help_rect = Rect::new(area.right().saturating_sub(8), area.y, 8, 1);
+    app.hits.push(HitRegion {
+        rect: help_rect,
+        action: UiAction::ToggleHelp,
+    });
+}
+
+fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Overlay) {
+    let popup = centered_rect(
+        if area.width < 70 { 90 } else { 60 },
+        if area.height < 24 { 85 } else { 60 },
+        area,
+    );
+    frame.render_widget(Clear, popup);
+    let (title, body, border) = match overlay {
+        Overlay::Help => (
+            " Help ",
+            "Navigation\n  j/k or arrows  Move\n  Tab            Next panel\n  Enter          Open/activate\n\nChanges\n  Space          Stage/unstage\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External editor\n\nRepository\n  c              Commit message\n  Ctrl+Enter     Commit\n  f/l/p          Fetch/pull/push\n  s              Stash\n  r              Refresh\n\nViews\n  g Graph  b Branches  h GitHub  i PR/issue\n\nPress Esc, Enter, or ? to close."
+                .to_owned(),
+            BLUE,
+        ),
+        Overlay::Confirm { prompt, .. } => (" Confirm ", prompt, ORANGE),
+        Overlay::Message { title, body } => (" Message ", format!("{title}\n\n{body}"), RED),
+    };
+    frame.render_widget(
+        Paragraph::new(body).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border))
+                .style(Style::default().bg(PANEL)),
+        ),
+        popup,
+    );
+    app.hits.push(HitRegion {
+        rect: popup,
+        action: UiAction::CloseOverlay,
+    });
+}
+
+fn change_line(change: &Change, width: u16) -> Line<'static> {
+    let color = match change.kind {
+        ChangeKind::Added | ChangeKind::Untracked => GREEN,
+        ChangeKind::Deleted => RED,
+        ChangeKind::Conflicted => ORANGE,
+        _ => TEXT,
+    };
+    let path = change.path.to_string_lossy();
+    let max = width.saturating_sub(4) as usize;
+    let display = truncate_middle(&path, max);
+    Line::from(vec![
+        Span::styled(
+            format!("{} ", change.kind.badge()),
+            Style::default().fg(color),
+        ),
+        Span::raw(display),
+    ])
+}
+
+fn truncate_middle(value: &str, max: usize) -> String {
+    if value.chars().count() <= max {
+        return value.to_owned();
+    }
+    if max < 4 {
+        return value.chars().take(max).collect();
+    }
+    let left = (max - 1) / 2;
+    let right = max - left - 1;
+    let beginning: String = value.chars().take(left).collect();
+    let ending: String = value
+        .chars()
+        .rev()
+        .take(right)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{beginning}…{ending}")
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
+        .inner(Margin {
+            horizontal: 0,
+            vertical: 0,
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn middle_truncation_preserves_ends() {
+        assert_eq!(
+            truncate_middle("src/components/panel.rs", 12),
+            "src/c…nel.rs"
+        );
+        assert_eq!(truncate_middle("short", 12), "short");
+    }
+}
