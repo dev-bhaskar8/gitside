@@ -167,6 +167,8 @@ fn render_compact_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Focus::Staged => render_changes(frame, app, area, true),
             Focus::Graph => render_graph(frame, app, area),
             Focus::Branches => render_branches(frame, app, area),
+            Focus::Stashes => render_stashes(frame, app, area),
+            Focus::Worktrees => render_worktrees(frame, app, area),
             Focus::GitHub => render_github(frame, app, area),
             Focus::Preview => render_preview(frame, app, area),
             _ => render_changes(frame, app, area, false),
@@ -184,6 +186,8 @@ fn render_compact_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     }
     match app.focus {
         Focus::Branches => render_branches(frame, app, sections[1]),
+        Focus::Stashes => render_stashes(frame, app, sections[1]),
+        Focus::Worktrees => render_worktrees(frame, app, sections[1]),
         Focus::GitHub => render_github(frame, app, sections[1]),
         _ => render_graph(frame, app, sections[1]),
     }
@@ -210,6 +214,10 @@ fn render_wide_body(frame: &mut Frame<'_>, app: &mut App, area: Rect, three: boo
             render_preview(frame, app, columns[2]);
         } else if app.focus == Focus::GitHub {
             render_github(frame, app, columns[2]);
+        } else if app.focus == Focus::Stashes {
+            render_stashes(frame, app, columns[2]);
+        } else if app.focus == Focus::Worktrees {
+            render_worktrees(frame, app, columns[2]);
         } else {
             render_branches(frame, app, columns[2]);
         }
@@ -228,6 +236,10 @@ fn render_wide_body(frame: &mut Frame<'_>, app: &mut App, area: Rect, three: boo
             render_preview(frame, app, columns[1]);
         } else if app.focus == Focus::GitHub {
             render_github(frame, app, columns[1]);
+        } else if app.focus == Focus::Stashes {
+            render_stashes(frame, app, columns[1]);
+        } else if app.focus == Focus::Worktrees {
+            render_worktrees(frame, app, columns[1]);
         } else {
             render_branches(frame, app, columns[1]);
         }
@@ -401,6 +413,112 @@ fn render_branches(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     }
 }
 
+fn render_stashes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::Stashes;
+    let items = app
+        .active()
+        .stashes
+        .iter()
+        .enumerate()
+        .map(|(index, stash)| {
+            ListItem::new(format!("◇ {}  {}", stash.reference, stash.subject)).style(
+                if focused && index == app.selected_stash {
+                    Style::default().fg(Color::White).bg(SELECTED)
+                } else {
+                    Style::default().fg(TEXT)
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .title(format!(
+                    " Stashes ({}) · A apply · P pop · X drop ",
+                    app.active().stashes.len()
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(if focused { BLUE } else { BORDER })),
+        ),
+        area,
+    );
+    for row in 0..app
+        .active()
+        .stashes
+        .len()
+        .min(area.height.saturating_sub(2) as usize)
+    {
+        app.hits.push(HitRegion {
+            rect: Rect::new(
+                area.x + 1,
+                area.y + 1 + row as u16,
+                area.width.saturating_sub(2),
+                1,
+            ),
+            action: UiAction::SelectStash(row),
+        });
+    }
+}
+
+fn render_worktrees(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::Worktrees;
+    let items = app
+        .active()
+        .worktrees
+        .iter()
+        .enumerate()
+        .map(|(index, worktree)| {
+            let branch = worktree.branch.as_deref().unwrap_or("detached");
+            let flags = if worktree.locked {
+                " locked"
+            } else if worktree.prunable {
+                " prunable"
+            } else {
+                ""
+            };
+            ListItem::new(format!(
+                "▣ {}  {}{}",
+                worktree.path.display(),
+                branch,
+                flags
+            ))
+            .style(if focused && index == app.selected_worktree {
+                Style::default().fg(Color::White).bg(SELECTED)
+            } else {
+                Style::default().fg(TEXT)
+            })
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .title(format!(
+                    " Worktrees ({}) · X remove ",
+                    app.active().worktrees.len()
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(if focused { BLUE } else { BORDER })),
+        ),
+        area,
+    );
+    for row in 0..app
+        .active()
+        .worktrees
+        .len()
+        .min(area.height.saturating_sub(2) as usize)
+    {
+        app.hits.push(HitRegion {
+            rect: Rect::new(
+                area.x + 1,
+                area.y + 1 + row as u16,
+                area.width.saturating_sub(2),
+                1,
+            ),
+            action: UiAction::SelectWorktree(row),
+        });
+    }
+}
+
 fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::GitHub;
     if !app.active().github_available {
@@ -560,7 +678,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Ove
     let (title, body, border) = match overlay {
         Overlay::Help => (
             " Help ".to_owned(),
-            "Navigation\n  j/k or arrows  Move\n  Tab            Next panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External editor\n\nRepository\n  c              Commit message\n  Ctrl+Enter     Commit\n  f/l/p          Fetch/pull/push\n  s              Stash\n  r              Refresh\n\nBranches\n  n/x            Create/delete\n  m/R            Merge/rebase\n\nGraph\n  y/v/t          Cherry-pick/revert/tag\n\nViews\n  g Graph  b Branches  h GitHub  i PR/issue\n\nPress Esc, Enter, or ? to close."
+            "Navigation\n  j/k or arrows  Move\n  Tab            Next panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External editor\n\nRepository\n  c              Commit message\n  Ctrl+Enter     Commit\n  f/l/p          Fetch/pull/push\n  s/z            Create/list stashes\n  W              Worktree list\n  r              Refresh\n\nBranches\n  n/x            Create/delete\n  m/R            Merge/rebase\n  w              Add worktree\n\nStashes\n  A/P/X          Apply/pop/drop\n\nGraph\n  y/v/t          Cherry-pick/revert/tag\n\nGitHub\n  Enter          View PR/issue\n  i/o            Switch type/open web\n  C/K            Checkout PR/view checks\n\nPress Esc, Enter, or ? to close."
                 .to_owned(),
             BLUE,
         ),

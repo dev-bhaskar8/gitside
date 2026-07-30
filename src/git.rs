@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::{io::AsyncWriteExt, process::Command};
 
-use crate::model::{Branch, Change, ChangeKind, Commit, Remote, RepoStatus};
+use crate::model::{Branch, Change, ChangeKind, Commit, Remote, RepoStatus, Stash, Worktree};
 
 #[derive(Debug, Clone)]
 pub struct GitRepo {
@@ -350,12 +350,99 @@ impl GitRepo {
         Ok(())
     }
 
+    pub async fn stashes(&self) -> Result<Vec<Stash>> {
+        let output = self
+            .command(["stash", "list", "--format=%gd%x00%gs%x00"], None)
+            .await?;
+        let fields: Vec<_> = output.stdout.split(|byte| *byte == 0).collect();
+        Ok(fields
+            .chunks(2)
+            .filter_map(|pair| {
+                if pair.len() < 2 || pair[0].is_empty() {
+                    return None;
+                }
+                Some(Stash {
+                    reference: String::from_utf8_lossy(pair[0])
+                        .trim_start_matches('\n')
+                        .to_owned(),
+                    subject: String::from_utf8_lossy(pair[1]).into_owned(),
+                })
+            })
+            .collect())
+    }
+
+    pub async fn show_stash(&self, reference: &str) -> Result<String> {
+        let output = self
+            .command(
+                [
+                    "stash",
+                    "show",
+                    "--patch",
+                    "--stat",
+                    "--no-color",
+                    reference,
+                ],
+                None,
+            )
+            .await?;
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    pub async fn apply_stash(&self, reference: &str) -> Result<()> {
+        self.command(["stash", "apply", reference], None).await?;
+        Ok(())
+    }
+
+    pub async fn pop_stash(&self, reference: &str) -> Result<()> {
+        self.command(["stash", "pop", reference], None).await?;
+        Ok(())
+    }
+
+    pub async fn drop_stash(&self, reference: &str) -> Result<()> {
+        self.command(["stash", "drop", reference], None).await?;
+        Ok(())
+    }
+
     pub async fn apply_cached_patch(&self, patch: &str, reverse: bool) -> Result<()> {
         let mut args = vec!["apply", "--cached", "--recount", "--whitespace=nowarn"];
         if reverse {
             args.push("--reverse");
         }
         self.command(args, Some(patch.as_bytes())).await?;
+        Ok(())
+    }
+
+    pub async fn worktrees(&self) -> Result<Vec<Worktree>> {
+        let output = self
+            .command(["worktree", "list", "--porcelain", "-z"], None)
+            .await?;
+        Ok(parse_worktrees(&output.stdout))
+    }
+
+    pub async fn add_worktree(&self, path: &Path, branch: &str) -> Result<()> {
+        self.command(
+            [
+                OsStr::new("worktree"),
+                OsStr::new("add"),
+                path.as_os_str(),
+                OsStr::new(branch),
+            ],
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn remove_worktree(&self, path: &Path) -> Result<()> {
+        self.command(
+            [
+                OsStr::new("worktree"),
+                OsStr::new("remove"),
+                path.as_os_str(),
+            ],
+            None,
+        )
+        .await?;
         Ok(())
     }
 }
@@ -427,12 +514,14 @@ fn parse_status(input: &[u8]) -> Result<RepoStatus> {
                     None
                 };
                 if type_code == b'u' {
-                    status.conflicts.push(Change {
+                    let conflict = Change {
                         path: bytes_to_path(path),
                         original_path,
                         kind: ChangeKind::Conflicted,
                         staged: false,
-                    });
+                    };
+                    status.conflicts.push(conflict.clone());
+                    status.unstaged.push(conflict);
                     continue;
                 }
                 let x = *xy.first().unwrap_or(&b'.');
@@ -568,6 +657,47 @@ fn parse_remotes(input: &[u8]) -> Vec<Remote> {
     values.into_values().collect()
 }
 
+fn parse_worktrees(input: &[u8]) -> Vec<Worktree> {
+    input
+        .split(|byte| *byte == 0)
+        .fold(
+            (Vec::new(), None::<Worktree>),
+            |(mut result, mut current), field| {
+                if field.is_empty() {
+                    if let Some(worktree) = current.take() {
+                        result.push(worktree);
+                    }
+                    return (result, current);
+                }
+                let text = String::from_utf8_lossy(field);
+                if let Some(path) = text.strip_prefix("worktree ") {
+                    if let Some(worktree) = current.take() {
+                        result.push(worktree);
+                    }
+                    current = Some(Worktree {
+                        path: PathBuf::from(path),
+                        head: String::new(),
+                        branch: None,
+                        locked: false,
+                        prunable: false,
+                    });
+                } else if let Some(worktree) = current.as_mut() {
+                    if let Some(head) = text.strip_prefix("HEAD ") {
+                        worktree.head = head.to_owned();
+                    } else if let Some(branch) = text.strip_prefix("branch refs/heads/") {
+                        worktree.branch = Some(branch.to_owned());
+                    } else if text.starts_with("locked") {
+                        worktree.locked = true;
+                    } else if text.starts_with("prunable") {
+                        worktree.prunable = true;
+                    }
+                }
+                (result, current)
+            },
+        )
+        .0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -596,6 +726,26 @@ mod tests {
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].subject, "Subject");
         assert_eq!(commits[0].decorations.len(), 2);
+    }
+
+    #[test]
+    fn parses_conflicts_into_visible_changes() {
+        let input = b"# branch.head main\0\
+u UU N... 100644 100644 100644 100644 aaa bbb ccc conflict.txt\0";
+        let status = parse_status(input).unwrap();
+        assert_eq!(status.conflicts.len(), 1);
+        assert_eq!(status.unstaged.len(), 1);
+        assert_eq!(status.unstaged[0].kind, ChangeKind::Conflicted);
+    }
+
+    #[test]
+    fn parses_worktree_porcelain() {
+        let input = b"worktree /repo\0HEAD abc123\0branch refs/heads/main\0\0\
+worktree /repo-feature\0HEAD def456\0branch refs/heads/feature\0locked reason\0\0";
+        let worktrees = parse_worktrees(input);
+        assert_eq!(worktrees.len(), 2);
+        assert_eq!(worktrees[0].branch.as_deref(), Some("main"));
+        assert!(worktrees[1].locked);
     }
 
     async fn repository() -> (TempDir, GitRepo) {
@@ -658,6 +808,20 @@ mod tests {
         assert_eq!(status.unstaged[0].kind, ChangeKind::Modified);
         let diff = repo.diff(&status.unstaged[0]).await.unwrap();
         assert!(diff.contains("+world"));
+
+        repo.stash().await.unwrap();
+        let stashes = repo.stashes().await.unwrap();
+        assert_eq!(stashes.len(), 1);
+        assert!(
+            repo.show_stash(&stashes[0].reference)
+                .await
+                .unwrap()
+                .contains("+world")
+        );
+        repo.apply_stash(&stashes[0].reference).await.unwrap();
+        assert_eq!(repo.status().await.unwrap().unstaged.len(), 1);
+        repo.drop_stash(&stashes[0].reference).await.unwrap();
+        assert!(repo.stashes().await.unwrap().is_empty());
     }
 
     #[tokio::test]

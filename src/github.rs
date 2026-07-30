@@ -110,7 +110,54 @@ impl GitHub {
             .collect())
     }
 
+    pub async fn pull_request_detail(&self, number: u64) -> Result<String> {
+        let number = number.to_string();
+        let output = self
+            .run_vec(vec!["pr", "view", &number, "--comments"])
+            .await?;
+        Ok(String::from_utf8_lossy(&output).into_owned())
+    }
+
+    pub async fn issue_detail(&self, number: u64) -> Result<String> {
+        let number = number.to_string();
+        let output = self
+            .run_vec(vec!["issue", "view", &number, "--comments"])
+            .await?;
+        Ok(String::from_utf8_lossy(&output).into_owned())
+    }
+
+    pub async fn checkout_pull_request(&self, number: u64) -> Result<()> {
+        let number = number.to_string();
+        self.run_vec(vec!["pr", "checkout", &number]).await?;
+        Ok(())
+    }
+
+    pub async fn pull_request_checks(&self, number: u64) -> Result<String> {
+        let number = number.to_string();
+        let output = self
+            .run_allow_failure(vec!["pr", "checks", &number])
+            .await?;
+        Ok(String::from_utf8_lossy(&output).into_owned())
+    }
+
+    pub async fn open_pull_request(&self, number: u64) -> Result<()> {
+        let number = number.to_string();
+        self.run_vec(vec!["pr", "view", &number, "--web"]).await?;
+        Ok(())
+    }
+
+    pub async fn open_issue(&self, number: u64) -> Result<()> {
+        let number = number.to_string();
+        self.run_vec(vec!["issue", "view", &number, "--web"])
+            .await?;
+        Ok(())
+    }
+
     async fn run<const N: usize>(&self, args: [&str; N]) -> Result<Vec<u8>> {
+        self.run_vec(args.to_vec()).await
+    }
+
+    async fn run_vec(&self, args: Vec<&str>) -> Result<Vec<u8>> {
         let output = Command::new("gh")
             .args(args)
             .current_dir(&self.root)
@@ -119,6 +166,20 @@ impl GitHub {
             .await
             .context("GitHub CLI is not installed")?;
         if !output.status.success() {
+            bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+        }
+        Ok(output.stdout)
+    }
+
+    async fn run_allow_failure(&self, args: Vec<&str>) -> Result<Vec<u8>> {
+        let output = Command::new("gh")
+            .args(args)
+            .current_dir(&self.root)
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .context("GitHub CLI is not installed")?;
+        if output.stdout.is_empty() && !output.status.success() {
             bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
         }
         Ok(output.stdout)

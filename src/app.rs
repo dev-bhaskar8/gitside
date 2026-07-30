@@ -14,7 +14,7 @@ use crate::{
     config::{Cli, Settings},
     git::GitRepo,
     github::GitHub,
-    model::{Branch, Change, Commit, Issue, PullRequest, Remote, RepoStatus},
+    model::{Branch, Change, Commit, Issue, PullRequest, Remote, RepoStatus, Stash, Worktree},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +24,8 @@ pub enum Focus {
     Staged,
     Graph,
     Branches,
+    Stashes,
+    Worktrees,
     GitHub,
     Preview,
 }
@@ -34,6 +36,8 @@ pub enum UiAction {
     SelectChange { staged: bool, index: usize },
     SelectCommit(usize),
     SelectBranch(usize),
+    SelectStash(usize),
+    SelectWorktree(usize),
     SelectPullRequest(usize),
     SelectIssue(usize),
     Refresh,
@@ -87,12 +91,15 @@ pub enum ConfirmAction {
     Discard { path: PathBuf, untracked: bool },
     DeleteBranch { name: String },
     Rebase { branch: String },
+    DropStash { reference: String },
+    RemoveWorktree { path: PathBuf },
 }
 
 #[derive(Debug, Clone)]
 pub enum PromptAction {
     CreateBranch,
     CreateTag { oid: String },
+    AddWorktree { branch: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +116,8 @@ pub struct RepoView {
     pub history: Vec<Commit>,
     pub branches: Vec<Branch>,
     pub remotes: Vec<Remote>,
+    pub stashes: Vec<Stash>,
+    pub worktrees: Vec<Worktree>,
     pub github_available: bool,
     pub pull_requests: Vec<PullRequest>,
     pub issues: Vec<Issue>,
@@ -123,6 +132,8 @@ pub struct App {
     pub selected_staged: usize,
     pub selected_commit: usize,
     pub selected_branch: usize,
+    pub selected_stash: usize,
+    pub selected_worktree: usize,
     pub selected_github: usize,
     pub github_show_issues: bool,
     pub commit_message: String,
@@ -155,6 +166,8 @@ impl App {
             let history = repo.history(settings.graph_page_size).await?;
             let branches = repo.branches().await?;
             let remotes = repo.remotes().await?;
+            let stashes = repo.stashes().await?;
+            let worktrees = repo.worktrees().await?;
             let github = GitHub::new(repo.root());
             let has_github_remote = remotes.iter().any(|remote| {
                 remote.fetch_url.contains("github.com") || remote.push_url.contains("github.com")
@@ -166,6 +179,8 @@ impl App {
                 history,
                 branches,
                 remotes,
+                stashes,
+                worktrees,
                 github_available,
                 pull_requests: Vec::new(),
                 issues: Vec::new(),
@@ -183,6 +198,8 @@ impl App {
             selected_staged: 0,
             selected_commit: 0,
             selected_branch: 0,
+            selected_stash: 0,
+            selected_worktree: 0,
             selected_github: 0,
             github_show_issues: false,
             commit_message: String::new(),
@@ -220,16 +237,20 @@ impl App {
             let history = repo.history(self.settings.graph_page_size).await?;
             let branches = repo.branches().await?;
             let remotes = repo.remotes().await?;
-            Ok::<_, anyhow::Error>((status, history, branches, remotes))
+            let stashes = repo.stashes().await?;
+            let worktrees = repo.worktrees().await?;
+            Ok::<_, anyhow::Error>((status, history, branches, remotes, stashes, worktrees))
         }
         .await;
         match result {
-            Ok((status, history, branches, remotes)) => {
+            Ok((status, history, branches, remotes, stashes, worktrees)) => {
                 let active = self.active_mut();
                 active.status = status;
                 active.history = history;
                 active.branches = branches;
                 active.remotes = remotes;
+                active.stashes = stashes;
+                active.worktrees = worktrees;
                 self.clamp_selections();
                 self.status_line = "Repository refreshed".into();
             }
@@ -277,6 +298,20 @@ impl App {
             KeyCode::Char('l') => self.run_remote("Pulling", RemoteAction::Pull).await,
             KeyCode::Char('p') => self.run_remote("Pushing", RemoteAction::Push).await,
             KeyCode::Char('s') => self.run_stash().await,
+            KeyCode::Char('z') => self.focus = Focus::Stashes,
+            KeyCode::Char('W') => self.focus = Focus::Worktrees,
+            KeyCode::Char('w') if self.focus == Focus::Branches => {
+                if let Some(branch) = self.active().branches.get(self.selected_branch) {
+                    self.overlay = Some(Overlay::Prompt {
+                        title: "Add worktree".into(),
+                        label: format!("Path for branch {}", branch.name),
+                        value: String::new(),
+                        action: PromptAction::AddWorktree {
+                            branch: branch.name.clone(),
+                        },
+                    });
+                }
+            }
             KeyCode::Char('n') if self.focus == Focus::Branches => {
                 self.overlay = Some(Overlay::Prompt {
                     title: "Create branch".into(),
@@ -314,6 +349,23 @@ impl App {
                 self.github_show_issues = !self.github_show_issues;
                 self.selected_github = 0;
             }
+            KeyCode::Char('o') if self.focus == Focus::GitHub => {
+                self.open_github_in_browser().await
+            }
+            KeyCode::Char('C') if self.focus == Focus::GitHub && !self.github_show_issues => {
+                self.checkout_pull_request().await
+            }
+            KeyCode::Char('K') if self.focus == Focus::GitHub && !self.github_show_issues => {
+                self.open_pull_request_checks().await
+            }
+            KeyCode::Char('A') if self.focus == Focus::Stashes => {
+                self.apply_selected_stash(false).await
+            }
+            KeyCode::Char('P') if self.focus == Focus::Stashes => {
+                self.apply_selected_stash(true).await
+            }
+            KeyCode::Char('X') if self.focus == Focus::Stashes => self.request_drop_stash(),
+            KeyCode::Char('X') if self.focus == Focus::Worktrees => self.request_remove_worktree(),
             KeyCode::Tab => self.next_focus(false).await,
             KeyCode::BackTab => self.next_focus(true).await,
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
@@ -437,6 +489,14 @@ impl App {
                 self.focus = Focus::Branches;
                 self.selected_branch = index;
             }
+            UiAction::SelectStash(index) => {
+                self.focus = Focus::Stashes;
+                self.selected_stash = index;
+            }
+            UiAction::SelectWorktree(index) => {
+                self.focus = Focus::Worktrees;
+                self.selected_worktree = index;
+            }
             UiAction::SelectPullRequest(index) | UiAction::SelectIssue(index) => {
                 self.focus = Focus::GitHub;
                 self.selected_github = index;
@@ -458,6 +518,9 @@ impl App {
             Focus::Changes | Focus::Staged => self.open_change_preview().await,
             Focus::Graph => self.open_commit_preview().await,
             Focus::Branches => self.checkout_selected().await,
+            Focus::Stashes => self.open_stash_preview().await,
+            Focus::Worktrees => self.status_line = "Use X to remove a linked worktree".into(),
+            Focus::GitHub => self.open_github_preview().await,
             Focus::Preview => {}
             _ => {}
         }
@@ -561,6 +624,82 @@ impl App {
         let repo = self.active().repo.clone();
         let result = repo.stash().await;
         self.finish_action(result, "Created stash").await;
+    }
+
+    async fn open_stash_preview(&mut self) {
+        let Some(stash) = self.active().stashes.get(self.selected_stash).cloned() else {
+            return;
+        };
+        let repo = self.active().repo.clone();
+        match repo.show_stash(&stash.reference).await {
+            Ok(body) => {
+                self.preview = Some(Preview {
+                    title: format!("{} {}", stash.reference, stash.subject),
+                    hunks: split_diff_hunks(&body),
+                    body,
+                    scroll: 0,
+                    change: None,
+                    selected_hunk: 0,
+                });
+                self.focus = Focus::Preview;
+            }
+            Err(error) => self.report_error(error),
+        }
+    }
+
+    async fn apply_selected_stash(&mut self, pop: bool) {
+        let Some(stash) = self.active().stashes.get(self.selected_stash).cloned() else {
+            return;
+        };
+        let repo = self.active().repo.clone();
+        let result = if pop {
+            repo.pop_stash(&stash.reference).await
+        } else {
+            repo.apply_stash(&stash.reference).await
+        };
+        self.finish_action(
+            result,
+            &format!(
+                "{} {}",
+                if pop { "Popped" } else { "Applied" },
+                stash.reference
+            ),
+        )
+        .await;
+    }
+
+    fn request_drop_stash(&mut self) {
+        let Some(stash) = self.active().stashes.get(self.selected_stash) else {
+            return;
+        };
+        self.overlay = Some(Overlay::Confirm {
+            prompt: format!(
+                "Permanently drop {} ({})? [y/N]",
+                stash.reference, stash.subject
+            ),
+            action: ConfirmAction::DropStash {
+                reference: stash.reference.clone(),
+            },
+        });
+    }
+
+    fn request_remove_worktree(&mut self) {
+        let Some(worktree) = self.active().worktrees.get(self.selected_worktree) else {
+            return;
+        };
+        if worktree.path == self.active().repo.root() {
+            self.status_line = "The active worktree cannot be removed".into();
+            return;
+        }
+        self.overlay = Some(Overlay::Confirm {
+            prompt: format!(
+                "Remove linked worktree {}?\nGit will refuse if it has changes. [y/N]",
+                worktree.path.display()
+            ),
+            action: ConfirmAction::RemoveWorktree {
+                path: worktree.path.clone(),
+            },
+        });
     }
 
     async fn checkout_selected(&mut self) {
@@ -671,6 +810,12 @@ impl App {
                 self.finish_action(result, &format!("Created tag {value}"))
                     .await;
             }
+            PromptAction::AddWorktree { branch } => {
+                let path = PathBuf::from(value);
+                let result = repo.add_worktree(&path, &branch).await;
+                self.finish_action(result, &format!("Added worktree {}", path.display()))
+                    .await;
+            }
         }
     }
 
@@ -716,6 +861,18 @@ impl App {
                 self.finish_action(result, &format!("Rebased onto {branch}"))
                     .await;
             }
+            ConfirmAction::DropStash { reference } => {
+                let repo = self.active().repo.clone();
+                let result = repo.drop_stash(&reference).await;
+                self.finish_action(result, &format!("Dropped {reference}"))
+                    .await;
+            }
+            ConfirmAction::RemoveWorktree { path } => {
+                let repo = self.active().repo.clone();
+                let result = repo.remove_worktree(&path).await;
+                self.finish_action(result, &format!("Removed worktree {}", path.display()))
+                    .await;
+            }
         }
     }
 
@@ -749,6 +906,106 @@ impl App {
                 self.status_line = "GitHub data loaded".into();
             }
             (Err(error), _) | (_, Err(error)) => self.report_error(error),
+        }
+    }
+
+    async fn open_github_preview(&mut self) {
+        let github = GitHub::new(self.active().repo.root());
+        let result = if self.github_show_issues {
+            let Some(issue) = self.active().issues.get(self.selected_github).cloned() else {
+                return;
+            };
+            github
+                .issue_detail(issue.number)
+                .await
+                .map(|body| (format!("#{} {}", issue.number, issue.title), body))
+        } else {
+            let Some(pr) = self
+                .active()
+                .pull_requests
+                .get(self.selected_github)
+                .cloned()
+            else {
+                return;
+            };
+            github
+                .pull_request_detail(pr.number)
+                .await
+                .map(|body| (format!("#{} {}", pr.number, pr.title), body))
+        };
+        match result {
+            Ok((title, body)) => {
+                self.preview = Some(Preview {
+                    title,
+                    body,
+                    scroll: 0,
+                    change: None,
+                    hunks: Vec::new(),
+                    selected_hunk: 0,
+                });
+                self.focus = Focus::Preview;
+            }
+            Err(error) => self.report_error(error),
+        }
+    }
+
+    async fn open_github_in_browser(&mut self) {
+        let github = GitHub::new(self.active().repo.root());
+        let result = if self.github_show_issues {
+            let Some(issue) = self.active().issues.get(self.selected_github) else {
+                return;
+            };
+            github.open_issue(issue.number).await
+        } else {
+            let Some(pr) = self.active().pull_requests.get(self.selected_github) else {
+                return;
+            };
+            github.open_pull_request(pr.number).await
+        };
+        match result {
+            Ok(()) => self.status_line = "Opened in browser".into(),
+            Err(error) => self.report_error(error),
+        }
+    }
+
+    async fn checkout_pull_request(&mut self) {
+        let Some(pr) = self
+            .active()
+            .pull_requests
+            .get(self.selected_github)
+            .cloned()
+        else {
+            return;
+        };
+        let github = GitHub::new(self.active().repo.root());
+        let result = github.checkout_pull_request(pr.number).await;
+        self.finish_action(result, &format!("Checked out PR #{}", pr.number))
+            .await;
+    }
+
+    async fn open_pull_request_checks(&mut self) {
+        let Some(pr) = self
+            .active()
+            .pull_requests
+            .get(self.selected_github)
+            .cloned()
+        else {
+            return;
+        };
+        let github = GitHub::new(self.active().repo.root());
+        match github.pull_request_checks(pr.number).await {
+            Ok(body) => {
+                self.preview = Some(Preview {
+                    title: format!("Checks for PR #{}", pr.number),
+                    body,
+                    scroll: 0,
+                    change: None,
+                    hunks: Vec::new(),
+                    selected_hunk: 0,
+                });
+                self.focus = Focus::Preview;
+            }
+            Err(error) => self.report_error(error),
         }
     }
 
@@ -809,12 +1066,14 @@ impl App {
     }
 
     async fn next_focus(&mut self, backwards: bool) {
-        const ORDER: [Focus; 6] = [
+        const ORDER: [Focus; 8] = [
             Focus::Commit,
             Focus::Changes,
             Focus::Staged,
             Focus::Graph,
             Focus::Branches,
+            Focus::Stashes,
+            Focus::Worktrees,
             Focus::GitHub,
         ];
         let current = ORDER
@@ -871,6 +1130,8 @@ impl App {
             Focus::Staged => self.selected_staged,
             Focus::Graph => self.selected_commit,
             Focus::Branches => self.selected_branch,
+            Focus::Stashes => self.selected_stash,
+            Focus::Worktrees => self.selected_worktree,
             Focus::GitHub => self.selected_github,
             _ => self.selected_change,
         }
@@ -881,6 +1142,8 @@ impl App {
             Focus::Staged => self.active().status.staged.len(),
             Focus::Graph => self.active().history.len(),
             Focus::Branches => self.active().branches.len(),
+            Focus::Stashes => self.active().stashes.len(),
+            Focus::Worktrees => self.active().worktrees.len(),
             Focus::GitHub if self.github_show_issues => self.active().issues.len(),
             Focus::GitHub => self.active().pull_requests.len(),
             _ => self.active().status.unstaged.len(),
@@ -893,6 +1156,8 @@ impl App {
             Focus::Staged => self.selected_staged = clamped,
             Focus::Graph => self.selected_commit = clamped,
             Focus::Branches => self.selected_branch = clamped,
+            Focus::Stashes => self.selected_stash = clamped,
+            Focus::Worktrees => self.selected_worktree = clamped,
             Focus::GitHub => self.selected_github = clamped,
             _ => self.selected_change = clamped,
         }
@@ -911,6 +1176,12 @@ impl App {
         self.selected_branch = self
             .selected_branch
             .min(self.active().branches.len().saturating_sub(1));
+        self.selected_stash = self
+            .selected_stash
+            .min(self.active().stashes.len().saturating_sub(1));
+        self.selected_worktree = self
+            .selected_worktree
+            .min(self.active().worktrees.len().saturating_sub(1));
     }
 
     fn report_error(&mut self, error: anyhow::Error) {

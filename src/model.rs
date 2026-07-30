@@ -79,6 +79,21 @@ pub struct Remote {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stash {
+    pub reference: String,
+    pub subject: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worktree {
+    pub path: PathBuf,
+    pub head: String,
+    pub branch: Option<String>,
+    pub locked: bool,
+    pub prunable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequest {
     pub number: u64,
     pub title: String,

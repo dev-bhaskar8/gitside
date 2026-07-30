@@ -63,13 +63,17 @@ Run `sourcepane --help` for command-line options.
 | `f` | Fetch |
 | `p` | Push |
 | `l` | Pull |
+| `s` / `z` | Create a stash / open the stash list |
 | `r` | Refresh |
 | `g` | Focus graph |
 | `b` | Focus branches |
 | `n` / `x` | Create/delete a branch in the Branches view |
 | `m` / `R` | Merge/rebase the selected branch |
+| `w` / `W` | Add a worktree from Branches / open the Worktrees view |
 | `y` / `v` / `t` | Cherry-pick/revert/tag a selected commit |
 | `h` | Focus GitHub |
+| `i` / `o` | Switch PR/issues / open the selected item in a browser |
+| `C` / `K` | Check out a selected PR / view its checks |
 | `?` | Toggle help |
 | `q` | Quit |
 
