@@ -31,6 +31,13 @@ cargo build
 cargo run -- /path/to/repository
 ```
 
+Initialize or clone and immediately open a repository:
+
+```sh
+sourcepane init ./new-project
+sourcepane clone https://github.com/owner/project.git
+```
+
 Install the current checkout locally:
 
 ```sh
@@ -59,6 +66,9 @@ Run `sourcepane --help` for command-line options.
 | `r` | Refresh |
 | `g` | Focus graph |
 | `b` | Focus branches |
+| `n` / `x` | Create/delete a branch in the Branches view |
+| `m` / `R` | Merge/rebase the selected branch |
+| `y` / `v` / `t` | Cherry-pick/revert/tag a selected commit |
 | `h` | Focus GitHub |
 | `?` | Toggle help |
 | `q` | Quit |
@@ -76,7 +86,8 @@ The default configuration file is:
 - Windows: `%APPDATA%\sourcepane\config.toml`
 
 See [Configuration](docs/configuration.md) and
-[Architecture](docs/architecture.md).
+[Architecture](docs/architecture.md). Platform-specific behavior is documented
+in [Platform support](docs/platforms.md).
 
 ## Project layout
 
@@ -98,3 +109,6 @@ cargo test
 The repository intentionally has no configured remote. Publishing or linking it
 to a hosting provider is outside the local development workflow.
 
+## License
+
+Sourcepane is available under the MIT License.

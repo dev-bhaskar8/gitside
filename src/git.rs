@@ -294,6 +294,41 @@ impl GitRepo {
         Ok(())
     }
 
+    pub async fn create_branch(&self, name: &str) -> Result<()> {
+        self.command(["switch", "--create", name], None).await?;
+        Ok(())
+    }
+
+    pub async fn delete_branch(&self, name: &str) -> Result<()> {
+        self.command(["branch", "--delete", name], None).await?;
+        Ok(())
+    }
+
+    pub async fn merge(&self, branch: &str) -> Result<()> {
+        self.command(["merge", branch], None).await?;
+        Ok(())
+    }
+
+    pub async fn rebase(&self, branch: &str) -> Result<()> {
+        self.command(["rebase", branch], None).await?;
+        Ok(())
+    }
+
+    pub async fn cherry_pick(&self, oid: &str) -> Result<()> {
+        self.command(["cherry-pick", oid], None).await?;
+        Ok(())
+    }
+
+    pub async fn revert(&self, oid: &str) -> Result<()> {
+        self.command(["revert", "--no-edit", oid], None).await?;
+        Ok(())
+    }
+
+    pub async fn create_tag(&self, name: &str, oid: &str) -> Result<()> {
+        self.command(["tag", name, oid], None).await?;
+        Ok(())
+    }
+
     pub async fn fetch(&self) -> Result<()> {
         self.command(["fetch", "--all", "--prune"], None).await?;
         Ok(())
@@ -600,6 +635,23 @@ mod tests {
         let history = repo.history(10).await.unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].subject, "Initial test commit");
+
+        let original_branch = repo.status().await.unwrap().branch.head.unwrap();
+        repo.create_branch("feature/test").await.unwrap();
+        assert_eq!(
+            repo.status().await.unwrap().branch.head.as_deref(),
+            Some("feature/test")
+        );
+        repo.create_tag("test-v1", &history[0].oid).await.unwrap();
+        repo.checkout(&original_branch).await.unwrap();
+        repo.delete_branch("feature/test").await.unwrap();
+        assert!(
+            repo.branches()
+                .await
+                .unwrap()
+                .iter()
+                .all(|branch| branch.name != "feature/test")
+        );
 
         fs::write(directory.path().join("hello.txt"), "hello\nworld\n").unwrap();
         let status = repo.status().await.unwrap();

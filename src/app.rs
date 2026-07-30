@@ -74,11 +74,25 @@ pub enum Overlay {
         title: String,
         body: String,
     },
+    Prompt {
+        title: String,
+        label: String,
+        value: String,
+        action: PromptAction,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
     Discard { path: PathBuf, untracked: bool },
+    DeleteBranch { name: String },
+    Rebase { branch: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum PromptAction {
+    CreateBranch,
+    CreateTag { oid: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,6 +277,31 @@ impl App {
             KeyCode::Char('l') => self.run_remote("Pulling", RemoteAction::Pull).await,
             KeyCode::Char('p') => self.run_remote("Pushing", RemoteAction::Push).await,
             KeyCode::Char('s') => self.run_stash().await,
+            KeyCode::Char('n') if self.focus == Focus::Branches => {
+                self.overlay = Some(Overlay::Prompt {
+                    title: "Create branch".into(),
+                    label: "Branch name".into(),
+                    value: String::new(),
+                    action: PromptAction::CreateBranch,
+                });
+            }
+            KeyCode::Char('x') if self.focus == Focus::Branches => self.request_delete_branch(),
+            KeyCode::Char('m') if self.focus == Focus::Branches => self.merge_selected().await,
+            KeyCode::Char('R') if self.focus == Focus::Branches => self.request_rebase(),
+            KeyCode::Char('y') if self.focus == Focus::Graph => self.cherry_pick_selected().await,
+            KeyCode::Char('v') if self.focus == Focus::Graph => self.revert_selected().await,
+            KeyCode::Char('t') if self.focus == Focus::Graph => {
+                if let Some(commit) = self.active().history.get(self.selected_commit) {
+                    self.overlay = Some(Overlay::Prompt {
+                        title: "Create tag".into(),
+                        label: "Tag name".into(),
+                        value: String::new(),
+                        action: PromptAction::CreateTag {
+                            oid: commit.oid.clone(),
+                        },
+                    });
+                }
+            }
             KeyCode::Char('e') => {
                 if self.editor_change().is_some() {
                     return EventOutcome::OpenEditor;
@@ -304,6 +343,27 @@ impl App {
                     self.execute_confirmed(action).await;
                 }
                 KeyCode::Char('n') | KeyCode::Esc => self.overlay = None,
+                _ => {}
+            },
+            Overlay::Prompt { action, .. } => match key.code {
+                KeyCode::Esc => self.overlay = None,
+                KeyCode::Backspace => {
+                    if let Some(Overlay::Prompt { value, .. }) = &mut self.overlay {
+                        value.pop();
+                    }
+                }
+                KeyCode::Enter => {
+                    let value = match self.overlay.take() {
+                        Some(Overlay::Prompt { value, .. }) => value,
+                        _ => String::new(),
+                    };
+                    self.execute_prompt(action, value).await;
+                }
+                KeyCode::Char(character) => {
+                    if let Some(Overlay::Prompt { value, .. }) = &mut self.overlay {
+                        value.push(character);
+                    }
+                }
                 _ => {}
             },
             _ => {
@@ -517,6 +577,103 @@ impl App {
             .await;
     }
 
+    fn request_delete_branch(&mut self) {
+        let Some(branch) = self.active().branches.get(self.selected_branch) else {
+            return;
+        };
+        if branch.current || branch.remote {
+            self.status_line = if branch.current {
+                "The current branch cannot be deleted".into()
+            } else {
+                "Delete remote branches with an explicit remote push".into()
+            };
+            return;
+        }
+        self.overlay = Some(Overlay::Confirm {
+            prompt: format!(
+                "Delete local branch {}?\nGit will refuse if it is not merged. [y/N]",
+                branch.name
+            ),
+            action: ConfirmAction::DeleteBranch {
+                name: branch.name.clone(),
+            },
+        });
+    }
+
+    async fn merge_selected(&mut self) {
+        let Some(branch) = self.active().branches.get(self.selected_branch).cloned() else {
+            return;
+        };
+        if branch.current {
+            self.status_line = "Select another branch to merge into the current branch".into();
+            return;
+        }
+        let repo = self.active().repo.clone();
+        let result = repo.merge(&branch.name).await;
+        self.finish_action(result, &format!("Merged {}", branch.name))
+            .await;
+    }
+
+    fn request_rebase(&mut self) {
+        let Some(branch) = self.active().branches.get(self.selected_branch) else {
+            return;
+        };
+        if branch.current {
+            self.status_line = "Select the branch to rebase the current branch onto".into();
+            return;
+        }
+        self.overlay = Some(Overlay::Confirm {
+            prompt: format!(
+                "Rebase the current branch onto {}?\nThis rewrites local commits. [y/N]",
+                branch.name
+            ),
+            action: ConfirmAction::Rebase {
+                branch: branch.name.clone(),
+            },
+        });
+    }
+
+    async fn cherry_pick_selected(&mut self) {
+        let Some(commit) = self.active().history.get(self.selected_commit).cloned() else {
+            return;
+        };
+        let repo = self.active().repo.clone();
+        let result = repo.cherry_pick(&commit.oid).await;
+        self.finish_action(result, &format!("Cherry-picked {}", short_oid(&commit.oid)))
+            .await;
+    }
+
+    async fn revert_selected(&mut self) {
+        let Some(commit) = self.active().history.get(self.selected_commit).cloned() else {
+            return;
+        };
+        let repo = self.active().repo.clone();
+        let result = repo.revert(&commit.oid).await;
+        self.finish_action(result, &format!("Reverted {}", short_oid(&commit.oid)))
+            .await;
+    }
+
+    async fn execute_prompt(&mut self, action: PromptAction, value: String) {
+        let value = value.trim();
+        if value.is_empty() {
+            self.status_line = "A name is required".into();
+            return;
+        }
+        let repo = self.active().repo.clone();
+        match action {
+            PromptAction::CreateBranch => {
+                let result = repo.create_branch(value).await;
+                self.finish_action(result, &format!("Created branch {value}"))
+                    .await;
+            }
+            PromptAction::CreateTag { oid } => {
+                let result = repo.create_tag(value, &oid).await;
+                self.finish_action(result, &format!("Created tag {value}"))
+                    .await;
+            }
+        }
+    }
+
     fn request_discard(&mut self) {
         let Some(change) = self.selected_change().cloned() else {
             return;
@@ -546,6 +703,18 @@ impl App {
                 let repo = self.active().repo.clone();
                 let result = repo.discard(&path, untracked).await;
                 self.finish_action(result, "Discarded change").await;
+            }
+            ConfirmAction::DeleteBranch { name } => {
+                let repo = self.active().repo.clone();
+                let result = repo.delete_branch(&name).await;
+                self.finish_action(result, &format!("Deleted branch {name}"))
+                    .await;
+            }
+            ConfirmAction::Rebase { branch } => {
+                let repo = self.active().repo.clone();
+                let result = repo.rebase(&branch).await;
+                self.finish_action(result, &format!("Rebased onto {branch}"))
+                    .await;
             }
         }
     }

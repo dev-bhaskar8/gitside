@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum, Serialize, Deserialize, PartialEq, Eq)]
@@ -19,6 +19,9 @@ pub enum LayoutPreference {
 #[derive(Debug, Parser)]
 #[command(name = "sourcepane", version, about)]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<CliCommand>,
+
     /// Repository paths. The current directory is used when omitted.
     #[arg(value_name = "PATH")]
     pub paths: Vec<PathBuf>,
@@ -46,6 +49,20 @@ pub struct Cli {
     /// Logging verbosity.
     #[arg(long, default_value = "warn")]
     pub log_level: String,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum CliCommand {
+    /// Initialize a Git repository and open it.
+    Init {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Clone a repository and open the new checkout.
+    Clone {
+        url: String,
+        destination: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

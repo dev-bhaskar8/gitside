@@ -559,13 +559,25 @@ fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Ove
     frame.render_widget(Clear, popup);
     let (title, body, border) = match overlay {
         Overlay::Help => (
-            " Help ",
-            "Navigation\n  j/k or arrows  Move\n  Tab            Next panel\n  Enter          Open/activate\n\nChanges\n  Space          Stage/unstage\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External editor\n\nRepository\n  c              Commit message\n  Ctrl+Enter     Commit\n  f/l/p          Fetch/pull/push\n  s              Stash\n  r              Refresh\n\nViews\n  g Graph  b Branches  h GitHub  i PR/issue\n\nPress Esc, Enter, or ? to close."
+            " Help ".to_owned(),
+            "Navigation\n  j/k or arrows  Move\n  Tab            Next panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External editor\n\nRepository\n  c              Commit message\n  Ctrl+Enter     Commit\n  f/l/p          Fetch/pull/push\n  s              Stash\n  r              Refresh\n\nBranches\n  n/x            Create/delete\n  m/R            Merge/rebase\n\nGraph\n  y/v/t          Cherry-pick/revert/tag\n\nViews\n  g Graph  b Branches  h GitHub  i PR/issue\n\nPress Esc, Enter, or ? to close."
                 .to_owned(),
             BLUE,
         ),
-        Overlay::Confirm { prompt, .. } => (" Confirm ", prompt, ORANGE),
-        Overlay::Message { title, body } => (" Message ", format!("{title}\n\n{body}"), RED),
+        Overlay::Confirm { prompt, .. } => (" Confirm ".to_owned(), prompt, ORANGE),
+        Overlay::Message { title, body } => {
+            (" Message ".to_owned(), format!("{title}\n\n{body}"), RED)
+        }
+        Overlay::Prompt {
+            title,
+            label,
+            value,
+            ..
+        } => (
+            format!(" {title} "),
+            format!("{label}\n\n{value}█\n\nEnter to confirm · Esc to cancel"),
+            BLUE,
+        ),
     };
     frame.render_widget(
         Paragraph::new(body).wrap(Wrap { trim: false }).block(

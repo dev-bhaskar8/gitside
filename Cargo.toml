@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 description = "A VS Code-inspired source control panel for the terminal"
 license = "MIT"
-repository = ""
 rust-version = "1.85"
 
 [[bin]]
