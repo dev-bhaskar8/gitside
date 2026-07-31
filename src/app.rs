@@ -419,9 +419,11 @@ impl App {
                     action: PromptAction::CreateBranch,
                 });
             }
-            KeyCode::Char('x') if self.focus == Focus::Branches => self.request_delete_branch(),
+            KeyCode::Char('x') if self.focus == Focus::Branches => {
+                self.request_delete_branch().await
+            }
             KeyCode::Char('m') if self.focus == Focus::Branches => self.merge_selected().await,
-            KeyCode::Char('R') if self.focus == Focus::Branches => self.request_rebase(),
+            KeyCode::Char('R') if self.focus == Focus::Branches => self.request_rebase().await,
             KeyCode::Char('y') if self.focus == Focus::Graph => self.cherry_pick_selected().await,
             KeyCode::Char('v') if self.focus == Focus::Graph => self.revert_selected().await,
             KeyCode::Char('t') if self.focus == Focus::Graph => {
@@ -443,7 +445,7 @@ impl App {
             }
             KeyCode::Char(']') => self.switch_repo(1).await,
             KeyCode::Char('[') => self.switch_repo(-1).await,
-            KeyCode::Char('d') => self.request_discard(),
+            KeyCode::Char('d') => self.request_discard().await,
             KeyCode::Char('i') if self.focus == Focus::GitHub => {
                 self.github_show_issues = !self.github_show_issues;
                 self.selected_github = 0;
@@ -463,8 +465,10 @@ impl App {
             KeyCode::Char('P') if self.focus == Focus::Stashes => {
                 self.apply_selected_stash(true).await
             }
-            KeyCode::Char('X') if self.focus == Focus::Stashes => self.request_drop_stash(),
-            KeyCode::Char('X') if self.focus == Focus::Worktrees => self.request_remove_worktree(),
+            KeyCode::Char('X') if self.focus == Focus::Stashes => self.request_drop_stash().await,
+            KeyCode::Char('X') if self.focus == Focus::Worktrees => {
+                self.request_remove_worktree().await
+            }
             KeyCode::Tab => self.next_focus(false).await,
             KeyCode::BackTab => self.next_focus(true).await,
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
@@ -837,22 +841,21 @@ impl App {
         .await;
     }
 
-    fn request_drop_stash(&mut self) {
+    async fn request_drop_stash(&mut self) {
         let Some(stash) = self.active().stashes.get(self.selected_stash) else {
             return;
         };
-        self.overlay = Some(Overlay::Confirm {
-            prompt: format!(
-                "Permanently drop {} ({})? [y/N]",
-                stash.reference, stash.subject
-            ),
-            action: ConfirmAction::DropStash {
-                reference: stash.reference.clone(),
-            },
-        });
+        let prompt = format!(
+            "Permanently drop {} ({})? [y/N]",
+            stash.reference, stash.subject
+        );
+        let action = ConfirmAction::DropStash {
+            reference: stash.reference.clone(),
+        };
+        self.confirm_or_execute(prompt, action).await;
     }
 
-    fn request_remove_worktree(&mut self) {
+    async fn request_remove_worktree(&mut self) {
         let Some(worktree) = self.active().worktrees.get(self.selected_worktree) else {
             return;
         };
@@ -860,15 +863,14 @@ impl App {
             self.status_line = "The active worktree cannot be removed".into();
             return;
         }
-        self.overlay = Some(Overlay::Confirm {
-            prompt: format!(
-                "Remove linked worktree {}?\nGit will refuse if it has changes. [y/N]",
-                worktree.path.display()
-            ),
-            action: ConfirmAction::RemoveWorktree {
-                path: worktree.path.clone(),
-            },
-        });
+        let prompt = format!(
+            "Remove linked worktree {}?\nGit will refuse if it has changes. [y/N]",
+            worktree.path.display()
+        );
+        let action = ConfirmAction::RemoveWorktree {
+            path: worktree.path.clone(),
+        };
+        self.confirm_or_execute(prompt, action).await;
     }
 
     async fn checkout_selected(&mut self) {
@@ -885,7 +887,7 @@ impl App {
             .await;
     }
 
-    fn request_delete_branch(&mut self) {
+    async fn request_delete_branch(&mut self) {
         let Some(branch) = self.active().branches.get(self.selected_branch) else {
             return;
         };
@@ -897,15 +899,14 @@ impl App {
             };
             return;
         }
-        self.overlay = Some(Overlay::Confirm {
-            prompt: format!(
-                "Delete local branch {}?\nGit will refuse if it is not merged. [y/N]",
-                branch.name
-            ),
-            action: ConfirmAction::DeleteBranch {
-                name: branch.name.clone(),
-            },
-        });
+        let prompt = format!(
+            "Delete local branch {}?\nGit will refuse if it is not merged. [y/N]",
+            branch.name
+        );
+        let action = ConfirmAction::DeleteBranch {
+            name: branch.name.clone(),
+        };
+        self.confirm_or_execute(prompt, action).await;
     }
 
     async fn merge_selected(&mut self) {
@@ -922,7 +923,7 @@ impl App {
             .await;
     }
 
-    fn request_rebase(&mut self) {
+    async fn request_rebase(&mut self) {
         let Some(branch) = self.active().branches.get(self.selected_branch) else {
             return;
         };
@@ -930,15 +931,14 @@ impl App {
             self.status_line = "Select the branch to rebase the current branch onto".into();
             return;
         }
-        self.overlay = Some(Overlay::Confirm {
-            prompt: format!(
-                "Rebase the current branch onto {}?\nThis rewrites local commits. [y/N]",
-                branch.name
-            ),
-            action: ConfirmAction::Rebase {
-                branch: branch.name.clone(),
-            },
-        });
+        let prompt = format!(
+            "Rebase the current branch onto {}?\nThis rewrites local commits. [y/N]",
+            branch.name
+        );
+        let action = ConfirmAction::Rebase {
+            branch: branch.name.clone(),
+        };
+        self.confirm_or_execute(prompt, action).await;
     }
 
     async fn cherry_pick_selected(&mut self) {
@@ -988,7 +988,7 @@ impl App {
         }
     }
 
-    fn request_discard(&mut self) {
+    async fn request_discard(&mut self) {
         let Some(change) = self.selected_change().cloned() else {
             return;
         };
@@ -1000,14 +1000,18 @@ impl App {
             path: change.path.clone(),
             untracked: matches!(change.kind, crate::model::ChangeKind::Untracked),
         };
+        let prompt = format!(
+            "Discard all working-tree changes in {}?\nThis cannot be undone. [y/N]",
+            change.path.display()
+        );
+        self.confirm_or_execute(prompt, action).await;
+    }
+
+    async fn confirm_or_execute(&mut self, prompt: String, action: ConfirmAction) {
         if self.settings.confirm_destructive {
-            self.overlay = Some(Overlay::Confirm {
-                prompt: format!(
-                    "Discard all working-tree changes in {}?\nThis cannot be undone. [y/N]",
-                    change.path.display()
-                ),
-                action,
-            });
+            self.overlay = Some(Overlay::Confirm { prompt, action });
+        } else {
+            self.execute_confirmed(action).await;
         }
     }
 
@@ -1524,6 +1528,8 @@ fn hunk_line_offset(diff: &str, selected_hunk: usize) -> u16 {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use clap::Parser;
 
@@ -1605,5 +1611,58 @@ mod tests {
 
         assert!(app.active().history.len() >= 4);
         assert_eq!(app.active().history_limit, 4);
+    }
+
+    #[tokio::test]
+    async fn disabling_confirmations_executes_destructive_actions_immediately() {
+        let directory = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "Sourcepane Test"],
+            vec!["config", "user.email", "sourcepane@example.invalid"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(directory.path())
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            );
+        }
+        let file = directory.path().join("tracked.txt");
+        fs::write(&file, "original\n").unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "tracked.txt"])
+                .current_dir(directory.path())
+                .status()
+                .await
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["commit", "-qm", "initial"])
+                .current_dir(directory.path())
+                .status()
+                .await
+                .unwrap()
+                .success()
+        );
+        fs::write(&file, "modified\n").unwrap();
+
+        let cli = Cli::try_parse_from(["sourcepane", directory.path().to_str().unwrap()]).unwrap();
+        let settings = Settings {
+            confirm_destructive: false,
+            ..Settings::default()
+        };
+        let mut app = App::new(cli, settings).await.unwrap();
+        app.request_discard().await;
+
+        assert_eq!(fs::read_to_string(file).unwrap(), "original\n");
+        assert!(app.overlay.is_none());
+        assert!(app.active().status.unstaged.is_empty());
     }
 }

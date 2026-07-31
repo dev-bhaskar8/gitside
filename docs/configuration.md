@@ -24,6 +24,10 @@ deleted = "red"
 unavailable. With a watcher active, changes are coalesced promptly and a
 30-second safety poll protects against dropped platform events.
 
+`confirm_destructive = true` asks before discarding changes, deleting branches,
+dropping stashes, removing worktrees, or starting a rebase. Setting it to
+`false` performs those requested actions immediately.
+
 Editor placeholders are passed as individual process arguments:
 
 - `{path}`: working-tree path
