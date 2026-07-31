@@ -399,6 +399,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "gitside"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "dirs",
+ "futures",
+ "notify",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "unicode-width 0.2.0",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -887,27 +908,6 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
-
-[[package]]
-name = "sourcepane"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm",
- "dirs",
- "futures",
- "notify",
- "ratatui",
- "serde",
- "serde_json",
- "shell-words",
- "tempfile",
- "thiserror",
- "tokio",
- "toml",
- "unicode-width 0.2.0",
-]
 
 [[package]]
 name = "static_assertions"

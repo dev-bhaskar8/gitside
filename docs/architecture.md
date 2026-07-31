@@ -1,6 +1,6 @@
 # Architecture
 
-Sourcepane is a presentation and orchestration layer over the command-line tools
+Gitside is a presentation and orchestration layer over the command-line tools
 developers already trust. It never implements a competing Git object database.
 
 ## Data flow
@@ -16,7 +16,7 @@ developers already trust. It never implements a competing Git object database.
    mouse hit regions for the next event.
 
 No repository-provided string is interpolated into a shell command. Credentials
-are inherited by child processes and never copied into Sourcepane state or logs.
+are inherited by child processes and never copied into Gitside state or logs.
 
 ## Responsive model
 

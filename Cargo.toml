@@ -1,5 +1,5 @@
 [package]
-name = "sourcepane"
+name = "gitside"
 version = "0.1.0"
 edition = "2024"
 description = "A VS Code-inspired source control panel for the terminal"
@@ -7,7 +7,7 @@ license = "MIT"
 rust-version = "1.85"
 
 [[bin]]
-name = "sourcepane"
+name = "gitside"
 path = "src/main.rs"
 
 [dependencies]

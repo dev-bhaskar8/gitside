@@ -2203,7 +2203,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_message_history_restores_the_users_draft() {
-        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.commit_message = "draft message".into();
 
@@ -2216,7 +2216,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_actions_are_queued_without_blocking_input() {
-        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
 
         app.run_remote("Fetching", RemoteAction::Fetch);
@@ -2229,7 +2229,7 @@ mod tests {
 
     #[tokio::test]
     async fn manual_refresh_is_queued_and_applied_without_blocking_input() {
-        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
 
         app.queue_refresh(true);
@@ -2251,7 +2251,7 @@ mod tests {
 
     #[tokio::test]
     async fn graph_boundary_queues_and_applies_another_history_page() {
-        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let settings = Settings {
             graph_page_size: 2,
             ..Settings::default()
@@ -2281,8 +2281,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         for args in [
             vec!["init", "-q"],
-            vec!["config", "user.name", "Sourcepane Test"],
-            vec!["config", "user.email", "sourcepane@example.invalid"],
+            vec!["config", "user.name", "Gitside Test"],
+            vec!["config", "user.email", "gitside@example.invalid"],
         ] {
             assert!(
                 Command::new("git")
@@ -2316,7 +2316,7 @@ mod tests {
         );
         fs::write(&file, "modified\n").unwrap();
 
-        let cli = Cli::try_parse_from(["sourcepane", directory.path().to_str().unwrap()]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", directory.path().to_str().unwrap()]).unwrap();
         let settings = Settings {
             confirm_destructive: false,
             ..Settings::default()
@@ -2331,7 +2331,7 @@ mod tests {
 
     #[tokio::test]
     async fn slash_search_targets_only_the_focused_view_and_repeats() {
-        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.focus = Focus::Changes;
         app.active_mut().status.conflicts.clear();

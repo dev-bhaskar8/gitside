@@ -89,12 +89,7 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let title = if area.width < 58 {
         format!(" {}  {}", active.repo.name(), branch)
     } else {
-        format!(
-            " Sourcepane  │  {}  │  {}{}",
-            active.repo.name(),
-            branch,
-            sync
-        )
+        format!(" Gitside  │  {}  │  {}{}", active.repo.name(), branch, sync)
     };
     frame.render_widget(
         Paragraph::new(title)
@@ -1197,7 +1192,7 @@ mod tests {
 
     #[tokio::test]
     async fn clicking_empty_change_panel_space_moves_focus_from_commit() {
-        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.focus = Focus::Commit;
         let mut terminal = Terminal::new(TestBackend::new(50, 40)).unwrap();
@@ -1240,7 +1235,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_staged_tab_stop_remains_visibly_focused_in_compact_layout() {
-        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         assert!(app.active().status.staged.is_empty());
         app.focus = Focus::Staged;
@@ -1266,7 +1261,7 @@ mod tests {
 
     #[tokio::test]
     async fn narrow_stash_panel_wraps_actions_inside_the_border() {
-        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.focus = Focus::Stashes;
         let mut terminal = Terminal::new(TestBackend::new(24, 40)).unwrap();
@@ -1302,7 +1297,7 @@ mod tests {
 
     #[tokio::test]
     async fn outlined_remote_buttons_fit_supported_widths() {
-        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.active_mut().status.branch.upstream = Some("origin/main".into());
 
@@ -1364,7 +1359,7 @@ mod tests {
 
     #[tokio::test]
     async fn existing_push_control_adapts_to_publish_and_sync_states() {
-        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         let mut terminal = Terminal::new(TestBackend::new(50, 20)).unwrap();
 
@@ -1413,7 +1408,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_overlay_stays_compact_in_a_tall_narrow_pane() {
-        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.overlay = Some(Overlay::Search {
             value: String::new(),
@@ -1438,7 +1433,7 @@ mod tests {
 
     #[tokio::test]
     async fn help_starts_with_context_and_scrolls_to_complete_reference() {
-        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.focus = Focus::Branches;
         app.overlay = Some(Overlay::Help {
@@ -1542,7 +1537,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_editor_opens_contextual_help_without_stealing_punctuation() {
-        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.focus = Focus::Commit;
 
@@ -1577,7 +1572,7 @@ mod tests {
 
     #[tokio::test]
     async fn conflicts_replace_changes_with_contextual_resolution_help() {
-        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.focus = Focus::Changes;
         app.active_mut().status.conflicts = vec![Change {

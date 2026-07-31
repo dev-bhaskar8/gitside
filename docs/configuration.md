@@ -1,6 +1,6 @@
 # Configuration
 
-Sourcepane loads TOML from the platform configuration directory or the path
+Gitside loads TOML from the platform configuration directory or the path
 passed to `--config`.
 
 ```toml
@@ -15,7 +15,7 @@ command = "code"
 args = ["--reuse-window", "--goto", "{path}"]
 ```
 
-Sourcepane inherits foreground and background colors from the terminal palette,
+Gitside inherits foreground and background colors from the terminal palette,
 so it intentionally has no separate theme configuration.
 
 `refresh_ms` controls polling when native filesystem notifications are
@@ -31,7 +31,7 @@ Editor placeholders are passed as individual process arguments:
 
 - `{path}`: working-tree path
 
-If no editor is configured, Sourcepane checks `VISUAL`, `EDITOR`, and common
+If no editor is configured, Gitside checks `VISUAL`, `EDITOR`, and common
 platform editors in that order.
 
 The `e` comparison action uses Git's own difftool configuration. For example:

@@ -1,6 +1,6 @@
-# Sourcepane
+# Gitside
 
-Sourcepane is a terminal-native source control panel inspired by Visual Studio
+Gitside is a terminal-native source control panel inspired by Visual Studio
 Code's Source Control view. It delegates repository operations to your installed
 `git` executable and, when available, GitHub workflows to the authenticated
 `gh` CLI.
@@ -11,7 +11,7 @@ implement SGR mouse events; every action also has a keyboard equivalent.
 
 ## Status
 
-Sourcepane is under active development. The first release focuses on a reliable
+Gitside is under active development. The first release focuses on a reliable
 local Git workflow: repository status, staging, committing, diffs, history,
 branches, stashes, remotes, and optional GitHub pull request and issue views.
 Working-tree changes are detected through native filesystem notifications,
@@ -24,7 +24,7 @@ pages automatically as the Graph selection approaches the current boundary.
 - Git 2.30 or newer
 - Optional: GitHub CLI (`gh`) for pull requests and issues
 
-Sourcepane does not store credentials. Git and GitHub CLI continue to use their
+Gitside does not store credentials. Git and GitHub CLI continue to use their
 existing credential helpers, SSH configuration, signing setup, and keychain.
 
 ## Build and run
@@ -37,15 +37,15 @@ cargo run -- /path/to/repository
 Initialize or clone and immediately open a repository:
 
 ```sh
-sourcepane init ./new-project
-sourcepane clone https://github.com/owner/project.git
+gitside init ./new-project
+gitside clone https://github.com/owner/project.git
 ```
 
 Install the current checkout locally:
 
 ```sh
 cargo install --path .
-sourcepane
+gitside
 ```
 
 Or use the local installer for the current platform:
@@ -63,7 +63,7 @@ arguments such as `--root`. Homebrew, Winget, and downloadable archives require
 a public release URL and checksums; those cannot be published while the project
 remains intentionally local-only.
 
-Run `sourcepane --help` for command-line options.
+Run `gitside --help` for command-line options.
 
 ## Controls
 
@@ -113,7 +113,7 @@ Run `sourcepane --help` for command-line options.
 While editing a commit message, Up and Down recall earlier commit subjects and
 return to the unfinished draft. Undo uses a mixed reset, so committed file
 changes remain available in the working tree. Force pushes always use
-`--force-with-lease`; Sourcepane never offers an unguarded force push.
+`--force-with-lease`; Gitside never offers an unguarded force push.
 
 Interactive line staging delegates to Git's patch selector. Use its `s` action
 to split a hunk and `e` to edit a patch when a change needs finer selection.
@@ -150,9 +150,9 @@ exist only in that repository state and disappear after the operation ends.
 
 The default configuration file is:
 
-- macOS: `~/Library/Application Support/sourcepane/config.toml`
-- Linux/WSL: `$XDG_CONFIG_HOME/sourcepane/config.toml`
-- Windows: `%APPDATA%\sourcepane\config.toml`
+- macOS: `~/Library/Application Support/gitside/config.toml`
+- Linux/WSL: `$XDG_CONFIG_HOME/gitside/config.toml`
+- Windows: `%APPDATA%\gitside\config.toml`
 
 See [Configuration](docs/configuration.md) and
 [Architecture](docs/architecture.md). Platform-specific behavior is documented
@@ -181,4 +181,4 @@ to a hosting provider is outside the local development workflow.
 
 ## License
 
-Sourcepane is available under the MIT License.
+Gitside is available under the MIT License.

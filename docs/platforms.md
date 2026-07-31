@@ -2,13 +2,13 @@
 
 ## macOS
 
-Builds natively on Apple Silicon and Intel Rust targets. Sourcepane works in
+Builds natively on Apple Silicon and Intel Rust targets. Gitside works in
 Ghostty, Terminal.app, iTerm2, and tmux. GUI editors such as VS Code can be
 configured with their command-line launchers.
 
 ## Linux and WSL
 
-Sourcepane uses the Git and GitHub CLI installed inside the active environment.
+Gitside uses the Git and GitHub CLI installed inside the active environment.
 A WSL checkout therefore uses WSL paths, Git configuration, SSH agent, and
 credentials. Mouse forwarding through tmux requires `set -g mouse on`.
 
@@ -22,6 +22,6 @@ such as `code.cmd` when automatic detection does not find one.
 ## Terminal requirements
 
 The terminal should support an alternate screen, raw keyboard input, ANSI
-colors, and SGR mouse reporting for pointer controls. Sourcepane remains fully
+colors, and SGR mouse reporting for pointer controls. Gitside remains fully
 usable from the keyboard when mouse reporting is unavailable or disabled with
 `--no-mouse`.

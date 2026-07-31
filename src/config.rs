@@ -17,7 +17,7 @@ pub enum LayoutPreference {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "sourcepane", version, about)]
+#[command(name = "gitside", version, about)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<CliCommand>,
@@ -122,7 +122,7 @@ impl Settings {
 }
 
 fn default_config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|path| path.join("sourcepane").join("config.toml"))
+    dirs::config_dir().map(|path| path.join("gitside").join("config.toml"))
 }
 
 #[cfg(test)]
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn removed_log_level_option_is_rejected() {
-        assert!(Cli::try_parse_from(["sourcepane", "--log-level", "debug"]).is_err());
+        assert!(Cli::try_parse_from(["gitside", "--log-level", "debug"]).is_err());
     }
 
     #[test]

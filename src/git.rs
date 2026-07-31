@@ -1019,8 +1019,8 @@ worktree /repo-feature\0HEAD def456\0branch refs/heads/feature\0locked reason\0\
         let directory = tempfile::tempdir().unwrap();
         for args in [
             vec!["init", "-q"],
-            vec!["config", "user.name", "Sourcepane Test"],
-            vec!["config", "user.email", "sourcepane@example.invalid"],
+            vec!["config", "user.name", "Gitside Test"],
+            vec!["config", "user.email", "gitside@example.invalid"],
         ] {
             let status = Command::new("git")
                 .args(args)
@@ -1131,7 +1131,7 @@ worktree /repo-feature\0HEAD def456\0branch refs/heads/feature\0locked reason\0\
             .await
             .unwrap();
         let body = String::from_utf8_lossy(&body.stdout);
-        assert!(body.contains("Signed-off-by: Sourcepane Test <sourcepane@example.invalid>"));
+        assert!(body.contains("Signed-off-by: Gitside Test <gitside@example.invalid>"));
     }
 
     #[tokio::test]
