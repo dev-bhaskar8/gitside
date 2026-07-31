@@ -107,7 +107,7 @@ pub async fn run(app: &mut App) -> Result<()> {
             }
             _ = tick.tick() => {
                 if !app.busy && app.overlay.is_none() && app.focus != crate::app::Focus::Commit {
-                    app.refresh().await;
+                    app.queue_refresh(false);
                     watch_dirty = false;
                 }
             }
@@ -122,7 +122,7 @@ pub async fn run(app: &mut App) -> Result<()> {
                     && app.overlay.is_none()
                     && app.focus != crate::app::Focus::Commit
                 {
-                    app.refresh().await;
+                    app.queue_refresh(false);
                     watch_dirty = false;
                     last_watch_refresh = time::Instant::now();
                 }

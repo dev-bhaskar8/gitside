@@ -168,6 +168,24 @@ enum BackgroundResult {
         requested_limit: usize,
         result: Result<Vec<Commit>>,
     },
+    Refresh {
+        repo_index: usize,
+        show_status: bool,
+        result: Box<Result<RepoSnapshot>>,
+    },
+    GitHub {
+        repo_index: usize,
+        result: Result<(Vec<PullRequest>, Vec<Issue>)>,
+    },
+}
+
+struct RepoSnapshot {
+    status: RepoStatus,
+    history: Vec<Commit>,
+    branches: Vec<Branch>,
+    remotes: Vec<Remote>,
+    stashes: Vec<Stash>,
+    worktrees: Vec<Worktree>,
 }
 
 impl App {
@@ -246,6 +264,7 @@ impl App {
         &self.repos[self.active_repo]
     }
 
+    #[cfg(test)]
     pub fn active_mut(&mut self) -> &mut RepoView {
         &mut self.repos[self.active_repo]
     }
@@ -275,30 +294,10 @@ impl App {
         };
         let repo = view.repo.clone();
         let history_limit = view.history_limit;
-        let result = async {
-            let status = repo.status().await?;
-            let history = repo.history(history_limit).await?;
-            let branches = repo.branches().await?;
-            let remotes = repo.remotes().await?;
-            let stashes = repo.stashes().await?;
-            let worktrees = repo.worktrees().await?;
-            Ok::<_, anyhow::Error>((status, history, branches, remotes, stashes, worktrees))
-        }
-        .await;
+        let result = load_repo_snapshot(repo, history_limit).await;
         match result {
-            Ok((status, history, branches, remotes, stashes, worktrees)) => {
-                if let Some(view) = self.repos.get_mut(repo_index) {
-                    view.status = status;
-                    view.history_exhausted = history.len() < history_limit;
-                    view.history = history;
-                    view.branches = branches;
-                    view.remotes = remotes;
-                    view.stashes = stashes;
-                    view.worktrees = worktrees;
-                }
-                if repo_index == self.active_repo {
-                    self.clamp_selections();
-                }
+            Ok(snapshot) => {
+                self.apply_snapshot(repo_index, history_limit, snapshot);
                 if show_status {
                     self.status_line = "Repository refreshed".into();
                 }
@@ -306,6 +305,42 @@ impl App {
             Err(error) => self.report_error(error),
         }
         self.busy = false;
+    }
+
+    pub fn queue_refresh(&mut self, show_status: bool) {
+        if self.background_task.is_some() {
+            return;
+        }
+        let repo_index = self.active_repo;
+        let view = self.active();
+        let repo = view.repo.clone();
+        let history_limit = view.history_limit;
+        self.busy = true;
+        if show_status {
+            self.status_line = "Refreshing…".into();
+        }
+        self.background_task = Some(tokio::spawn(async move {
+            BackgroundResult::Refresh {
+                repo_index,
+                show_status,
+                result: Box::new(load_repo_snapshot(repo, history_limit).await),
+            }
+        }));
+    }
+
+    fn apply_snapshot(&mut self, repo_index: usize, history_limit: usize, snapshot: RepoSnapshot) {
+        if let Some(view) = self.repos.get_mut(repo_index) {
+            view.status = snapshot.status;
+            view.history_exhausted = snapshot.history.len() < history_limit;
+            view.history = snapshot.history;
+            view.branches = snapshot.branches;
+            view.remotes = snapshot.remotes;
+            view.stashes = snapshot.stashes;
+            view.worktrees = snapshot.worktrees;
+        }
+        if repo_index == self.active_repo {
+            self.clamp_selections();
+        }
     }
 
     pub async fn poll_background(&mut self) -> bool {
@@ -347,6 +382,34 @@ impl App {
                         self.clamp_selections();
                     }
                     self.status_line = "Loaded more history".into();
+                }
+                Err(error) => self.report_error(error),
+            },
+            Ok(BackgroundResult::Refresh {
+                repo_index,
+                show_status,
+                result,
+            }) => match *result {
+                Ok(snapshot) => {
+                    let history_limit = self
+                        .repos
+                        .get(repo_index)
+                        .map(|view| view.history_limit)
+                        .unwrap_or(self.settings.graph_page_size);
+                    self.apply_snapshot(repo_index, history_limit, snapshot);
+                    if show_status {
+                        self.status_line = "Repository refreshed".into();
+                    }
+                }
+                Err(error) => self.report_error(error),
+            },
+            Ok(BackgroundResult::GitHub { repo_index, result }) => match result {
+                Ok((pull_requests, issues)) => {
+                    if let Some(view) = self.repos.get_mut(repo_index) {
+                        view.pull_requests = pull_requests;
+                        view.issues = issues;
+                    }
+                    self.status_line = "Loaded GitHub data".into();
                 }
                 Err(error) => self.report_error(error),
             },
@@ -396,7 +459,7 @@ impl App {
                     value: String::new(),
                 })
             }
-            KeyCode::Char('r') => self.refresh().await,
+            KeyCode::Char('r') => self.queue_refresh(true),
             KeyCode::Char('O') if self.conflicts_focused() => {
                 self.resolve_selected_conflict(ConflictChoice::Current)
                     .await
@@ -415,7 +478,7 @@ impl App {
             KeyCode::Char('b') => self.focus = Focus::Branches,
             KeyCode::Char('h') => {
                 self.focus = Focus::GitHub;
-                self.load_github().await;
+                self.load_github();
             }
             KeyCode::Char('a') => self.run_stage_all().await,
             KeyCode::Char('u') => self.run_unstage_all().await,
@@ -702,7 +765,7 @@ impl App {
                 self.focus = Focus::GitHub;
                 self.selected_github = index;
             }
-            UiAction::Refresh => self.refresh().await,
+            UiAction::Refresh => self.queue_refresh(true),
             UiAction::Fetch => self.run_remote("Fetching", RemoteAction::Fetch),
             UiAction::Pull => self.run_remote("Pulling", RemoteAction::Pull),
             UiAction::Push => self.run_contextual_push(),
@@ -1333,7 +1396,7 @@ impl App {
         }
     }
 
-    async fn load_github(&mut self) {
+    fn load_github(&mut self) {
         if !self.active().github_available {
             self.status_line = "GitHub CLI unavailable or repository is not authenticated".into();
             return;
@@ -1341,18 +1404,23 @@ impl App {
         if !self.active().pull_requests.is_empty() || !self.active().issues.is_empty() {
             return;
         }
-        self.status_line = "Loading GitHub…".into();
-        let github = GitHub::new(self.active().repo.root());
-        let (prs, issues) = tokio::join!(github.pull_requests(), github.issues());
-        match (prs, issues) {
-            (Ok(prs), Ok(issues)) => {
-                let active = self.active_mut();
-                active.pull_requests = prs;
-                active.issues = issues;
-                self.status_line = "GitHub data loaded".into();
-            }
-            (Err(error), _) | (_, Err(error)) => self.report_error(error),
+        if self.background_task.is_some() {
+            self.status_line = "Another Git operation is still running".into();
+            return;
         }
+        self.status_line = "Loading GitHub…".into();
+        self.busy = true;
+        let repo_index = self.active_repo;
+        let github = GitHub::new(self.active().repo.root());
+        self.background_task = Some(tokio::spawn(async move {
+            let result = async {
+                let (pull_requests, issues) =
+                    tokio::try_join!(github.pull_requests(), github.issues())?;
+                Ok((pull_requests, issues))
+            }
+            .await;
+            BackgroundResult::GitHub { repo_index, result }
+        }));
     }
 
     async fn open_github_preview(&mut self) {
@@ -1533,7 +1601,7 @@ impl App {
         };
         self.focus = ORDER[next];
         if self.focus == Focus::GitHub {
-            self.load_github().await;
+            self.load_github();
         }
     }
 
@@ -1733,6 +1801,25 @@ impl App {
     }
 }
 
+async fn load_repo_snapshot(repo: GitRepo, history_limit: usize) -> Result<RepoSnapshot> {
+    let (status, history, branches, remotes, stashes, worktrees) = tokio::try_join!(
+        repo.status(),
+        repo.history(history_limit),
+        repo.branches(),
+        repo.remotes(),
+        repo.stashes(),
+        repo.worktrees(),
+    )?;
+    Ok(RepoSnapshot {
+        status,
+        history,
+        branches,
+        remotes,
+        stashes,
+        worktrees,
+    })
+}
+
 #[derive(Debug, Clone)]
 enum RemoteAction {
     Fetch,
@@ -1866,6 +1953,28 @@ mod tests {
         assert!(app.background_task.is_some());
         assert_eq!(app.status_line, "Fetching…");
         app.background_task.take().unwrap().abort();
+    }
+
+    #[tokio::test]
+    async fn manual_refresh_is_queued_and_applied_without_blocking_input() {
+        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+
+        app.queue_refresh(true);
+
+        assert!(app.busy);
+        assert!(app.background_task.is_some());
+        assert_eq!(app.status_line, "Refreshing…");
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+        assert!(app.poll_background().await);
+        assert!(!app.busy);
+        assert_eq!(app.status_line, "Repository refreshed");
     }
 
     #[tokio::test]
