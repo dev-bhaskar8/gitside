@@ -86,6 +86,10 @@ one-line outlined buttons. Compact panes abbreviate their labels only when the
 full words cannot fit. The footer shows shortcuts for the currently focused
 panel instead of a fixed list of unexplained keys.
 
+Help opens with shortcuts for the currently focused panel, followed by the
+complete reference. Use `j`/`k`, arrows, Page Up/Down, Home/End, or the mouse
+wheel to scroll; the border shows the current position and remaining overflow.
+
 ## Configuration
 
 The default configuration file is:

@@ -35,6 +35,10 @@ widths the toolbar moves below the repository title and abbreviates labels only
 when necessary. Footer hints are derived from the focused panel and status text
 is truncated by terminal-cell width rather than UTF-8 byte length.
 
+The help overlay derives its first section from the active focus target and
+then presents the full shortcut reference. It owns an independent, clamped
+scroll position and renders both a scrollbar and textual overflow indicator.
+
 ## Process model
 
 Read commands capture stdout and stderr. Actions that may require an interactive

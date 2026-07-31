@@ -3,7 +3,10 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
+    },
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -820,13 +823,12 @@ fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Ove
         area,
     );
     frame.render_widget(Clear, popup);
+    if let Overlay::Help { scroll, .. } = overlay {
+        render_help_overlay(frame, app, popup, scroll);
+        return;
+    }
     let (title, body, border) = match overlay {
-        Overlay::Help => (
-            " Help ".to_owned(),
-            "Navigation\n  j/k or arrows  Move\n  Tab            Next panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External editor\n\nRepository\n  c              Commit message\n  Ctrl+Enter     Commit\n  f/l/p          Fetch/pull/push\n  s/z            Create/list stashes\n  W              Worktree list\n  r              Refresh\n\nBranches\n  n/x            Create/delete\n  m/R            Merge/rebase\n  w              Add worktree\n\nStashes\n  A/P/X          Apply/pop/drop\n\nGraph\n  y/v/t          Cherry-pick/revert/tag\n\nGitHub\n  Enter          View PR/issue\n  i/o            Switch type/open web\n  C/K            Checkout PR/view checks\n\nPress Esc, Enter, or ? to close."
-                .to_owned(),
-            BLUE,
-        ),
+        Overlay::Help { .. } => unreachable!("help overlays render separately"),
         Overlay::Confirm { prompt, .. } => (" Confirm ".to_owned(), prompt, ORANGE),
         Overlay::Message { title, body } => {
             (" Message ".to_owned(), format!("{title}\n\n{body}"), RED)
@@ -856,6 +858,160 @@ fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Ove
         rect: popup,
         action: UiAction::CloseOverlay,
     });
+}
+
+fn render_help_overlay(frame: &mut Frame<'_>, app: &mut App, popup: Rect, requested_scroll: u16) {
+    let block = Block::default()
+        .title(" Help ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BLUE))
+        .style(Style::default().bg(PANEL));
+    let inner = block.inner(popup);
+    let body = wrap_help_text(&help_text(app.focus), inner.width);
+    let line_count = body.lines().count();
+    let paragraph = Paragraph::new(body).block(block);
+    let max_scroll = line_count
+        .saturating_sub(inner.height as usize)
+        .min(u16::MAX as usize) as u16;
+    let scroll = requested_scroll.min(max_scroll);
+
+    frame.render_widget(paragraph.scroll((scroll, 0)), popup);
+
+    if max_scroll > 0 {
+        let first_line = usize::from(scroll) + 1;
+        let last_line = (usize::from(scroll) + inner.height as usize).min(line_count);
+        let position = format!(
+            " {}{} {first_line}–{last_line}/{line_count} {}{} ",
+            if scroll > 0 { "↑ " } else { "" },
+            if scroll > 0 { "more ·" } else { "" },
+            if scroll < max_scroll { "· more" } else { "" },
+            if scroll < max_scroll { " ↓" } else { "" },
+        );
+        let indicator_width = position.chars().count().min(popup.width as usize) as u16;
+        let indicator = Rect::new(
+            popup.right().saturating_sub(indicator_width + 2),
+            popup.bottom().saturating_sub(1),
+            indicator_width,
+            1,
+        );
+        frame.render_widget(
+            Paragraph::new(position)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(BLUE).bg(PANEL)),
+            indicator,
+        );
+
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .thumb_style(Style::default().fg(BLUE))
+            .track_style(muted_style())
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        let mut state = ScrollbarState::new(line_count)
+            .position(scroll as usize)
+            .viewport_content_length(inner.height as usize);
+        let scrollbar_area = popup.inner(Margin {
+            horizontal: 0,
+            vertical: 1,
+        });
+        frame.render_stateful_widget(scrollbar, scrollbar_area, &mut state);
+    }
+
+    if let Some(Overlay::Help {
+        scroll: live_scroll,
+        max_scroll: live_max_scroll,
+    }) = &mut app.overlay
+    {
+        *live_scroll = scroll;
+        *live_max_scroll = max_scroll;
+    }
+    app.hits.push(HitRegion {
+        rect: popup,
+        action: UiAction::CloseOverlay,
+    });
+}
+
+fn wrap_help_text(value: &str, width: u16) -> String {
+    let max_width = usize::from(width.max(1));
+    let mut output = Vec::new();
+    for line in value.split('\n') {
+        if line.is_empty() {
+            output.push(String::new());
+            continue;
+        }
+        let indent: String = line
+            .chars()
+            .take_while(|character| character.is_whitespace())
+            .take(max_width.saturating_sub(1))
+            .collect();
+        let mut remaining = line.to_owned();
+        while display_width(&remaining) > max_width {
+            let mut prefix_end = 0;
+            let mut prefix_width = 0;
+            let mut last_break = None;
+            for (index, character) in remaining.char_indices() {
+                let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+                if prefix_width + character_width > max_width {
+                    break;
+                }
+                prefix_width += character_width;
+                prefix_end = index + character.len_utf8();
+                if character.is_whitespace() && index > indent.len() {
+                    last_break = Some(index);
+                }
+            }
+            let break_at = last_break.unwrap_or(prefix_end);
+            output.push(remaining[..break_at].trim_end().to_owned());
+            let tail = remaining[break_at..].trim_start();
+            remaining = format!("{indent}{tail}");
+        }
+        output.push(remaining);
+    }
+    output.join("\n")
+}
+
+fn help_text(focus: Focus) -> String {
+    let (context_title, context) = match focus {
+        Focus::Commit => (
+            "Commit — current panel",
+            "  Type           Edit message\n  Ctrl+Enter     Commit\n  Esc            Leave message\n  Tab            Next panel",
+        ),
+        Focus::Changes => (
+            "Changes — current panel",
+            "  j/k or arrows  Move\n  Space          Stage file\n  Enter          Preview diff\n  a              Stage all\n  d              Discard\n  e              External editor",
+        ),
+        Focus::Staged => (
+            "Staged — current panel",
+            "  j/k or arrows  Move\n  Space          Unstage file\n  Enter          Preview diff\n  u              Unstage all\n  e              External editor",
+        ),
+        Focus::Graph => (
+            "Graph — current panel",
+            "  j/k or arrows  Move\n  Enter          View commit\n  y / v / t      Cherry-pick/revert/tag",
+        ),
+        Focus::Branches => (
+            "Branches — current panel",
+            "  j/k or arrows  Move\n  Enter          Switch branch\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree",
+        ),
+        Focus::Stashes => (
+            "Stashes — current panel",
+            "  j/k or arrows  Move\n  Enter          Preview stash\n  A / P / X      Apply/pop/drop",
+        ),
+        Focus::Worktrees => (
+            "Worktrees — current panel",
+            "  j/k or arrows  Move\n  X              Remove worktree",
+        ),
+        Focus::GitHub => (
+            "GitHub — current panel",
+            "  j/k or arrows  Move\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks",
+        ),
+        Focus::Preview => (
+            "Preview — current panel",
+            "  j/k or arrows  Select hunk\n  Space          Stage/unstage hunk\n  Esc            Close preview",
+        ),
+    };
+
+    format!(
+        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  ?              Open/close help\n  q              Quit\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External editor\n\nRepository\n  c              Commit message\n  Ctrl+Enter     Commit\n  f / l / p      Fetch/pull/push\n  s / z          Create/list stashes\n  W              Worktree list\n  r              Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, or ? to close."
+    )
 }
 
 fn change_line(change: &Change, width: u16) -> Line<'static> {
@@ -925,7 +1081,9 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 mod tests {
     use super::*;
     use clap::Parser;
-    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use ratatui::{Terminal, backend::TestBackend};
 
     use crate::config::{Cli, Settings};
@@ -1086,6 +1244,63 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn help_starts_with_context_and_scrolls_to_complete_reference() {
+        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Branches;
+        app.overlay = Some(Overlay::Help {
+            scroll: 0,
+            max_scroll: 0,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(50, 20)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let first_page: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(first_page.contains("Branches — current panel"));
+        assert!(first_page.contains("more"));
+        let Some(Overlay::Help { scroll, max_scroll }) = &app.overlay else {
+            panic!("help should remain open");
+        };
+        assert_eq!(*scroll, 0);
+        assert!(*max_scroll > 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE))
+            .await;
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let last_page: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(last_page.contains("Press Esc, Enter, or ? to close."));
+        let Some(Overlay::Help { scroll, max_scroll }) = &app.overlay else {
+            panic!("help should remain open");
+        };
+        assert_eq!(scroll, max_scroll);
+        let max_scroll = *max_scroll;
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 25,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        })
+        .await;
+        let Some(Overlay::Help { scroll, .. }) = &app.overlay else {
+            panic!("help should remain open");
+        };
+        assert_eq!(*scroll, max_scroll.saturating_sub(3));
+    }
+
     #[test]
     fn footer_hints_are_contextual_and_unicode_truncation_is_safe() {
         assert_eq!(
@@ -1099,5 +1314,9 @@ mod tests {
         assert!(!contextual_footer_hint(Focus::Changes, 40).contains("Tab"));
         assert_eq!(truncate_to_width("répo 🚀", 6), "répo ");
         assert_eq!(truncate_to_width("répo 🚀", 7), "répo 🚀");
+
+        let wrapped = wrap_help_text("  Space          Stage file", 25);
+        assert_eq!(wrapped, "  Space          Stage\n  file");
+        assert!(wrapped.lines().all(|line| display_width(line) <= 25));
     }
 }

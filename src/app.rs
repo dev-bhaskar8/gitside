@@ -69,7 +69,10 @@ pub struct Preview {
 
 #[derive(Debug, Clone)]
 pub enum Overlay {
-    Help,
+    Help {
+        scroll: u16,
+        max_scroll: u16,
+    },
     Confirm {
         prompt: String,
         action: ConfirmAction,
@@ -283,7 +286,7 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') => return EventOutcome::Quit,
-            KeyCode::Char('?') => self.overlay = Some(Overlay::Help),
+            KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('r') => self.refresh().await,
             KeyCode::Char('c') => self.focus = Focus::Commit,
             KeyCode::Char('g') => self.focus = Focus::Graph,
@@ -389,6 +392,27 @@ impl App {
 
     async fn handle_overlay_key(&mut self, key: KeyEvent, overlay: Overlay) -> EventOutcome {
         match overlay {
+            Overlay::Help {
+                mut scroll,
+                max_scroll,
+            } => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?') => {
+                        self.overlay = None;
+                        return EventOutcome::Continue;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => scroll = scroll.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        scroll = scroll.saturating_add(1).min(max_scroll)
+                    }
+                    KeyCode::PageUp => scroll = scroll.saturating_sub(10),
+                    KeyCode::PageDown => scroll = scroll.saturating_add(10).min(max_scroll),
+                    KeyCode::Home => scroll = 0,
+                    KeyCode::End => scroll = max_scroll,
+                    _ => {}
+                }
+                self.overlay = Some(Overlay::Help { scroll, max_scroll });
+            }
             Overlay::Confirm { action, .. } => match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
                     self.overlay = None;
@@ -428,6 +452,27 @@ impl App {
     }
 
     pub async fn handle_mouse(&mut self, event: MouseEvent) -> EventOutcome {
+        if let Some(Overlay::Help { scroll, max_scroll }) = &mut self.overlay {
+            match event.kind {
+                MouseEventKind::ScrollUp => *scroll = scroll.saturating_sub(3),
+                MouseEventKind::ScrollDown => *scroll = scroll.saturating_add(3).min(*max_scroll),
+                _ => {}
+            }
+            if matches!(
+                event.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            ) {
+                return EventOutcome::Continue;
+            }
+        } else if self.overlay.is_some()
+            && matches!(
+                event.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            )
+        {
+            return EventOutcome::Continue;
+        }
+
         match event.kind {
             MouseEventKind::ScrollUp => {
                 self.move_selection(-3);
@@ -508,7 +553,7 @@ impl App {
             UiAction::Commit => self.commit().await,
             UiAction::StageAll => self.run_stage_all().await,
             UiAction::UnstageAll => self.run_unstage_all().await,
-            UiAction::ToggleHelp => self.overlay = Some(Overlay::Help),
+            UiAction::ToggleHelp => self.open_help(),
             UiAction::CloseOverlay => self.overlay = None,
         }
     }
@@ -524,6 +569,13 @@ impl App {
             Focus::Preview => {}
             _ => {}
         }
+    }
+
+    fn open_help(&mut self) {
+        self.overlay = Some(Overlay::Help {
+            scroll: 0,
+            max_scroll: 0,
+        });
     }
 
     async fn open_change_preview(&mut self) {
