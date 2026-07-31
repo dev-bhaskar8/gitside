@@ -75,8 +75,8 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     }
 }
 
-fn header_height(width: u16) -> u16 {
-    if width < 75 { 5 } else { 4 }
+fn header_height(_width: u16) -> u16 {
+    3
 }
 
 fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -125,24 +125,18 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         UiAction::Push,
         UiAction::Refresh,
     ];
-    let padding = u16::from(full_labels);
     let gap = u16::from(area.width >= 15);
-    let widths = labels.map(|label| label.chars().count() as u16 + 2 + padding * 2);
+    let widths = labels.map(|label| label.chars().count() as u16 + 2);
     let total_width = widths.iter().sum::<u16>() + gap * 3;
     let mut left = area.right().saturating_sub(total_width);
     let button_y = if thin_toolbar { area.y + 1 } else { area.y };
     for (index, ((label, action), width)) in labels.into_iter().zip(actions).zip(widths).enumerate()
     {
-        let rect = Rect::new(left, button_y, width, 3);
+        let rect = Rect::new(left, button_y, width, 1);
         frame.render_widget(
-            Paragraph::new(label)
+            Paragraph::new(format!("[{label}]"))
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(TEXT).bg(PANEL))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(BLUE)),
-                ),
+                .style(Style::default().fg(BLUE).bg(PANEL)),
             rect,
         );
         app.hits.push(HitRegion { rect, action });
@@ -1071,14 +1065,14 @@ mod tests {
 
             assert_eq!(buttons.len(), 4, "width {width}");
             for button in &buttons {
-                assert_eq!(button.rect.height, 3, "width {width}");
+                assert_eq!(button.rect.height, 1, "width {width}");
                 assert!(button.rect.right() <= width, "width {width}");
                 let top_left = terminal
                     .backend()
                     .buffer()
                     .cell((button.rect.x, button.rect.y))
                     .unwrap();
-                assert_eq!(top_left.symbol(), "┌", "width {width}");
+                assert_eq!(top_left.symbol(), "[", "width {width}");
                 assert_eq!(top_left.bg, Color::Reset, "width {width}");
             }
             for (index, button) in buttons.iter().enumerate() {

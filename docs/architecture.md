@@ -30,10 +30,10 @@ are inherited by child processes and never copied into Sourcepane state or logs.
 The renderer recalculates geometry and hit regions for every frame, including
 tmux pane resize events.
 
-The header reserves enough vertical space for outlined remote-action buttons.
-At narrow widths the toolbar moves below the repository title and abbreviates
-labels only when necessary. Footer hints are derived from the focused panel and
-status text is truncated by terminal-cell width rather than UTF-8 byte length.
+The header uses compact one-line outlined remote-action controls. At narrow
+widths the toolbar moves below the repository title and abbreviates labels only
+when necessary. Footer hints are derived from the focused panel and status text
+is truncated by terminal-cell width rather than UTF-8 byte length.
 
 ## Process model
 
