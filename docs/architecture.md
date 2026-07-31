@@ -78,6 +78,12 @@ to searchable text owned by the focused view, selects the next matching model
 index, and is retained only so `N` can continue the search after the overlay
 closes.
 
+Advanced operations follow the same zero-clutter rule. Remote target selection,
+force-with-lease confirmation, undo confirmation, and diagnostics appear only
+when invoked. External comparisons and line staging temporarily leave the
+alternate screen and delegate to Git's configured difftool and patch selector,
+then restore the terminal and refresh the repository snapshot.
+
 Remote actions also use progressive disclosure. The existing push hit region
 selects publish, sync, or push from branch upstream/ahead/behind state, and its
 label changes in place. This adds the missing workflow without increasing the

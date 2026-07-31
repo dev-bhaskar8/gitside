@@ -65,10 +65,15 @@ Run `sourcepane --help` for command-line options.
 | `Ctrl+Shift+Enter` | Amend the previous commit |
 | `Ctrl+Alt+Enter` | Commit with a `Signed-off-by` trailer |
 | `Ctrl+Shift+Alt+Enter` | Amend with a `Signed-off-by` trailer |
-| `e` | Open selected file in configured editor |
+| `e` | Compare the selected old/new versions using Git's configured difftool |
+| `E` | Interactively stage or unstage selected lines |
+| `o` | Open the selected working file in the configured editor |
 | `f` | Fetch |
 | `p` | Push |
 | `l` | Pull |
+| `L` | Pull with rebase |
+| `P` / `T` | Push to / pull from a chosen remote and branch |
+| `F` | Confirm and force-push with lease |
 | `s` / `z` | Create a stash / open the stash list |
 | `r` | Refresh |
 | `g` | Focus graph |
@@ -82,10 +87,22 @@ Run `sourcepane --help` for command-line options.
 | `C` / `K` | Check out a selected PR / view its checks |
 | `O` / `I` / `B` | Resolve a conflicted file with current/incoming/both sides |
 | `C` / `A` | Continue/abort an in-progress Git operation |
+| `S` | Skip the current rebase, cherry-pick, or revert step |
+| `U` | Confirm and undo the last commit while keeping its changes |
+| `D` | Show session Git diagnostics |
 | `?` | Toggle help |
 | `F1` | Toggle help, including while editing a commit message |
 | `/` / `N` | Search the focused view / find the next match |
 | `q` | Quit |
+
+While editing a commit message, Up and Down recall earlier commit subjects and
+return to the unfinished draft. Undo uses a mixed reset, so committed file
+changes remain available in the working tree. Force pushes always use
+`--force-with-lease`; Sourcepane never offers an unguarded force push.
+
+Interactive line staging delegates to Git's patch selector. Use its `s` action
+to split a hunk and `e` to edit a patch when a change needs finer selection.
+The alternate screen is restored and repository state refreshed afterward.
 
 Single click selects, double click opens, the wheel scrolls, and toolbar buttons
 are clickable. Right click opens contextual actions. tmux must have

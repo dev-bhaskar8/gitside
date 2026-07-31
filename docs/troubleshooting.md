@@ -19,6 +19,5 @@ GitHub CLI.
 ## An action needs credentials or signing
 
 Git uses the same credential helpers, SSH agent, and pinentry configuration as
-the command line. Sourcepane surfaces stderr from failed actions in its output
-panel.
-
+the command line. Sourcepane records failed-action diagnostics for the session;
+press `D` to display them on demand.

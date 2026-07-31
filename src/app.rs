@@ -100,6 +100,8 @@ pub enum ConfirmAction {
     Rebase { branch: String },
     DropStash { reference: String },
     RemoveWorktree { path: PathBuf },
+    UndoLastCommit,
+    ForcePush { remote: String, branch: String },
 }
 
 #[derive(Debug, Clone)]
@@ -107,12 +109,16 @@ pub enum PromptAction {
     CreateBranch,
     CreateTag { oid: String },
     AddWorktree { branch: String },
+    PushTarget { remote: String, branch: String },
+    PullTarget { remote: String, branch: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventOutcome {
     Continue,
     Quit,
+    OpenDifftool,
+    InteractiveStage,
     OpenEditor,
 }
 
@@ -155,6 +161,8 @@ pub struct App {
     last_click: Option<(u16, u16, Instant)>,
     background_task: Option<JoinHandle<BackgroundResult>>,
     last_search: Option<String>,
+    commit_history_index: Option<usize>,
+    commit_history_draft: String,
 }
 
 enum BackgroundResult {
@@ -257,6 +265,8 @@ impl App {
             last_click: None,
             background_task: None,
             last_search: None,
+            commit_history_index: None,
+            commit_history_draft: String::new(),
         })
     }
 
@@ -435,14 +445,18 @@ impl App {
                 KeyCode::Esc => self.focus = Focus::Changes,
                 KeyCode::Backspace => {
                     self.commit_message.pop();
+                    self.commit_history_index = None;
                 }
                 KeyCode::Enter => self.commit_message.push('\n'),
+                KeyCode::Up => self.recall_commit_message(-1),
+                KeyCode::Down => self.recall_commit_message(1),
                 KeyCode::Char(character)
                     if !key
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
-                    self.commit_message.push(character)
+                    self.commit_message.push(character);
+                    self.commit_history_index = None;
                 }
                 KeyCode::Tab => self.next_focus(false).await,
                 KeyCode::BackTab => self.next_focus(true).await,
@@ -473,6 +487,7 @@ impl App {
             }
             KeyCode::Char('C') if self.operation_focused() => self.continue_operation().await,
             KeyCode::Char('A') if self.operation_focused() => self.abort_operation().await,
+            KeyCode::Char('S') if self.operation_focused() => self.skip_operation().await,
             KeyCode::Char('c') => self.focus = Focus::Commit,
             KeyCode::Char('g') => self.focus = Focus::Graph,
             KeyCode::Char('b') => self.focus = Focus::Branches,
@@ -484,7 +499,13 @@ impl App {
             KeyCode::Char('u') => self.run_unstage_all().await,
             KeyCode::Char('f') => self.run_remote("Fetching", RemoteAction::Fetch),
             KeyCode::Char('l') => self.run_remote("Pulling", RemoteAction::Pull),
+            KeyCode::Char('L') => self.run_remote("Pulling with rebase", RemoteAction::PullRebase),
             KeyCode::Char('p') => self.run_contextual_push(),
+            KeyCode::Char('P') if self.focus != Focus::Stashes => self.open_remote_prompt(true),
+            KeyCode::Char('T') => self.open_remote_prompt(false),
+            KeyCode::Char('F') => self.request_force_push().await,
+            KeyCode::Char('U') => self.request_undo_last_commit().await,
+            KeyCode::Char('D') => self.open_diagnostics(),
             KeyCode::Char('s') => self.run_stash().await,
             KeyCode::Char('z') => self.focus = Focus::Stashes,
             KeyCode::Char('W') => self.focus = Focus::Worktrees,
@@ -529,6 +550,20 @@ impl App {
                 }
             }
             KeyCode::Char('e') => {
+                if let Some(change) = self.editor_change() {
+                    return if matches!(change.kind, crate::model::ChangeKind::Untracked) {
+                        EventOutcome::OpenEditor
+                    } else {
+                        EventOutcome::OpenDifftool
+                    };
+                }
+            }
+            KeyCode::Char('E') => {
+                if self.editor_change().is_some() {
+                    return EventOutcome::InteractiveStage;
+                }
+            }
+            KeyCode::Char('o') if self.focus != Focus::GitHub => {
                 if self.editor_change().is_some() {
                     return EventOutcome::OpenEditor;
                 }
@@ -724,7 +759,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Right) if self.selected_change().is_some() => {
                 self.overlay = Some(Overlay::Message {
                     title: "Change actions".into(),
-                    body: "Space  Stage/unstage\nEnter  Preview\ne  Open in editor\nd  Discard\nEsc  Close".into(),
+                    body: "Space  Stage/unstage\nEnter  Preview\ne  External diff\nE  Select lines\nd  Discard\nEsc  Close".into(),
                 });
             }
             _ => {}
@@ -1039,6 +1074,120 @@ impl App {
         self.finish_action(result, "Aborted Git operation").await;
     }
 
+    async fn skip_operation(&mut self) {
+        let Some(operation) = self.active().status.operation else {
+            return;
+        };
+        let repo = self.active().repo.clone();
+        let result = repo.skip_operation(operation).await;
+        self.finish_action(result, "Skipped current Git operation step")
+            .await;
+    }
+
+    fn recall_commit_message(&mut self, amount: isize) {
+        if self.active().history.is_empty() {
+            return;
+        }
+        if self.commit_history_index.is_none() {
+            self.commit_history_draft = self.commit_message.clone();
+        }
+        let next = match (self.commit_history_index, amount.is_negative()) {
+            (None, true) => 0,
+            (None, false) => return,
+            (Some(0), false) => {
+                self.commit_history_index = None;
+                self.commit_message = self.commit_history_draft.clone();
+                return;
+            }
+            (Some(index), true) => (index + 1).min(self.active().history.len() - 1),
+            (Some(index), false) => index - 1,
+        };
+        self.commit_history_index = Some(next);
+        self.commit_message = self.active().history[next].subject.clone();
+    }
+
+    fn open_diagnostics(&mut self) {
+        let body = if self.output.is_empty() {
+            "No Git errors have been recorded in this session.".into()
+        } else {
+            self.output.join("\n\n")
+        };
+        self.preview = Some(Preview {
+            title: "Git diagnostics".into(),
+            body,
+            scroll: 0,
+            change: None,
+            hunks: Vec::new(),
+            selected_hunk: 0,
+        });
+        self.focus = Focus::Preview;
+    }
+
+    fn open_remote_prompt(&mut self, push: bool) {
+        let remote = self
+            .active()
+            .remotes
+            .iter()
+            .find(|remote| remote.name == "origin")
+            .or_else(|| self.active().remotes.first())
+            .map(|remote| remote.name.as_str())
+            .unwrap_or("origin");
+        let branch = self
+            .active()
+            .status
+            .branch
+            .head
+            .as_deref()
+            .unwrap_or("main");
+        self.overlay = Some(Overlay::Prompt {
+            title: if push { "Push to" } else { "Pull from" }.into(),
+            label: format!("Remote and branch (default: {remote} {branch})"),
+            value: String::new(),
+            action: if push {
+                PromptAction::PushTarget {
+                    remote: remote.into(),
+                    branch: branch.into(),
+                }
+            } else {
+                PromptAction::PullTarget {
+                    remote: remote.into(),
+                    branch: branch.into(),
+                }
+            },
+        });
+    }
+
+    async fn request_force_push(&mut self) {
+        let Some(upstream) = self.active().status.branch.upstream.clone() else {
+            self.status_line = "Publish the branch before force-pushing".into();
+            return;
+        };
+        let Some((remote, branch)) = upstream.split_once('/') else {
+            self.status_line = "Could not determine the upstream target".into();
+            return;
+        };
+        self.confirm_or_execute(
+            format!("Force-push with lease to {upstream}? [y/N]"),
+            ConfirmAction::ForcePush {
+                remote: remote.into(),
+                branch: branch.into(),
+            },
+        )
+        .await;
+    }
+
+    async fn request_undo_last_commit(&mut self) {
+        if self.active().history.is_empty() {
+            self.status_line = "There is no commit to undo".into();
+            return;
+        }
+        self.confirm_or_execute(
+            "Undo the last commit and keep its changes in the working tree? [y/N]".into(),
+            ConfirmAction::UndoLastCommit,
+        )
+        .await;
+    }
+
     async fn run_stage_all(&mut self) {
         let repo = self.active().repo.clone();
         let result = repo.stage_all().await;
@@ -1080,7 +1229,16 @@ impl App {
             let result = match action {
                 RemoteAction::Fetch => repo.fetch().await,
                 RemoteAction::Pull => repo.pull().await,
+                RemoteAction::PullRebase => repo.pull_rebase().await,
+                RemoteAction::PullFrom { remote, branch } => {
+                    repo.pull_from(&remote, &branch, false).await
+                }
                 RemoteAction::Push => repo.push().await,
+                RemoteAction::PushTo {
+                    remote,
+                    branch,
+                    force_with_lease,
+                } => repo.push_to(&remote, &branch, force_with_lease).await,
                 RemoteAction::Publish { remote, branch } => repo.publish(&remote, &branch).await,
                 RemoteAction::Sync => repo.sync().await,
             };
@@ -1299,7 +1457,11 @@ impl App {
 
     async fn execute_prompt(&mut self, action: PromptAction, value: String) {
         let value = value.trim();
-        if value.is_empty() {
+        let remote_prompt = matches!(
+            &action,
+            PromptAction::PushTarget { .. } | PromptAction::PullTarget { .. }
+        );
+        if value.is_empty() && !remote_prompt {
             self.status_line = "A name is required".into();
             return;
         }
@@ -1320,6 +1482,30 @@ impl App {
                 let result = repo.add_worktree(&path, &branch).await;
                 self.finish_action(result, &format!("Added worktree {}", path.display()))
                     .await;
+            }
+            PromptAction::PushTarget { remote, branch } => {
+                let Ok((remote, branch)) = parse_remote_target(value, remote, branch) else {
+                    self.status_line = "Enter a remote and branch separated by a space".into();
+                    return;
+                };
+                self.run_remote(
+                    "Pushing to target",
+                    RemoteAction::PushTo {
+                        remote,
+                        branch,
+                        force_with_lease: false,
+                    },
+                );
+            }
+            PromptAction::PullTarget { remote, branch } => {
+                let Ok((remote, branch)) = parse_remote_target(value, remote, branch) else {
+                    self.status_line = "Enter a remote and branch separated by a space".into();
+                    return;
+                };
+                self.run_remote(
+                    "Pulling from target",
+                    RemoteAction::PullFrom { remote, branch },
+                );
             }
         }
     }
@@ -1381,6 +1567,22 @@ impl App {
                 let result = repo.remove_worktree(&path).await;
                 self.finish_action(result, &format!("Removed worktree {}", path.display()))
                     .await;
+            }
+            ConfirmAction::UndoLastCommit => {
+                let repo = self.active().repo.clone();
+                let result = repo.undo_last_commit().await;
+                self.finish_action(result, "Undid last commit and kept its changes")
+                    .await;
+            }
+            ConfirmAction::ForcePush { remote, branch } => {
+                self.run_remote(
+                    "Force-pushing with lease",
+                    RemoteAction::PushTo {
+                        remote,
+                        branch,
+                        force_with_lease: true,
+                    },
+                );
             }
         }
     }
@@ -1523,6 +1725,14 @@ impl App {
         }
     }
 
+    pub async fn open_selected_in_difftool(&mut self) -> Result<()> {
+        let change = self
+            .editor_change()
+            .cloned()
+            .context("no changed file selected")?;
+        self.active().repo.external_diff(&change).await
+    }
+
     pub async fn open_selected_in_editor(&mut self) -> Result<()> {
         let change = self
             .editor_change()
@@ -1577,6 +1787,14 @@ impl App {
             }
         }
         bail!("no editor detected; configure [editor].command or set VISUAL/EDITOR")
+    }
+
+    pub async fn interactively_stage_selected(&mut self) -> Result<()> {
+        let change = self
+            .editor_change()
+            .cloned()
+            .context("no changed file selected")?;
+        self.active().repo.interactive_stage(&change).await
     }
 
     async fn next_focus(&mut self, backwards: bool) {
@@ -1824,8 +2042,21 @@ async fn load_repo_snapshot(repo: GitRepo, history_limit: usize) -> Result<RepoS
 enum RemoteAction {
     Fetch,
     Pull,
+    PullRebase,
+    PullFrom {
+        remote: String,
+        branch: String,
+    },
     Push,
-    Publish { remote: String, branch: String },
+    PushTo {
+        remote: String,
+        branch: String,
+        force_with_lease: bool,
+    },
+    Publish {
+        remote: String,
+        branch: String,
+    },
     Sync,
 }
 
@@ -1842,6 +2073,21 @@ fn commit_options_for_key(key: KeyEvent) -> Option<CommitOptions> {
 
 fn short_oid(oid: &str) -> &str {
     oid.get(..7).unwrap_or(oid)
+}
+
+fn parse_remote_target(
+    value: &str,
+    default_remote: String,
+    default_branch: String,
+) -> Result<(String, String)> {
+    if value.is_empty() {
+        return Ok((default_remote, default_branch));
+    }
+    let fields = value.split_whitespace().collect::<Vec<_>>();
+    if fields.len() != 2 {
+        bail!("remote target requires a remote and branch");
+    }
+    Ok((fields[0].into(), fields[1].into()))
 }
 
 fn editor_candidates() -> &'static [&'static str] {
@@ -1940,6 +2186,32 @@ mod tests {
         assert!(
             commit_options_for_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none()
         );
+    }
+
+    #[test]
+    fn remote_target_accepts_defaults_or_an_explicit_pair() {
+        assert_eq!(
+            parse_remote_target("", "origin".into(), "main".into()).unwrap(),
+            ("origin".into(), "main".into())
+        );
+        assert_eq!(
+            parse_remote_target("upstream trunk", "origin".into(), "main".into()).unwrap(),
+            ("upstream".into(), "trunk".into())
+        );
+        assert!(parse_remote_target("origin", "origin".into(), "main".into()).is_err());
+    }
+
+    #[tokio::test]
+    async fn commit_message_history_restores_the_users_draft() {
+        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.commit_message = "draft message".into();
+
+        app.recall_commit_message(-1);
+        assert_eq!(app.commit_message, app.active().history[0].subject);
+        app.recall_commit_message(1);
+        assert_eq!(app.commit_message, "draft message");
+        assert!(app.commit_history_index.is_none());
     }
 
     #[tokio::test]

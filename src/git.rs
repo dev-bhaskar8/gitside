@@ -210,6 +210,17 @@ impl GitRepo {
         Ok(())
     }
 
+    pub async fn skip_operation(&self, operation: GitOperation) -> Result<()> {
+        let args: &[&str] = match operation {
+            GitOperation::Rebase => &["rebase", "--skip"],
+            GitOperation::CherryPick => &["cherry-pick", "--skip"],
+            GitOperation::Revert => &["revert", "--skip"],
+            GitOperation::Merge => bail!("merge operations cannot be skipped"),
+        };
+        self.command(args, None).await?;
+        Ok(())
+    }
+
     pub async fn history(&self, limit: usize) -> Result<Vec<Commit>> {
         let format = "%H%x1f%P%x1f%D%x1f%s%x1f%an%x1f%cr%x1e";
         let output = self
@@ -444,8 +455,95 @@ impl GitRepo {
         Ok(())
     }
 
+    pub async fn pull_rebase(&self) -> Result<()> {
+        self.command(["pull", "--rebase"], None).await?;
+        Ok(())
+    }
+
+    pub async fn pull_from(&self, remote: &str, branch: &str, rebase: bool) -> Result<()> {
+        let mut args = vec!["pull"];
+        if rebase {
+            args.push("--rebase");
+        }
+        args.extend([remote, branch]);
+        self.command(args, None).await?;
+        Ok(())
+    }
+
     pub async fn push(&self) -> Result<()> {
         self.command(["push"], None).await?;
+        Ok(())
+    }
+
+    pub async fn push_to(&self, remote: &str, branch: &str, force_with_lease: bool) -> Result<()> {
+        let mut args = vec!["push"];
+        if force_with_lease {
+            args.push("--force-with-lease");
+        }
+        args.extend([remote, branch]);
+        self.command(args, None).await?;
+        Ok(())
+    }
+
+    pub async fn undo_last_commit(&self) -> Result<()> {
+        self.command(["reset", "--mixed", "HEAD~1"], None).await?;
+        Ok(())
+    }
+
+    pub async fn external_diff(&self, change: &Change) -> Result<()> {
+        let mut args = vec![OsString::from("difftool"), OsString::from("--no-prompt")];
+        if change.staged {
+            args.push(OsString::from("--cached"));
+        }
+        args.push(OsString::from("--"));
+        args.push(change.path.as_os_str().to_owned());
+        self.interactive_command(args).await
+    }
+
+    pub async fn interactive_stage(&self, change: &Change) -> Result<()> {
+        if !change.staged && change.kind == ChangeKind::Untracked {
+            self.command(
+                [
+                    OsStr::new("add"),
+                    OsStr::new("--intent-to-add"),
+                    OsStr::new("--"),
+                    change.path.as_os_str(),
+                ],
+                None,
+            )
+            .await?;
+        }
+        let command = if change.staged { "reset" } else { "add" };
+        self.interactive_command([
+            OsString::from(command),
+            OsString::from("--patch"),
+            OsString::from("--"),
+            change.path.as_os_str().to_owned(),
+        ])
+        .await
+    }
+
+    async fn interactive_command<I, S>(&self, args: I) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&self.root)
+            .args(args)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .await
+            .context("failed to start interactive Git command")?;
+        if !status.success() {
+            bail!(
+                "interactive Git command exited with {}",
+                status.code().unwrap_or(-1)
+            );
+        }
         Ok(())
     }
 
@@ -1182,5 +1280,28 @@ worktree /repo-feature\0HEAD def456\0branch refs/heads/feature\0locked reason\0\
         let status = repo.status().await.unwrap();
         assert!(status.staged.is_empty());
         assert_eq!(status.unstaged[0].kind, ChangeKind::Untracked);
+    }
+
+    #[tokio::test]
+    async fn undo_last_commit_keeps_its_changes() {
+        let (directory, repo) = repository().await;
+        fs::write(directory.path().join("first.txt"), "first\n").unwrap();
+        repo.stage(Path::new("first.txt")).await.unwrap();
+        repo.commit("first", CommitOptions::default())
+            .await
+            .unwrap();
+        fs::write(directory.path().join("second.txt"), "second\n").unwrap();
+        repo.stage(Path::new("second.txt")).await.unwrap();
+        repo.commit("second", CommitOptions::default())
+            .await
+            .unwrap();
+
+        repo.undo_last_commit().await.unwrap();
+
+        assert_eq!(repo.history(10).await.unwrap()[0].subject, "first");
+        assert!(directory.path().join("second.txt").exists());
+        assert!(repo.status().await.unwrap().unstaged.iter().any(|change| {
+            change.path == Path::new("second.txt") && change.kind == ChangeKind::Untracked
+        }));
     }
 }

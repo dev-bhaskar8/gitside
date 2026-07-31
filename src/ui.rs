@@ -826,9 +826,9 @@ fn contextual_footer_hint(
     match focus {
         Focus::Commit => " F1 Help · Ctrl+Enter Commit · Esc Done",
         Focus::Changes if has_conflicts => " ? Help · O Current · I Incoming · B Both",
-        Focus::Changes if has_operation => " ? Help · C Continue · A Abort",
-        Focus::Changes => " ? Help · Space Stage · Enter Diff",
-        Focus::Staged => " ? Help · Space Unstage · Enter Diff",
+        Focus::Changes if has_operation => " ? Help · C Continue · S Skip · A Abort",
+        Focus::Changes => " ? Help · Space Stage · e Diff · E Lines",
+        Focus::Staged => " ? Help · Space Unstage · e Diff · E Lines",
         Focus::Graph => " ? Help · Enter View · y Pick · v Revert",
         Focus::Branches => " ? Help · Enter Switch · n New · x Delete",
         Focus::Stashes => " ? Help · Enter View · A Apply · P Pop",
@@ -1052,23 +1052,23 @@ fn help_text(focus: Focus, has_conflicts: bool, has_operation: bool) -> String {
     let (context_title, context) = match focus {
         Focus::Commit => (
             "Commit — current panel",
-            "  Type                 Edit message\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  F1                   Help\n  Esc                  Leave message\n  Tab                  Next panel",
+            "  Type                 Edit message\n  Up/Down              Previous/next message\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  F1                   Help\n  Esc                  Leave message\n  Tab                  Next panel",
         ),
         Focus::Changes if has_conflicts => (
             "Merge Changes — current panel",
-            "  j/k or arrows  Move\n  Enter          Preview conflict\n  O              Accept current file\n  I              Accept incoming file\n  B              Accept both sides\n  C              Continue operation\n  A              Abort operation",
+            "  j/k or arrows  Move\n  Enter          Preview conflict\n  O              Accept current file\n  I              Accept incoming file\n  B              Accept both sides\n  C / S / A      Continue/skip/abort operation",
         ),
         Focus::Changes if has_operation => (
             "Git operation — current panel",
-            "  C              Continue operation\n  A              Abort operation\n  Enter          Preview selected change",
+            "  C / S / A      Continue/skip/abort operation\n  Enter          Preview selected change",
         ),
         Focus::Changes => (
             "Changes — current panel",
-            "  j/k or arrows  Move\n  Space          Stage file\n  Enter          Preview diff\n  a              Stage all\n  d              Discard\n  e              External editor",
+            "  j/k or arrows  Move\n  Space          Stage file\n  Enter          Preview diff\n  a              Stage all\n  d              Discard\n  e              External old/new difftool\n  E              Interactive line staging\n  o              Open working file",
         ),
         Focus::Staged => (
             "Staged — current panel",
-            "  j/k or arrows  Move\n  Space          Unstage file\n  Enter          Preview diff\n  u              Unstage all\n  e              External editor",
+            "  j/k or arrows  Move\n  Space          Unstage file\n  Enter          Preview diff\n  u              Unstage all\n  e              External old/new difftool\n  E              Interactive line unstaging\n  o              Open working file",
         ),
         Focus::Graph => (
             "Graph — current panel",
@@ -1097,7 +1097,7 @@ fn help_text(focus: Focus, has_conflicts: bool, has_operation: bool) -> String {
     };
 
     format!(
-        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  /              Search focused view\n  N              Next search match\n  ? / F1         Open/close help\n  q              Quit\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External editor\n\nRepository\n  c                    Commit message\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  f / l / p            Fetch/pull/push\n  s / z                Create/list stashes\n  W                    Worktree list\n  r                    Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, ?, or F1 to close."
+        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  /              Search focused view\n  N              Next search match\n  ? / F1         Open/close help\n  q              Quit\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External old/new difftool\n  E              Interactive line staging\n\nRepository\n  c                    Commit message\n  Up/Down              Previous/next message\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  U                    Undo last commit\n  f / l / p            Fetch/pull/push\n  L                    Pull with rebase\n  P / T                Push to/pull from target\n  F                    Force push with lease\n  D                    Git diagnostics\n  s / z                Create/list stashes\n  W                    Worktree list\n  r                    Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGit operations\n  C / S / A      Continue/skip/abort\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, ?, or F1 to close."
     )
 }
 

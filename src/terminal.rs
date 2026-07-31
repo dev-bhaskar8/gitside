@@ -93,6 +93,21 @@ pub async fn run(app: &mut App) -> Result<()> {
                 match outcome {
                     EventOutcome::Continue => {}
                     EventOutcome::Quit => break,
+                    EventOutcome::OpenDifftool | EventOutcome::InteractiveStage => {
+                        guard.leave()?;
+                        let result = if matches!(outcome, EventOutcome::OpenDifftool) {
+                            app.open_selected_in_difftool().await
+                        } else {
+                            app.interactively_stage_selected().await
+                        };
+                        if let Err(error) = result {
+                            app.status_line = format!("{error:#}");
+                        }
+                        let _new_guard = TerminalGuard::enter(app.settings.mouse)?;
+                        terminal.clear()?;
+                        app.refresh().await;
+                        std::mem::forget(_new_guard);
+                    }
                     EventOutcome::OpenEditor => {
                         guard.leave()?;
                         if let Err(error) = app.open_selected_in_editor().await {
