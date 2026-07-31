@@ -429,6 +429,9 @@ impl App {
     }
 
     pub async fn handle_key(&mut self, key: KeyEvent) -> EventOutcome {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return EventOutcome::Quit;
+        }
         if let Some(overlay) = self.overlay.clone() {
             return self.handle_overlay_key(key, overlay).await;
         }
@@ -2212,6 +2215,21 @@ mod tests {
         app.recall_commit_message(1);
         assert_eq!(app.commit_message, "draft message");
         assert!(app.commit_history_index.is_none());
+    }
+
+    #[tokio::test]
+    async fn control_c_quits_from_normal_commit_and_overlay_contexts() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let control_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+        assert_eq!(app.handle_key(control_c).await, EventOutcome::Quit);
+        app.focus = Focus::Commit;
+        assert_eq!(app.handle_key(control_c).await, EventOutcome::Quit);
+        app.overlay = Some(Overlay::Search {
+            value: String::new(),
+        });
+        assert_eq!(app.handle_key(control_c).await, EventOutcome::Quit);
     }
 
     #[tokio::test]

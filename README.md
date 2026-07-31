@@ -108,7 +108,7 @@ Run `gitside --help` for command-line options.
 | `?` | Toggle help |
 | `F1` | Toggle help, including while editing a commit message |
 | `/` / `N` | Search the focused view / find the next match |
-| `q` | Quit |
+| `q` / `Ctrl+C` | Quit |
 
 While editing a commit message, Up and Down recall earlier commit subjects and
 return to the unfinished draft. Undo uses a mixed reset, so committed file
