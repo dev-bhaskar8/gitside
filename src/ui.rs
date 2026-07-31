@@ -3,10 +3,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{
-        Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Wrap,
-    },
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -901,19 +898,7 @@ fn render_help_overlay(frame: &mut Frame<'_>, app: &mut App, popup: Rect, reques
             indicator,
         );
 
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .thumb_style(Style::default().fg(BLUE))
-            .track_style(muted_style())
-            .begin_symbol(Some("↑"))
-            .end_symbol(Some("↓"));
-        let mut state = ScrollbarState::new(line_count)
-            .position(scroll as usize)
-            .viewport_content_length(inner.height as usize);
-        let scrollbar_area = popup.inner(Margin {
-            horizontal: 0,
-            vertical: 1,
-        });
-        frame.render_stateful_widget(scrollbar, scrollbar_area, &mut state);
+        render_offset_scrollbar(frame, popup, scroll, max_scroll);
     }
 
     if let Some(Overlay::Help {
@@ -928,6 +913,33 @@ fn render_help_overlay(frame: &mut Frame<'_>, app: &mut App, popup: Rect, reques
         rect: popup,
         action: UiAction::CloseOverlay,
     });
+}
+
+fn render_offset_scrollbar(frame: &mut Frame<'_>, area: Rect, scroll: u16, max_scroll: u16) {
+    let track = area.inner(Margin {
+        horizontal: 0,
+        vertical: 1,
+    });
+    let Some(thumb_y) = scrollbar_thumb_row(track, scroll, max_scroll) else {
+        return;
+    };
+    let x = track.right().saturating_sub(1);
+    for y in track.top()..track.bottom() {
+        frame.buffer_mut().set_string(x, y, "│", muted_style());
+    }
+    frame
+        .buffer_mut()
+        .set_string(x, thumb_y, "█", Style::default().fg(BLUE));
+}
+
+fn scrollbar_thumb_row(track: Rect, scroll: u16, max_scroll: u16) -> Option<u16> {
+    if track.is_empty() || max_scroll == 0 {
+        return None;
+    }
+    let travel = u32::from(track.height.saturating_sub(1));
+    let numerator = u32::from(scroll.min(max_scroll)) * travel + u32::from(max_scroll) / 2;
+    let offset = numerator / u32::from(max_scroll);
+    Some(track.y + offset as u16)
 }
 
 fn wrap_help_text(value: &str, width: u16) -> String {
@@ -1256,6 +1268,35 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(50, 20)).unwrap();
 
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let popup = app
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, UiAction::CloseOverlay))
+            .expect("help should register its popup")
+            .rect;
+        let track = popup.inner(Margin {
+            horizontal: 0,
+            vertical: 1,
+        });
+        let track_x = track.right() - 1;
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((track_x, track.top()))
+                .unwrap()
+                .symbol(),
+            "█"
+        );
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((track_x, track.bottom() - 1))
+                .unwrap()
+                .symbol(),
+            "│"
+        );
         let first_page: String = terminal
             .backend()
             .buffer()
@@ -1274,6 +1315,24 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE))
             .await;
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((track_x, track.top()))
+                .unwrap()
+                .symbol(),
+            "│"
+        );
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((track_x, track.bottom() - 1))
+                .unwrap()
+                .symbol(),
+            "█"
+        );
         let last_page: String = terminal
             .backend()
             .buffer()
@@ -1299,6 +1358,17 @@ mod tests {
             panic!("help should remain open");
         };
         assert_eq!(*scroll, max_scroll.saturating_sub(3));
+    }
+
+    #[test]
+    fn offset_scrollbar_maps_the_full_scroll_range_to_the_track() {
+        let track = Rect::new(8, 4, 1, 10);
+        assert_eq!(scrollbar_thumb_row(track, 0, 10), Some(4));
+        assert_eq!(scrollbar_thumb_row(track, 5, 10), Some(9));
+        assert_eq!(scrollbar_thumb_row(track, 10, 10), Some(13));
+        assert_eq!(scrollbar_thumb_row(track, 20, 10), Some(13));
+        assert_eq!(scrollbar_thumb_row(track, 0, 0), None);
+        assert_eq!(scrollbar_thumb_row(Rect::ZERO, 0, 10), None);
     }
 
     #[test]

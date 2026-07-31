@@ -37,7 +37,10 @@ is truncated by terminal-cell width rather than UTF-8 byte length.
 
 The help overlay derives its first section from the active focus target and
 then presents the full shortcut reference. It owns an independent, clamped
-scroll position and renders both a scrollbar and textual overflow indicator.
+scroll position and renders both a textual overflow indicator and a minimal
+offset-based scrollbar. The thumb maps `scroll / max_scroll` directly onto the
+track so it reaches the first and last cells exactly without suggesting that
+unavailable directions are active.
 
 ## Process model
 
