@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 
 use crate::{
     config::{Cli, Settings},
-    git::{CommitOptions, GitRepo},
+    git::{CommitOptions, ConflictChoice, GitRepo},
     github::GitHub,
     model::{Branch, Change, Commit, Issue, PullRequest, Remote, RepoStatus, Stash, Worktree},
 };
@@ -248,6 +248,9 @@ impl App {
     pub fn selected_change(&self) -> Option<&Change> {
         match self.focus {
             Focus::Staged => self.active().status.staged.get(self.selected_staged),
+            Focus::Changes if !self.active().status.conflicts.is_empty() => {
+                self.active().status.conflicts.get(self.selected_change)
+            }
             _ => self.active().status.unstaged.get(self.selected_change),
         }
     }
@@ -384,6 +387,19 @@ impl App {
             KeyCode::Char('q') => return EventOutcome::Quit,
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('r') => self.refresh().await,
+            KeyCode::Char('O') if self.conflicts_focused() => {
+                self.resolve_selected_conflict(ConflictChoice::Current)
+                    .await
+            }
+            KeyCode::Char('I') if self.conflicts_focused() => {
+                self.resolve_selected_conflict(ConflictChoice::Incoming)
+                    .await
+            }
+            KeyCode::Char('B') if self.conflicts_focused() => {
+                self.resolve_selected_conflict(ConflictChoice::Both).await
+            }
+            KeyCode::Char('C') if self.operation_focused() => self.continue_operation().await,
+            KeyCode::Char('A') if self.operation_focused() => self.abort_operation().await,
             KeyCode::Char('c') => self.focus = Focus::Commit,
             KeyCode::Char('g') => self.focus = Focus::Graph,
             KeyCode::Char('b') => self.focus = Focus::Branches,
@@ -740,6 +756,48 @@ impl App {
         };
         self.finish_action(result, if change.staged { "Unstaged" } else { "Staged" })
             .await;
+    }
+
+    fn conflicts_focused(&self) -> bool {
+        self.focus == Focus::Changes && !self.active().status.conflicts.is_empty()
+    }
+
+    fn operation_focused(&self) -> bool {
+        self.focus == Focus::Changes && self.active().status.operation.is_some()
+    }
+
+    async fn resolve_selected_conflict(&mut self, choice: ConflictChoice) {
+        let Some(change) = self.selected_change().cloned() else {
+            return;
+        };
+        let repo = self.active().repo.clone();
+        let result = repo.resolve_conflict(&change.path, choice).await;
+        self.finish_action(result, &format!("Resolved {}", change.path.display()))
+            .await;
+    }
+
+    async fn continue_operation(&mut self) {
+        let Some(operation) = self.active().status.operation else {
+            self.status_line = "No merge, rebase, cherry-pick, or revert is in progress".into();
+            return;
+        };
+        if !self.active().status.conflicts.is_empty() {
+            self.status_line = "Resolve every conflict before continuing".into();
+            return;
+        }
+        let repo = self.active().repo.clone();
+        let result = repo.continue_operation(operation).await;
+        self.finish_action(result, "Continued Git operation").await;
+    }
+
+    async fn abort_operation(&mut self) {
+        let Some(operation) = self.active().status.operation else {
+            self.status_line = "No merge, rebase, cherry-pick, or revert is in progress".into();
+            return;
+        };
+        let repo = self.active().repo.clone();
+        let result = repo.abort_operation(operation).await;
+        self.finish_action(result, "Aborted Git operation").await;
     }
 
     async fn run_stage_all(&mut self) {
@@ -1312,6 +1370,9 @@ impl App {
 
     fn current_len(&self) -> usize {
         match self.focus {
+            Focus::Changes if !self.active().status.conflicts.is_empty() => {
+                self.active().status.conflicts.len()
+            }
             Focus::Staged => self.active().status.staged.len(),
             Focus::Graph => self.active().history.len(),
             Focus::Branches => self.active().branches.len(),
@@ -1364,9 +1425,13 @@ impl App {
     }
 
     fn clamp_selections(&mut self) {
-        self.selected_change = self
-            .selected_change
-            .min(self.active().status.unstaged.len().saturating_sub(1));
+        self.selected_change =
+            self.selected_change
+                .min(if self.active().status.conflicts.is_empty() {
+                    self.active().status.unstaged.len().saturating_sub(1)
+                } else {
+                    self.active().status.conflicts.len().saturating_sub(1)
+                });
         self.selected_staged = self
             .selected_staged
             .min(self.active().status.staged.len().saturating_sub(1));

@@ -80,6 +80,8 @@ Run `sourcepane --help` for command-line options.
 | `h` | Focus GitHub |
 | `i` / `o` | Switch PR/issues / open the selected item in a browser |
 | `C` / `K` | Check out a selected PR / view its checks |
+| `O` / `I` / `B` | Resolve a conflicted file with current/incoming/both sides |
+| `C` / `A` | Continue/abort an in-progress Git operation |
 | `?` | Toggle help |
 | `F1` | Toggle help, including while editing a commit message |
 | `q` | Quit |
@@ -97,6 +99,10 @@ of unexplained keys.
 Help opens with shortcuts for the currently focused panel, followed by the
 complete reference. Use `j`/`k`, arrows, Page Up/Down, Home/End, or the mouse
 wheel to scroll; the border shows the current position and remaining overflow.
+
+When conflicts exist, the normal Changes panel temporarily becomes Merge
+Changes and shows only conflicted files. Resolution and continue/abort actions
+exist only in that repository state and disappear after the operation ends.
 
 ## Configuration
 

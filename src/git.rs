@@ -7,11 +7,21 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::{io::AsyncWriteExt, process::Command};
 
-use crate::model::{Branch, Change, ChangeKind, Commit, Remote, RepoStatus, Stash, Worktree};
+use crate::model::{
+    Branch, Change, ChangeKind, Commit, GitOperation, Remote, RepoStatus, Stash, Worktree,
+};
 
 #[derive(Debug, Clone)]
 pub struct GitRepo {
     root: PathBuf,
+    git_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ConflictChoice {
+    Current,
+    Incoming,
+    Both,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -32,7 +42,7 @@ impl GitRepo {
         let output = Command::new("git")
             .args(["-C"])
             .arg(path)
-            .args(["rev-parse", "--show-toplevel"])
+            .args(["rev-parse", "--show-toplevel", "--absolute-git-dir"])
             .output()
             .await
             .with_context(|| "Git is required but was not found")?;
@@ -43,8 +53,14 @@ impl GitRepo {
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
-        let root = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim().to_string());
-        Ok(Self { root })
+        let resolved = String::from_utf8_lossy(&output.stdout);
+        let mut lines = resolved.lines();
+        let root = PathBuf::from(lines.next().unwrap_or_default());
+        let git_dir = PathBuf::from(lines.next().unwrap_or_default());
+        if root.as_os_str().is_empty() || git_dir.as_os_str().is_empty() {
+            bail!("Git did not return repository paths for {}", path.display());
+        }
+        Ok(Self { root, git_dir })
     }
 
     pub fn root(&self) -> &Path {
@@ -112,7 +128,86 @@ impl GitRepo {
                 None,
             )
             .await?;
-        parse_status(&output.stdout)
+        let mut status = parse_status(&output.stdout)?;
+        status.operation = self.operation_state().await;
+        Ok(status)
+    }
+
+    async fn operation_state(&self) -> Option<GitOperation> {
+        if tokio::fs::metadata(self.git_dir.join("rebase-merge"))
+            .await
+            .is_ok()
+            || tokio::fs::metadata(self.git_dir.join("rebase-apply"))
+                .await
+                .is_ok()
+        {
+            return Some(GitOperation::Rebase);
+        }
+        for (file, operation) in [
+            ("MERGE_HEAD", GitOperation::Merge),
+            ("CHERRY_PICK_HEAD", GitOperation::CherryPick),
+            ("REVERT_HEAD", GitOperation::Revert),
+        ] {
+            if tokio::fs::metadata(self.git_dir.join(file)).await.is_ok() {
+                return Some(operation);
+            }
+        }
+        None
+    }
+
+    pub async fn resolve_conflict(&self, path: &Path, choice: ConflictChoice) -> Result<()> {
+        match choice {
+            ConflictChoice::Current | ConflictChoice::Incoming => {
+                let side = if matches!(choice, ConflictChoice::Current) {
+                    "--ours"
+                } else {
+                    "--theirs"
+                };
+                self.command(
+                    [
+                        OsStr::new("checkout"),
+                        OsStr::new(side),
+                        OsStr::new("--"),
+                        path.as_os_str(),
+                    ],
+                    None,
+                )
+                .await?;
+            }
+            ConflictChoice::Both => {
+                let absolute = self.root.join(path);
+                let contents = tokio::fs::read_to_string(&absolute)
+                    .await
+                    .with_context(|| format!("failed to read conflict {}", path.display()))?;
+                let resolved = resolve_both_sides(&contents)?;
+                tokio::fs::write(&absolute, resolved)
+                    .await
+                    .with_context(|| format!("failed to resolve conflict {}", path.display()))?;
+            }
+        }
+        self.stage(path).await
+    }
+
+    pub async fn continue_operation(&self, operation: GitOperation) -> Result<()> {
+        let args: &[&str] = match operation {
+            GitOperation::Merge => &["commit", "--no-edit"],
+            GitOperation::Rebase => &["-c", "core.editor=true", "rebase", "--continue"],
+            GitOperation::CherryPick => &["cherry-pick", "--continue"],
+            GitOperation::Revert => &["revert", "--continue"],
+        };
+        self.command(args, None).await?;
+        Ok(())
+    }
+
+    pub async fn abort_operation(&self, operation: GitOperation) -> Result<()> {
+        let args: &[&str] = match operation {
+            GitOperation::Merge => &["merge", "--abort"],
+            GitOperation::Rebase => &["rebase", "--abort"],
+            GitOperation::CherryPick => &["cherry-pick", "--abort"],
+            GitOperation::Revert => &["revert", "--abort"],
+        };
+        self.command(args, None).await?;
+        Ok(())
     }
 
     pub async fn history(&self, limit: usize) -> Result<Vec<Commit>> {
@@ -559,6 +654,48 @@ fn parse_status(input: &[u8]) -> Result<RepoStatus> {
     Ok(status)
 }
 
+fn resolve_both_sides(contents: &str) -> Result<String> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Section {
+        Normal,
+        Current,
+        Base,
+        Incoming,
+    }
+
+    let mut section = Section::Normal;
+    let mut output = String::with_capacity(contents.len());
+    let mut found_conflict = false;
+    for line in contents.split_inclusive('\n') {
+        if line.starts_with("<<<<<<< ") {
+            if section != Section::Normal {
+                bail!("nested conflict markers are not supported");
+            }
+            found_conflict = true;
+            section = Section::Current;
+        } else if line.starts_with("||||||| ") && section == Section::Current {
+            section = Section::Base;
+        } else if line.starts_with("=======") && matches!(section, Section::Current | Section::Base)
+        {
+            section = Section::Incoming;
+        } else if line.starts_with(">>>>>>> ") && section == Section::Incoming {
+            section = Section::Normal;
+        } else if matches!(
+            section,
+            Section::Normal | Section::Current | Section::Incoming
+        ) {
+            output.push_str(line);
+        }
+    }
+    if !found_conflict {
+        bail!("the file contains no Git conflict markers");
+    }
+    if section != Section::Normal {
+        bail!("the file contains incomplete Git conflict markers");
+    }
+    Ok(output)
+}
+
 fn kind_from_code(code: u8) -> ChangeKind {
     match code {
         b'A' => ChangeKind::Added,
@@ -749,6 +886,17 @@ u UU N... 100644 100644 100644 100644 aaa bbb ccc conflict.txt\0";
     }
 
     #[test]
+    fn accepts_both_sides_of_standard_and_diff3_markers() {
+        let conflict = "before\n<<<<<<< HEAD\ncurrent\n||||||| base\nbase\n=======\nincoming\n>>>>>>> feature\nafter\n";
+        assert_eq!(
+            resolve_both_sides(conflict).unwrap(),
+            "before\ncurrent\nincoming\nafter\n"
+        );
+        assert!(resolve_both_sides("no conflict\n").is_err());
+        assert!(resolve_both_sides("<<<<<<< HEAD\nbroken\n").is_err());
+    }
+
+    #[test]
     fn parses_worktree_porcelain() {
         let input = b"worktree /repo\0HEAD abc123\0branch refs/heads/main\0\0\
 worktree /repo-feature\0HEAD def456\0branch refs/heads/feature\0locked reason\0\0";
@@ -875,6 +1023,54 @@ worktree /repo-feature\0HEAD def456\0branch refs/heads/feature\0locked reason\0\
             .unwrap();
         let body = String::from_utf8_lossy(&body.stdout);
         assert!(body.contains("Signed-off-by: Sourcepane Test <sourcepane@example.invalid>"));
+    }
+
+    #[tokio::test]
+    async fn detects_resolves_and_aborts_merge_conflicts() {
+        let (directory, repo) = repository().await;
+        let file = directory.path().join("conflict.txt");
+        fs::write(&file, "base\n").unwrap();
+        repo.stage(Path::new("conflict.txt")).await.unwrap();
+        repo.commit("base", CommitOptions::default()).await.unwrap();
+        let main = repo.status().await.unwrap().branch.head.unwrap();
+
+        repo.create_branch("feature").await.unwrap();
+        fs::write(&file, "incoming\n").unwrap();
+        repo.commit(
+            "feature",
+            CommitOptions {
+                all: true,
+                ..CommitOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        repo.checkout(&main).await.unwrap();
+        fs::write(&file, "current\n").unwrap();
+        repo.commit(
+            "main",
+            CommitOptions {
+                all: true,
+                ..CommitOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(repo.merge("feature").await.is_err());
+        let status = repo.status().await.unwrap();
+        assert_eq!(status.operation, Some(GitOperation::Merge));
+        assert_eq!(status.conflicts.len(), 1);
+
+        repo.resolve_conflict(Path::new("conflict.txt"), ConflictChoice::Current)
+            .await
+            .unwrap();
+        assert!(repo.status().await.unwrap().conflicts.is_empty());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "current\n");
+
+        repo.abort_operation(GitOperation::Merge).await.unwrap();
+        assert_eq!(repo.status().await.unwrap().operation, None);
+        assert_eq!(fs::read_to_string(file).unwrap(), "current\n");
     }
 
     #[tokio::test]

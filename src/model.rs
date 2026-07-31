@@ -50,6 +50,15 @@ pub struct RepoStatus {
     pub staged: Vec<Change>,
     pub unstaged: Vec<Change>,
     pub conflicts: Vec<Change>,
+    pub operation: Option<GitOperation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitOperation {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

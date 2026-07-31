@@ -64,3 +64,9 @@ Native filesystem notifications mark repository state dirty and are coalesced
 before refresh. Git object-store churn and read-only events are ignored. A
 low-frequency safety poll remains active, and the configured polling interval is
 used as the fallback on platforms where a watcher cannot be created.
+
+Conflict handling uses repository state as progressive disclosure. The Changes
+panel switches to Merge Changes only while conflicts exist, and whole-file
+current/incoming/both plus operation continue/abort commands are then exposed
+through contextual shortcuts and Help. Resolving a file stages it so Git can
+recognize that the conflict is complete.

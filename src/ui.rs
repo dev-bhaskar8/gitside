@@ -287,6 +287,8 @@ fn render_wide_body(frame: &mut Frame<'_>, app: &mut App, area: Rect, three: boo
 fn render_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect, staged: bool) {
     let changes = if staged {
         app.active().status.staged.clone()
+    } else if !app.active().status.conflicts.is_empty() {
+        app.active().status.conflicts.clone()
     } else {
         app.active().status.unstaged.clone()
     };
@@ -303,6 +305,8 @@ fn render_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect, staged: bool
     };
     let title = if staged {
         format!(" Staged Changes ({}) ", changes.len())
+    } else if !app.active().status.conflicts.is_empty() {
+        format!(" Merge Changes ({}) ", changes.len())
     } else {
         format!(" Changes ({}) ", changes.len())
     };
@@ -737,7 +741,12 @@ fn render_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    let help = contextual_footer_hint(app.focus, area.width);
+    let help = contextual_footer_hint(
+        app.focus,
+        area.width,
+        !app.active().status.conflicts.is_empty(),
+        app.active().status.operation.is_some(),
+    );
     let help_width = display_width(help);
     let available = area
         .width
@@ -760,7 +769,12 @@ fn render_status(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     });
 }
 
-fn contextual_footer_hint(focus: Focus, width: u16) -> &'static str {
+fn contextual_footer_hint(
+    focus: Focus,
+    width: u16,
+    has_conflicts: bool,
+    has_operation: bool,
+) -> &'static str {
     if width < 18 {
         return if focus == Focus::Commit {
             " F1 Help"
@@ -778,6 +792,8 @@ fn contextual_footer_hint(focus: Focus, width: u16) -> &'static str {
     if width < 50 {
         return match focus {
             Focus::Commit => " F1 Help · Commit",
+            Focus::Changes if has_conflicts => " ? Help · O/I/B Resolve",
+            Focus::Changes if has_operation => " ? Help · C Continue",
             Focus::Changes => " ? Help · Space Stage",
             Focus::Staged => " ? Help · Space Unstage",
             Focus::Graph => " ? Help · Enter View",
@@ -790,6 +806,8 @@ fn contextual_footer_hint(focus: Focus, width: u16) -> &'static str {
     }
     match focus {
         Focus::Commit => " F1 Help · Ctrl+Enter Commit · Esc Done",
+        Focus::Changes if has_conflicts => " ? Help · O Current · I Incoming · B Both",
+        Focus::Changes if has_operation => " ? Help · C Continue · A Abort",
         Focus::Changes => " ? Help · Space Stage · Enter Diff",
         Focus::Staged => " ? Help · Space Unstage · Enter Diff",
         Focus::Graph => " ? Help · Enter View · y Pick · v Revert",
@@ -872,7 +890,14 @@ fn render_help_overlay(frame: &mut Frame<'_>, app: &mut App, popup: Rect, reques
         .border_style(Style::default().fg(BLUE))
         .style(Style::default().bg(PANEL));
     let inner = block.inner(popup);
-    let body = wrap_help_text(&help_text(app.focus), inner.width);
+    let body = wrap_help_text(
+        &help_text(
+            app.focus,
+            !app.active().status.conflicts.is_empty(),
+            app.active().status.operation.is_some(),
+        ),
+        inner.width,
+    );
     let line_count = body.lines().count();
     let paragraph = Paragraph::new(body).block(block);
     let max_scroll = line_count
@@ -989,11 +1014,19 @@ fn wrap_help_text(value: &str, width: u16) -> String {
     output.join("\n")
 }
 
-fn help_text(focus: Focus) -> String {
+fn help_text(focus: Focus, has_conflicts: bool, has_operation: bool) -> String {
     let (context_title, context) = match focus {
         Focus::Commit => (
             "Commit — current panel",
             "  Type                 Edit message\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  F1                   Help\n  Esc                  Leave message\n  Tab                  Next panel",
+        ),
+        Focus::Changes if has_conflicts => (
+            "Merge Changes — current panel",
+            "  j/k or arrows  Move\n  Enter          Preview conflict\n  O              Accept current file\n  I              Accept incoming file\n  B              Accept both sides\n  C              Continue operation\n  A              Abort operation",
+        ),
+        Focus::Changes if has_operation => (
+            "Git operation — current panel",
+            "  C              Continue operation\n  A              Abort operation\n  Enter          Preview selected change",
         ),
         Focus::Changes => (
             "Changes — current panel",
@@ -1422,6 +1455,46 @@ mod tests {
         assert!(app.overlay.is_none());
     }
 
+    #[tokio::test]
+    async fn conflicts_replace_changes_with_contextual_resolution_help() {
+        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Changes;
+        app.active_mut().status.conflicts = vec![Change {
+            path: "conflict.txt".into(),
+            original_path: None,
+            kind: ChangeKind::Conflicted,
+            staged: false,
+        }];
+        let mut terminal = Terminal::new(TestBackend::new(50, 30)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(output.contains("Merge Changes (1)"));
+        assert!(output.contains("O Current"));
+
+        app.overlay = Some(Overlay::Help {
+            scroll: 0,
+            max_scroll: 0,
+        });
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(output.contains("Merge Changes — current panel"));
+        assert!(output.contains("Accept incoming file"));
+    }
+
     #[test]
     fn offset_scrollbar_maps_the_full_scroll_range_to_the_track() {
         let track = Rect::new(8, 4, 1, 10);
@@ -1436,18 +1509,18 @@ mod tests {
     #[test]
     fn footer_hints_are_contextual_and_unicode_truncation_is_safe() {
         assert_eq!(
-            contextual_footer_hint(Focus::Changes, 40),
+            contextual_footer_hint(Focus::Changes, 40, false, false),
             " ? Help · Space Stage"
         );
         assert_eq!(
-            contextual_footer_hint(Focus::Graph, 80),
+            contextual_footer_hint(Focus::Graph, 80, false, false),
             " ? Help · Enter View · y Pick · v Revert"
         );
         assert_eq!(
-            contextual_footer_hint(Focus::Commit, 80),
+            contextual_footer_hint(Focus::Commit, 80, false, false),
             " F1 Help · Ctrl+Enter Commit · Esc Done"
         );
-        assert!(!contextual_footer_hint(Focus::Changes, 40).contains("Tab"));
+        assert!(!contextual_footer_hint(Focus::Changes, 40, false, false).contains("Tab"));
         assert_eq!(truncate_to_width("répo 🚀", 6), "répo ");
         assert_eq!(truncate_to_width("répo 🚀", 7), "répo 🚀");
 
