@@ -14,6 +14,13 @@ pub struct GitRepo {
     root: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CommitOptions {
+    pub all: bool,
+    pub amend: bool,
+    pub signoff: bool,
+}
+
 #[derive(Debug)]
 pub struct CommandOutput {
     pub stdout: Vec<u8>,
@@ -274,16 +281,19 @@ impl GitRepo {
         Ok(())
     }
 
-    pub async fn commit(&self, message: &str, all: bool, amend: bool) -> Result<()> {
+    pub async fn commit(&self, message: &str, options: CommitOptions) -> Result<()> {
         if message.trim().is_empty() {
             bail!("commit message cannot be empty");
         }
         let mut args = vec!["commit", "--file=-"];
-        if all {
+        if options.all {
             args.push("--all");
         }
-        if amend {
+        if options.amend {
             args.push("--amend");
+        }
+        if options.signoff {
+            args.push("--signoff");
         }
         self.command(args, Some(message.as_bytes())).await?;
         Ok(())
@@ -779,7 +789,7 @@ worktree /repo-feature\0HEAD def456\0branch refs/heads/feature\0locked reason\0\
         let status = repo.status().await.unwrap();
         assert_eq!(status.staged.len(), 1);
 
-        repo.commit("Initial test commit", false, false)
+        repo.commit("Initial test commit", CommitOptions::default())
             .await
             .unwrap();
         let history = repo.history(10).await.unwrap();
@@ -822,6 +832,49 @@ worktree /repo-feature\0HEAD def456\0branch refs/heads/feature\0locked reason\0\
         assert_eq!(repo.status().await.unwrap().unstaged.len(), 1);
         repo.drop_stash(&stashes[0].reference).await.unwrap();
         assert!(repo.stashes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn supports_amended_and_signed_off_commits() {
+        let (directory, repo) = repository().await;
+        fs::write(directory.path().join("message.txt"), "one\n").unwrap();
+        repo.stage(Path::new("message.txt")).await.unwrap();
+        repo.commit("Original subject", CommitOptions::default())
+            .await
+            .unwrap();
+
+        fs::write(directory.path().join("message.txt"), "two\n").unwrap();
+        repo.stage(Path::new("message.txt")).await.unwrap();
+        repo.commit(
+            "Amended subject",
+            CommitOptions {
+                amend: true,
+                ..CommitOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let history = repo.history(10).await.unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].subject, "Amended subject");
+
+        fs::write(directory.path().join("message.txt"), "three\n").unwrap();
+        repo.stage(Path::new("message.txt")).await.unwrap();
+        repo.commit(
+            "Signed-off subject",
+            CommitOptions {
+                signoff: true,
+                ..CommitOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let body = repo
+            .command(["log", "-1", "--format=%B"], None)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body.stdout);
+        assert!(body.contains("Signed-off-by: Sourcepane Test <sourcepane@example.invalid>"));
     }
 
     #[tokio::test]

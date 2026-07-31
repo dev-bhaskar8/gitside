@@ -43,6 +43,11 @@ offset-based scrollbar. The thumb maps `scroll / max_scroll` directly onto the
 track so it reaches the first and last cells exactly without suggesting that
 unavailable directions are active.
 
+Advanced commit modes remain keyboard-first instead of adding another menu.
+Modifier combinations map to explicit commit options, and Commit-focused Help
+lists the full set before the general reference. `F1` opens Help from the commit
+editor so `?` remains available as ordinary message punctuation.
+
 ## Process model
 
 Read commands capture stdout and stderr. Actions that may require an interactive

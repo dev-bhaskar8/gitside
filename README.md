@@ -59,6 +59,9 @@ Run `sourcepane --help` for command-line options.
 | `u` | Unstage all staged changes |
 | `c` | Focus commit message |
 | `Ctrl+Enter` | Commit |
+| `Ctrl+Shift+Enter` | Amend the previous commit |
+| `Ctrl+Alt+Enter` | Commit with a `Signed-off-by` trailer |
+| `Ctrl+Shift+Alt+Enter` | Amend with a `Signed-off-by` trailer |
 | `e` | Open selected file in configured editor |
 | `f` | Fetch |
 | `p` | Push |
@@ -75,6 +78,7 @@ Run `sourcepane --help` for command-line options.
 | `i` / `o` | Switch PR/issues / open the selected item in a browser |
 | `C` / `K` | Check out a selected PR / view its checks |
 | `?` | Toggle help |
+| `F1` | Toggle help, including while editing a commit message |
 | `q` | Quit |
 
 Single click selects, double click opens, the wheel scrolls, and toolbar buttons

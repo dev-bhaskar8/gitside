@@ -762,14 +762,22 @@ fn render_status(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
 fn contextual_footer_hint(focus: Focus, width: u16) -> &'static str {
     if width < 18 {
-        return " ? Help";
+        return if focus == Focus::Commit {
+            " F1 Help"
+        } else {
+            " ? Help"
+        };
     }
     if width < 24 {
-        return " ? Help · More";
+        return if focus == Focus::Commit {
+            " F1 Help · More"
+        } else {
+            " ? Help · More"
+        };
     }
     if width < 50 {
         return match focus {
-            Focus::Commit => " ? Help · Commit",
+            Focus::Commit => " F1 Help · Commit",
             Focus::Changes => " ? Help · Space Stage",
             Focus::Staged => " ? Help · Space Unstage",
             Focus::Graph => " ? Help · Enter View",
@@ -781,7 +789,7 @@ fn contextual_footer_hint(focus: Focus, width: u16) -> &'static str {
         };
     }
     match focus {
-        Focus::Commit => " ? Help · Ctrl+Enter Commit · Esc Done",
+        Focus::Commit => " F1 Help · Ctrl+Enter Commit · Esc Done",
         Focus::Changes => " ? Help · Space Stage · Enter Diff",
         Focus::Staged => " ? Help · Space Unstage · Enter Diff",
         Focus::Graph => " ? Help · Enter View · y Pick · v Revert",
@@ -985,7 +993,7 @@ fn help_text(focus: Focus) -> String {
     let (context_title, context) = match focus {
         Focus::Commit => (
             "Commit — current panel",
-            "  Type           Edit message\n  Ctrl+Enter     Commit\n  Esc            Leave message\n  Tab            Next panel",
+            "  Type                 Edit message\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  F1                   Help\n  Esc                  Leave message\n  Tab                  Next panel",
         ),
         Focus::Changes => (
             "Changes — current panel",
@@ -1022,7 +1030,7 @@ fn help_text(focus: Focus) -> String {
     };
 
     format!(
-        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  ?              Open/close help\n  q              Quit\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External editor\n\nRepository\n  c              Commit message\n  Ctrl+Enter     Commit\n  f / l / p      Fetch/pull/push\n  s / z          Create/list stashes\n  W              Worktree list\n  r              Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, or ? to close."
+        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  ? / F1         Open/close help\n  q              Quit\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External editor\n\nRepository\n  c                    Commit message\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  f / l / p            Fetch/pull/push\n  s / z                Create/list stashes\n  W                    Worktree list\n  r                    Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, ?, or F1 to close."
     )
 }
 
@@ -1359,7 +1367,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(last_page.contains("Press Esc, Enter, or ? to close."));
+        assert!(last_page.contains("Press Esc, Enter, ?, or F1 to close."));
         let Some(Overlay::Help { scroll, max_scroll }) = &app.overlay else {
             panic!("help should remain open");
         };
@@ -1377,6 +1385,41 @@ mod tests {
             panic!("help should remain open");
         };
         assert_eq!(*scroll, max_scroll.saturating_sub(3));
+    }
+
+    #[tokio::test]
+    async fn commit_editor_opens_contextual_help_without_stealing_punctuation() {
+        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Commit;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT))
+            .await;
+        assert_eq!(app.commit_message, "?");
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL))
+            .await;
+        assert_eq!(app.commit_message, "?");
+
+        app.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE))
+            .await;
+        assert!(matches!(app.overlay, Some(Overlay::Help { .. })));
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(output.contains("Commit — current panel"));
+        assert!(output.contains("Ctrl+Shift+Enter"));
+        assert!(output.contains("Ctrl+Alt+Enter"));
+
+        app.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE))
+            .await;
+        assert!(app.overlay.is_none());
     }
 
     #[test]
@@ -1399,6 +1442,10 @@ mod tests {
         assert_eq!(
             contextual_footer_hint(Focus::Graph, 80),
             " ? Help · Enter View · y Pick · v Revert"
+        );
+        assert_eq!(
+            contextual_footer_hint(Focus::Commit, 80),
+            " F1 Help · Ctrl+Enter Commit · Esc Done"
         );
         assert!(!contextual_footer_hint(Focus::Changes, 40).contains("Tab"));
         assert_eq!(truncate_to_width("répo 🚀", 6), "répo ");

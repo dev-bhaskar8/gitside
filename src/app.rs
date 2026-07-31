@@ -12,7 +12,7 @@ use tokio::process::Command;
 
 use crate::{
     config::{Cli, Settings},
-    git::GitRepo,
+    git::{CommitOptions, GitRepo},
     github::GitHub,
     model::{Branch, Change, Commit, Issue, PullRequest, Remote, RepoStatus, Stash, Worktree},
 };
@@ -266,17 +266,28 @@ impl App {
         if let Some(overlay) = self.overlay.clone() {
             return self.handle_overlay_key(key, overlay).await;
         }
+        if key.code == KeyCode::F(1) {
+            self.open_help();
+            return EventOutcome::Continue;
+        }
         if self.focus == Focus::Commit {
+            if let Some(options) = commit_options_for_key(key) {
+                self.commit(options).await;
+                return EventOutcome::Continue;
+            }
             match key.code {
                 KeyCode::Esc => self.focus = Focus::Changes,
                 KeyCode::Backspace => {
                     self.commit_message.pop();
                 }
-                KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.commit().await
-                }
                 KeyCode::Enter => self.commit_message.push('\n'),
-                KeyCode::Char(character) => self.commit_message.push(character),
+                KeyCode::Char(character)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.commit_message.push(character)
+                }
                 KeyCode::Tab => self.next_focus(false).await,
                 KeyCode::BackTab => self.next_focus(true).await,
                 _ => {}
@@ -397,7 +408,7 @@ impl App {
                 max_scroll,
             } => {
                 match key.code {
-                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?') => {
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?') | KeyCode::F(1) => {
                         self.overlay = None;
                         return EventOutcome::Continue;
                     }
@@ -443,7 +454,10 @@ impl App {
                 _ => {}
             },
             _ => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?')) {
+                if matches!(
+                    key.code,
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?') | KeyCode::F(1)
+                ) {
                     self.overlay = None;
                 }
             }
@@ -550,7 +564,7 @@ impl App {
             UiAction::Fetch => self.run_remote("Fetching", RemoteAction::Fetch).await,
             UiAction::Pull => self.run_remote("Pulling", RemoteAction::Pull).await,
             UiAction::Push => self.run_remote("Pushing", RemoteAction::Push).await,
-            UiAction::Commit => self.commit().await,
+            UiAction::Commit => self.commit(CommitOptions::default()).await,
             UiAction::StageAll => self.run_stage_all().await,
             UiAction::UnstageAll => self.run_unstage_all().await,
             UiAction::ToggleHelp => self.open_help(),
@@ -650,14 +664,20 @@ impl App {
         self.finish_action(result, "Unstaged all changes").await;
     }
 
-    async fn commit(&mut self) {
+    async fn commit(&mut self, options: CommitOptions) {
         let repo = self.active().repo.clone();
-        let result = repo.commit(&self.commit_message, false, false).await;
+        let result = repo.commit(&self.commit_message, options).await;
         if result.is_ok() {
             self.commit_message.clear();
             self.focus = Focus::Changes;
         }
-        self.finish_action(result, "Committed changes").await;
+        let success = match (options.amend, options.signoff) {
+            (true, true) => "Amended commit with sign-off",
+            (true, false) => "Amended commit",
+            (false, true) => "Committed changes with sign-off",
+            (false, false) => "Committed changes",
+        };
+        self.finish_action(result, success).await;
     }
 
     async fn run_remote(&mut self, label: &str, action: RemoteAction) {
@@ -1312,6 +1332,17 @@ enum RemoteAction {
     Push,
 }
 
+fn commit_options_for_key(key: KeyEvent) -> Option<CommitOptions> {
+    if key.code != KeyCode::Enter || !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    Some(CommitOptions {
+        amend: key.modifiers.contains(KeyModifiers::SHIFT),
+        signoff: key.modifiers.contains(KeyModifiers::ALT),
+        ..CommitOptions::default()
+    })
+}
+
 fn short_oid(oid: &str) -> &str {
     oid.get(..7).unwrap_or(oid)
 }
@@ -1380,5 +1411,32 @@ mod tests {
         assert!(hunks[0].contains("-old"));
         assert!(!hunks[0].contains("-x"));
         assert!(hunks[1].starts_with("diff --git"));
+    }
+
+    #[test]
+    fn maps_commit_modifier_combinations_without_a_menu() {
+        let normal =
+            commit_options_for_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)).unwrap();
+        assert_eq!(normal, CommitOptions::default());
+
+        let amend = commit_options_for_key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ))
+        .unwrap();
+        assert!(amend.amend);
+        assert!(!amend.signoff);
+
+        let signoff = commit_options_for_key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ))
+        .unwrap();
+        assert!(!signoff.amend);
+        assert!(signoff.signoff);
+
+        assert!(
+            commit_options_for_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none()
+        );
     }
 }
