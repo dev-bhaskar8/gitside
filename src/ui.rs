@@ -92,20 +92,38 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         area,
     );
 
-    let buttons = if area.width >= 75 {
+    let thin_toolbar = area.width < 75;
+    let buttons = if area.width >= 24 {
         vec![
             (" Fetch ", UiAction::Fetch),
             (" Pull ", UiAction::Pull),
             (" Push ", UiAction::Push),
             (" ↻ ", UiAction::Refresh),
         ]
+    } else if area.width >= 14 {
+        vec![
+            (" F ", UiAction::Fetch),
+            (" L ", UiAction::Pull),
+            (" P ", UiAction::Push),
+            (" ↻ ", UiAction::Refresh),
+        ]
     } else {
-        vec![(" ↻ ", UiAction::Refresh)]
+        vec![
+            ("F ", UiAction::Fetch),
+            ("L ", UiAction::Pull),
+            ("P ", UiAction::Push),
+            ("↻ ", UiAction::Refresh),
+        ]
     };
     let mut right = area.right().saturating_sub(1);
+    let button_y = if thin_toolbar && area.height > 2 {
+        area.y + 1
+    } else {
+        area.y
+    };
     for (label, action) in buttons.into_iter().rev() {
         let width = label.chars().count() as u16;
-        let rect = Rect::new(right.saturating_sub(width), area.y, width, 1);
+        let rect = Rect::new(right.saturating_sub(width), button_y, width, 1);
         frame.render_widget(
             Paragraph::new(label).style(Style::default().fg(BLUE).bg(PANEL)),
             rect,
@@ -185,7 +203,7 @@ fn render_compact_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(44), Constraint::Percentage(56)])
         .split(area);
-    if !app.active().status.staged.is_empty() && app.focus == Focus::Staged {
+    if app.focus == Focus::Staged {
         render_changes(frame, app, sections[0], true);
     } else {
         render_changes(frame, app, sections[0], false);
@@ -437,6 +455,7 @@ fn render_branches(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
 fn render_stashes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Stashes;
+    let narrow = area.width < 55;
     let items = app
         .active()
         .stashes
@@ -452,35 +471,59 @@ fn render_stashes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             )
         })
         .collect::<Vec<_>>();
-    frame.render_widget(
-        List::new(items).block(
-            Block::default()
-                .title(format!(
-                    " Stashes ({}) · A apply · P pop · X drop ",
-                    app.active().stashes.len()
-                ))
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(if focused { BLUE } else { BORDER })),
-        ),
-        area,
-    );
+    let title = if narrow {
+        format!(" Stashes ({}) ", app.active().stashes.len())
+    } else {
+        format!(
+            " Stashes ({}) · A apply · P pop · X drop ",
+            app.active().stashes.len()
+        )
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if focused { BLUE } else { BORDER }));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let list_area = if narrow {
+        let (hint, hint_height) = if inner.width >= 25 {
+            (Text::from("A apply · P pop · X drop"), 1)
+        } else if inner.width >= 15 {
+            (
+                Text::from(vec![Line::from("A apply · P pop"), Line::from("X drop")]),
+                2,
+            )
+        } else {
+            (
+                Text::from(vec![
+                    Line::from("A apply"),
+                    Line::from("P pop"),
+                    Line::from("X drop"),
+                ]),
+                3,
+            )
+        };
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(hint_height), Constraint::Min(0)])
+            .split(inner);
+        frame.render_widget(
+            Paragraph::new(hint).style(Style::default().fg(MUTED)),
+            rows[0],
+        );
+        rows[1]
+    } else {
+        inner
+    };
+    frame.render_widget(List::new(items), list_area);
     app.hits.push(HitRegion {
         rect: area,
         action: UiAction::Focus(Focus::Stashes),
     });
-    for row in 0..app
-        .active()
-        .stashes
-        .len()
-        .min(area.height.saturating_sub(2) as usize)
-    {
+    for row in 0..app.active().stashes.len().min(list_area.height as usize) {
         app.hits.push(HitRegion {
-            rect: Rect::new(
-                area.x + 1,
-                area.y + 1 + row as u16,
-                area.width.saturating_sub(2),
-                1,
-            ),
+            rect: Rect::new(list_area.x, list_area.y + row as u16, list_area.width, 1),
             action: UiAction::SelectStash(row),
         });
     }
@@ -866,5 +909,70 @@ mod tests {
         .await;
 
         assert_eq!(app.focus, Focus::Changes);
+    }
+
+    #[tokio::test]
+    async fn empty_staged_tab_stop_remains_visibly_focused_in_compact_layout() {
+        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        assert!(app.active().status.staged.is_empty());
+        app.focus = Focus::Staged;
+        let mut terminal = Terminal::new(TestBackend::new(50, 40)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let panel = app
+            .hits
+            .iter()
+            .find(|hit| hit.rect.height > 1 && matches!(hit.action, UiAction::Focus(Focus::Staged)))
+            .expect("the empty staged panel should be visible")
+            .rect;
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((panel.x, panel.y + 1))
+                .unwrap()
+                .fg,
+            BLUE
+        );
+    }
+
+    #[tokio::test]
+    async fn narrow_stash_panel_wraps_actions_inside_the_border() {
+        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Stashes;
+        let mut terminal = Terminal::new(TestBackend::new(24, 40)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let output: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(output.contains("Stashes (0)"));
+        assert!(output.contains("A apply"));
+        assert!(output.contains("P pop"));
+        assert!(output.contains("X drop"));
+        assert!(output.contains("Fetch"));
+        assert!(output.contains("Pull"));
+        assert!(output.contains("Push"));
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, UiAction::Fetch))
+        );
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, UiAction::Pull))
+        );
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, UiAction::Push))
+        );
     }
 }
