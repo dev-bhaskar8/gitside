@@ -17,14 +17,29 @@ use crate::{
 // theme background colors (including transparency).
 const BG: Color = Color::Reset;
 const PANEL: Color = Color::Reset;
-const BORDER: Color = Color::Rgb(62, 62, 62);
-const TEXT: Color = Color::Rgb(204, 204, 204);
-const MUTED: Color = Color::Rgb(145, 145, 145);
-const BLUE: Color = Color::Rgb(74, 144, 226);
-const SELECTED: Color = Color::Rgb(38, 79, 120);
-const GREEN: Color = Color::Rgb(115, 201, 145);
-const RED: Color = Color::Rgb(244, 113, 116);
-const ORANGE: Color = Color::Rgb(206, 145, 120);
+const TEXT: Color = Color::Reset;
+const BLUE: Color = Color::LightBlue;
+const GREEN: Color = Color::LightGreen;
+const RED: Color = Color::LightRed;
+const ORANGE: Color = Color::LightYellow;
+
+fn muted_style() -> Style {
+    Style::default()
+        .fg(Color::Reset)
+        .add_modifier(Modifier::DIM)
+}
+
+fn panel_border_style(focused: bool) -> Style {
+    if focused {
+        Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Reset)
+    }
+}
+
+fn selection_style() -> Style {
+    Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+}
 
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
@@ -87,7 +102,7 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             .block(
                 Block::default()
                     .borders(Borders::BOTTOM)
-                    .border_style(Style::default().fg(BORDER)),
+                    .border_style(panel_border_style(false)),
             ),
         area,
     );
@@ -135,11 +150,10 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
 fn render_commit(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Commit;
-    let border = if focused { BLUE } else { BORDER };
     let message = if app.commit_message.is_empty() && !focused {
         Text::from(Line::from(Span::styled(
             "Message (c to edit, Ctrl+Enter to commit)",
-            Style::default().fg(MUTED),
+            muted_style(),
         )))
     } else {
         Text::from(app.commit_message.clone())
@@ -147,7 +161,7 @@ fn render_commit(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let block = Block::default()
         .title(" Commit ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(border))
+        .border_style(panel_border_style(focused))
         .style(Style::default().bg(PANEL));
     frame.render_widget(
         Paragraph::new(message)
@@ -173,7 +187,11 @@ fn render_commit(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             " ✓ "
         })
         .alignment(Alignment::Center)
-        .style(Style::default().fg(Color::White).bg(SELECTED)),
+        .style(
+            Style::default()
+                .fg(BLUE)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        ),
         button,
     );
     app.hits.push(HitRegion {
@@ -299,7 +317,7 @@ fn render_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect, staged: bool
             let selected_row = focused && selected == index;
             ListItem::new(change_line(change, area.width.saturating_sub(4))).style(
                 if selected_row {
-                    Style::default().fg(Color::White).bg(SELECTED)
+                    selection_style()
                 } else {
                     Style::default().fg(TEXT)
                 },
@@ -309,7 +327,7 @@ fn render_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect, staged: bool
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(if focused { BLUE } else { BORDER }));
+        .border_style(panel_border_style(focused));
     frame.render_widget(List::new(items).block(block), area);
     app.hits.push(HitRegion {
         rect: area,
@@ -363,7 +381,7 @@ fn render_graph(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 oid, commit.subject, decorations, commit.author
             );
             ListItem::new(line).style(if focused && index == app.selected_commit {
-                Style::default().fg(Color::White).bg(SELECTED)
+                selection_style()
             } else {
                 Style::default().fg(TEXT)
             })
@@ -372,7 +390,7 @@ fn render_graph(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let block = Block::default()
         .title(format!(" Graph ({}) ", app.active().history.len()))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(if focused { BLUE } else { BORDER }));
+        .border_style(panel_border_style(focused));
     frame.render_widget(List::new(items).block(block), area);
     app.hits.push(HitRegion {
         rect: area,
@@ -413,7 +431,7 @@ fn render_branches(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             };
             ListItem::new(format!("{marker} {}", branch.name)).style(
                 if focused && index == app.selected_branch {
-                    Style::default().fg(Color::White).bg(SELECTED)
+                    selection_style()
                 } else if branch.current {
                     Style::default().fg(BLUE)
                 } else {
@@ -427,7 +445,7 @@ fn render_branches(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Block::default()
                 .title(format!(" Branches ({}) ", app.active().branches.len()))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(if focused { BLUE } else { BORDER })),
+                .border_style(panel_border_style(focused)),
         ),
         area,
     );
@@ -464,7 +482,7 @@ fn render_stashes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .map(|(index, stash)| {
             ListItem::new(format!("◇ {}  {}", stash.reference, stash.subject)).style(
                 if focused && index == app.selected_stash {
-                    Style::default().fg(Color::White).bg(SELECTED)
+                    selection_style()
                 } else {
                     Style::default().fg(TEXT)
                 },
@@ -482,7 +500,7 @@ fn render_stashes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(if focused { BLUE } else { BORDER }));
+        .border_style(panel_border_style(focused));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -508,10 +526,7 @@ fn render_stashes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(hint_height), Constraint::Min(0)])
             .split(inner);
-        frame.render_widget(
-            Paragraph::new(hint).style(Style::default().fg(MUTED)),
-            rows[0],
-        );
+        frame.render_widget(Paragraph::new(hint).style(muted_style()), rows[0]);
         rows[1]
     } else {
         inner
@@ -552,7 +567,7 @@ fn render_worktrees(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 flags
             ))
             .style(if focused && index == app.selected_worktree {
-                Style::default().fg(Color::White).bg(SELECTED)
+                selection_style()
             } else {
                 Style::default().fg(TEXT)
             })
@@ -566,7 +581,7 @@ fn render_worktrees(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     app.active().worktrees.len()
                 ))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(if focused { BLUE } else { BORDER })),
+                .border_style(panel_border_style(focused)),
         ),
         area,
     );
@@ -606,7 +621,7 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     Block::default()
                         .title(" GitHub ")
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(if focused { BLUE } else { BORDER })),
+                        .border_style(panel_border_style(focused)),
                 ),
             area,
         );
@@ -623,7 +638,7 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     issue.number, issue.title, issue.author
                 ))
                 .style(if focused && index == app.selected_github {
-                    Style::default().fg(Color::White).bg(SELECTED)
+                    selection_style()
                 } else {
                     Style::default().fg(TEXT)
                 })
@@ -641,7 +656,7 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     pr.number, pr.title, draft, pr.head, pr.base
                 ))
                 .style(if focused && index == app.selected_github {
-                    Style::default().fg(Color::White).bg(SELECTED)
+                    selection_style()
                 } else {
                     Style::default().fg(TEXT)
                 })
@@ -658,7 +673,7 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Block::default()
                 .title(format!(" GitHub · {mode} (i to switch) "))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(if focused { BLUE } else { BORDER })),
+                .border_style(panel_border_style(focused)),
         ),
         area,
     );
@@ -736,7 +751,7 @@ fn render_status(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     status.truncate(available);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(format!(" {status}"), Style::default().fg(MUTED).bg(PANEL)),
+            Span::styled(format!(" {status}"), muted_style().bg(PANEL)),
             Span::styled(help, Style::default().fg(TEXT).bg(PANEL)),
         ]))
         .style(Style::default().bg(PANEL)),
@@ -900,6 +915,13 @@ mod tests {
                 .bg,
             Color::Reset
         );
+        let inactive_border = terminal
+            .backend()
+            .buffer()
+            .cell((panel.x, panel.y + 1))
+            .unwrap();
+        assert_eq!(inactive_border.fg, Color::Reset);
+        assert!(!inactive_border.modifier.contains(Modifier::DIM));
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: panel.x + panel.width / 2,
