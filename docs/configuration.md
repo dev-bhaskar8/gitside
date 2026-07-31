@@ -20,12 +20,13 @@ added = "green"
 deleted = "red"
 ```
 
+`refresh_ms` controls polling when native filesystem notifications are
+unavailable. With a watcher active, changes are coalesced promptly and a
+30-second safety poll protects against dropped platform events.
+
 Editor placeholders are passed as individual process arguments:
 
 - `{path}`: working-tree path
-- `{old}`: temporary path containing the old side of a diff
-- `{new}`: working-tree path
 
-If no editor is configured, Sourcepane checks Git configuration, `VISUAL`,
-`EDITOR`, and common platform editors in that order.
-
+If no editor is configured, Sourcepane checks `VISUAL`, `EDITOR`, and common
+platform editors in that order.

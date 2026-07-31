@@ -14,6 +14,9 @@ implement SGR mouse events; every action also has a keyboard equivalent.
 Sourcepane is under active development. The first release focuses on a reliable
 local Git workflow: repository status, staging, committing, diffs, history,
 branches, stashes, remotes, and optional GitHub pull request and issue views.
+Working-tree changes are detected through native filesystem notifications,
+remote operations run without blocking input, and commit history loads further
+pages automatically as the Graph selection approaches the current boundary.
 
 ## Requirements
 

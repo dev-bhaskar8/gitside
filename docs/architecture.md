@@ -54,3 +54,13 @@ Read commands capture stdout and stderr. Actions that may require an interactive
 editor, credential prompt, or pinentry temporarily leave the alternate screen
 and inherit the terminal. Git and `gh` retain responsibility for authentication,
 hooks, signing, SSH, LFS, and transport behavior.
+
+Fetch, pull, push, and history pagination run as background tasks so the event
+and rendering loop remains responsive. A single task slot serializes these
+operations and prevents overlapping network mutations. Completed remote actions
+refresh the repository they started from, even if the user has switched views.
+
+Native filesystem notifications mark repository state dirty and are coalesced
+before refresh. Git object-store churn and read-only events are ignored. A
+low-frequency safety poll remains active, and the configured polling interval is
+used as the fallback on platforms where a watcher cannot be created.
