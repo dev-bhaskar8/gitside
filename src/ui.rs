@@ -162,7 +162,10 @@ fn render_commit(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 }
 
 fn render_compact_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    if area.width < 58 || area.height < 20 {
+    // A narrow side pane is usually tall enough to remain useful as a stacked
+    // source-control panel. Preserve Changes + Graph at every width and only
+    // collapse to the focused view when vertical space is genuinely scarce.
+    if area.height < 20 {
         match app.focus {
             Focus::Staged => render_changes(frame, app, area, true),
             Focus::Graph => render_graph(frame, app, area),

@@ -20,8 +20,10 @@ are inherited by child processes and never copied into Sourcepane state or logs.
 
 ## Responsive model
 
-- Under 58 columns, one focused view occupies the body.
-- From 58 through 99 columns, sections are stacked for tall side panes.
+- Under 100 columns, Changes and Graph remain vertically stacked for tall side
+  panes, including panes narrower than 58 columns.
+- When fewer than 20 body rows are available, one focused view occupies the
+  body so actions do not become unusably compressed.
 - From 100 through 159 columns, navigation and detail are shown side by side.
 - At 160 columns and above, changes, history, and detail can be visible together.
 
@@ -34,4 +36,3 @@ Read commands capture stdout and stderr. Actions that may require an interactive
 editor, credential prompt, or pinentry temporarily leave the alternate screen
 and inherit the terminal. Git and `gh` retain responsibility for authentication,
 hooks, signing, SSH, LFS, and transport behavior.
-
