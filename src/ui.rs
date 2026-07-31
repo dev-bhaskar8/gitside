@@ -859,11 +859,19 @@ fn truncate_to_width(value: &str, max_width: usize) -> String {
 }
 
 fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Overlay) {
-    let popup = centered_rect(
-        if area.width < 70 { 90 } else { 60 },
-        if area.height < 24 { 85 } else { 60 },
-        area,
-    );
+    let popup = if matches!(overlay, Overlay::Search { .. }) {
+        centered_sized_rect(
+            area.width.saturating_sub(4).clamp(1, 72),
+            area.height.saturating_sub(2).clamp(1, 12),
+            area,
+        )
+    } else {
+        centered_rect(
+            if area.width < 70 { 90 } else { 60 },
+            if area.height < 24 { 85 } else { 60 },
+            area,
+        )
+    };
     frame.render_widget(Clear, popup);
     if let Overlay::Help { scroll, .. } = overlay {
         render_help_overlay(frame, app, popup, scroll);
@@ -1156,6 +1164,17 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         })
 }
 
+fn centered_sized_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1389,6 +1408,31 @@ mod tests {
                 .map(|cell| cell.symbol())
                 .collect::<String>()
                 .contains("[p Push]")
+        );
+    }
+
+    #[tokio::test]
+    async fn search_overlay_stays_compact_in_a_tall_narrow_pane() {
+        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.overlay = Some(Overlay::Search {
+            value: String::new(),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(32, 45)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let popup = app
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, UiAction::CloseOverlay))
+            .expect("search should register its popup")
+            .rect;
+        assert_eq!(popup.width, 28);
+        assert_eq!(popup.height, 12);
+        assert!(
+            popup.y > 10,
+            "search should be centered instead of filling the pane"
         );
     }
 
