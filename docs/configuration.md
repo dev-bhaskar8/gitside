@@ -13,12 +13,10 @@ layout = "auto"
 [editor]
 command = "code"
 args = ["--reuse-window", "--goto", "{path}"]
-
-[theme]
-accent = "blue"
-added = "green"
-deleted = "red"
 ```
+
+Sourcepane inherits foreground and background colors from the terminal palette,
+so it intentionally has no separate theme configuration.
 
 `refresh_ms` controls polling when native filesystem notifications are
 unavailable. With a watcher active, changes are coalesced promptly and a

@@ -45,10 +45,6 @@ pub struct Cli {
     /// Override responsive layout selection.
     #[arg(long, value_enum)]
     pub layout: Option<LayoutPreference>,
-
-    /// Logging verbosity.
-    #[arg(long, default_value = "warn")]
-    pub log_level: String,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -66,7 +62,7 @@ pub enum CliCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub mouse: bool,
     pub confirm_destructive: bool,
@@ -74,22 +70,13 @@ pub struct Settings {
     pub refresh_ms: u64,
     pub layout: LayoutPreference,
     pub editor: EditorSettings,
-    pub theme: ThemeSettings,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct EditorSettings {
     pub command: Option<String>,
     pub args: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ThemeSettings {
-    pub accent: String,
-    pub added: String,
-    pub deleted: String,
 }
 
 impl Default for Settings {
@@ -101,17 +88,6 @@ impl Default for Settings {
             refresh_ms: 1500,
             layout: LayoutPreference::Auto,
             editor: EditorSettings::default(),
-            theme: ThemeSettings::default(),
-        }
-    }
-}
-
-impl Default for ThemeSettings {
-    fn default() -> Self {
-        Self {
-            accent: "blue".into(),
-            added: "green".into(),
-            deleted: "red".into(),
         }
     }
 }
@@ -147,4 +123,40 @@ impl Settings {
 
 fn default_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|path| path.join("sourcepane").join("config.toml"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removed_log_level_option_is_rejected() {
+        assert!(Cli::try_parse_from(["sourcepane", "--log-level", "debug"]).is_err());
+    }
+
+    #[test]
+    fn removed_theme_configuration_is_rejected() {
+        let source = "[theme]\naccent = \"blue\"\n";
+        assert!(toml::from_str::<Settings>(source).is_err());
+    }
+
+    #[test]
+    fn documented_configuration_still_parses() {
+        let source = r#"
+mouse = false
+confirm_destructive = true
+graph_page_size = 100
+refresh_ms = 2000
+layout = "compact"
+
+[editor]
+command = "code"
+args = ["--reuse-window", "--goto", "{path}"]
+"#;
+        let settings = toml::from_str::<Settings>(source).unwrap();
+        assert!(!settings.mouse);
+        assert_eq!(settings.graph_page_size, 100);
+        assert_eq!(settings.layout, LayoutPreference::Compact);
+        assert_eq!(settings.editor.command.as_deref(), Some("code"));
+    }
 }
