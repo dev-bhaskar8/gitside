@@ -48,6 +48,21 @@ cargo install --path .
 sourcepane
 ```
 
+Or use the local installer for the current platform:
+
+```sh
+./scripts/install.sh
+```
+
+```powershell
+.\scripts\install.ps1
+```
+
+Both installers use `cargo install --locked` and accept additional Cargo
+arguments such as `--root`. Homebrew, Winget, and downloadable archives require
+a public release URL and checksums; those cannot be published while the project
+remains intentionally local-only.
+
 Run `sourcepane --help` for command-line options.
 
 ## Controls
@@ -150,6 +165,7 @@ in [Platform support](docs/platforms.md).
 - `src/app.rs`: application state and commands
 - `src/ui.rs`: responsive rendering and mouse hit regions
 - `src/config.rs`: CLI and TOML configuration
+- `scripts/`: local macOS/Linux and Windows installers
 - `docs/`: extended documentation and troubleshooting
 
 ## Development
