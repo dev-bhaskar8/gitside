@@ -421,7 +421,7 @@ impl App {
             KeyCode::Char('u') => self.run_unstage_all().await,
             KeyCode::Char('f') => self.run_remote("Fetching", RemoteAction::Fetch),
             KeyCode::Char('l') => self.run_remote("Pulling", RemoteAction::Pull),
-            KeyCode::Char('p') => self.run_remote("Pushing", RemoteAction::Push),
+            KeyCode::Char('p') => self.run_contextual_push(),
             KeyCode::Char('s') => self.run_stash().await,
             KeyCode::Char('z') => self.focus = Focus::Stashes,
             KeyCode::Char('W') => self.focus = Focus::Worktrees,
@@ -705,7 +705,7 @@ impl App {
             UiAction::Refresh => self.refresh().await,
             UiAction::Fetch => self.run_remote("Fetching", RemoteAction::Fetch),
             UiAction::Pull => self.run_remote("Pulling", RemoteAction::Pull),
-            UiAction::Push => self.run_remote("Pushing", RemoteAction::Push),
+            UiAction::Push => self.run_contextual_push(),
             UiAction::Commit => self.commit(CommitOptions::default()).await,
             UiAction::StageAll => self.run_stage_all().await,
             UiAction::UnstageAll => self.run_unstage_all().await,
@@ -1018,6 +1018,8 @@ impl App {
                 RemoteAction::Fetch => repo.fetch().await,
                 RemoteAction::Pull => repo.pull().await,
                 RemoteAction::Push => repo.push().await,
+                RemoteAction::Publish { remote, branch } => repo.publish(&remote, &branch).await,
+                RemoteAction::Sync => repo.sync().await,
             };
             BackgroundResult::Remote {
                 repo_index,
@@ -1025,6 +1027,43 @@ impl App {
                 result,
             }
         }));
+    }
+
+    fn run_contextual_push(&mut self) {
+        let status = &self.active().status.branch;
+        if status.upstream.is_none() {
+            let Some(branch) = status.head.clone() else {
+                self.status_line = "Create or switch to a branch before publishing".into();
+                return;
+            };
+            let remote = self
+                .active()
+                .remotes
+                .iter()
+                .find(|remote| remote.name == "origin")
+                .or_else(|| self.active().remotes.first())
+                .map(|remote| remote.name.clone());
+            let Some(remote) = remote else {
+                self.status_line = "Add a remote before publishing this branch".into();
+                return;
+            };
+            self.run_remote("Publishing", RemoteAction::Publish { remote, branch });
+        } else if status.ahead > 0 && status.behind > 0 {
+            self.run_remote("Syncing", RemoteAction::Sync);
+        } else {
+            self.run_remote("Pushing", RemoteAction::Push);
+        }
+    }
+
+    pub fn push_control_label(&self) -> &'static str {
+        let status = &self.active().status.branch;
+        if status.upstream.is_none() {
+            "Publish"
+        } else if status.ahead > 0 && status.behind > 0 {
+            "Sync"
+        } else {
+            "Push"
+        }
     }
 
     async fn run_stash(&mut self) {
@@ -1694,11 +1733,13 @@ impl App {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum RemoteAction {
     Fetch,
     Pull,
     Push,
+    Publish { remote: String, branch: String },
+    Sync,
 }
 
 fn commit_options_for_key(key: KeyEvent) -> Option<CommitOptions> {

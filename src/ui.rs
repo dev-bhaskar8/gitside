@@ -113,11 +113,28 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     );
 
     let thin_toolbar = area.width < 75;
-    let full_labels = area.width >= 34;
+    let push_label = app.push_control_label();
+    let expanded = [
+        "f Fetch".to_owned(),
+        "l Pull".to_owned(),
+        format!("p {push_label}"),
+        "r ↻".to_owned(),
+    ];
+    let expanded_width = expanded
+        .iter()
+        .map(|label| display_width(label) as u16 + 2)
+        .sum::<u16>()
+        + 3;
+    let full_labels = area.width >= expanded_width;
     let labels = if full_labels {
-        ["f Fetch", "l Pull", "p Push", "r ↻"]
+        expanded
     } else {
-        ["f", "l", "p", "r"]
+        [
+            "f".to_owned(),
+            "l".to_owned(),
+            "p".to_owned(),
+            "r".to_owned(),
+        ]
     };
     let actions = [
         UiAction::Fetch,
@@ -126,7 +143,9 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         UiAction::Refresh,
     ];
     let gap = u16::from(area.width >= 15);
-    let widths = labels.map(|label| label.chars().count() as u16 + 2);
+    let widths = labels
+        .each_ref()
+        .map(|label| display_width(label) as u16 + 2);
     let total_width = widths.iter().sum::<u16>() + gap * 3;
     let mut left = area.right().saturating_sub(total_width);
     let button_y = if thin_toolbar { area.y + 1 } else { area.y };
@@ -1266,6 +1285,7 @@ mod tests {
     async fn outlined_remote_buttons_fit_supported_widths() {
         let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.active_mut().status.branch.upstream = Some("origin/main".into());
 
         for width in [14, 20, 24, 34, 50, 74, 100] {
             let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
@@ -1321,6 +1341,55 @@ mod tests {
                 assert!(output.contains("[r]"), "width {width}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn existing_push_control_adapts_to_publish_and_sync_states() {
+        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(50, 20)).unwrap();
+
+        app.active_mut().status.branch.upstream = None;
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("[p Publish]")
+        );
+
+        let branch = &mut app.active_mut().status.branch;
+        branch.upstream = Some("origin/main".into());
+        branch.ahead = 2;
+        branch.behind = 1;
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("[p Sync]")
+        );
+
+        app.active_mut().status.branch.behind = 0;
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("[p Push]")
+        );
     }
 
     #[tokio::test]

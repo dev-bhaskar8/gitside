@@ -97,6 +97,11 @@ panes reduce them to `[f] [l] [p] [r]` when the full labels cannot fit. The
 footer shows shortcuts for the currently focused panel instead of a fixed list
 of unexplained keys.
 
+The existing `p` control adapts without adding another button: it becomes
+Publish when the current branch has no upstream, Sync when it has both incoming
+and outgoing commits, and Push otherwise. Publish prefers `origin`, then falls
+back to the first configured remote.
+
 Help opens with shortcuts for the currently focused panel, followed by the
 complete reference. Use `j`/`k`, arrows, Page Up/Down, Home/End, or the mouse
 wheel to scroll; the border shows the current position and remaining overflow.

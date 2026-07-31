@@ -75,3 +75,8 @@ Search is an ephemeral overlay rather than a persistent toolbar. A query maps
 to searchable text owned by the focused view, selects the next matching model
 index, and is retained only so `N` can continue the search after the overlay
 closes.
+
+Remote actions also use progressive disclosure. The existing push hit region
+selects publish, sync, or push from branch upstream/ahead/behind state, and its
+label changes in place. This adds the missing workflow without increasing the
+toolbar's control count.

@@ -449,6 +449,17 @@ impl GitRepo {
         Ok(())
     }
 
+    pub async fn publish(&self, remote: &str, branch: &str) -> Result<()> {
+        self.command(["push", "--set-upstream", remote, branch], None)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn sync(&self) -> Result<()> {
+        self.pull().await?;
+        self.push().await
+    }
+
     pub async fn stash(&self) -> Result<()> {
         self.command(["stash", "push", "--include-untracked"], None)
             .await?;
@@ -1071,6 +1082,95 @@ worktree /repo-feature\0HEAD def456\0branch refs/heads/feature\0locked reason\0\
         repo.abort_operation(GitOperation::Merge).await.unwrap();
         assert_eq!(repo.status().await.unwrap().operation, None);
         assert_eq!(fs::read_to_string(file).unwrap(), "current\n");
+    }
+
+    #[tokio::test]
+    async fn publishes_an_upstream_and_syncs_diverged_branches() {
+        let (directory, repo) = repository().await;
+        let remote = tempfile::tempdir().unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "--bare", "-q"])
+                .current_dir(remote.path())
+                .status()
+                .await
+                .unwrap()
+                .success()
+        );
+        repo.command(
+            ["remote", "add", "origin", remote.path().to_str().unwrap()],
+            None,
+        )
+        .await
+        .unwrap();
+        fs::write(directory.path().join("base.txt"), "base\n").unwrap();
+        repo.stage(Path::new("base.txt")).await.unwrap();
+        repo.commit("base", CommitOptions::default()).await.unwrap();
+        let branch = repo.status().await.unwrap().branch.head.unwrap();
+        repo.publish("origin", &branch).await.unwrap();
+        let upstream = format!("origin/{branch}");
+        assert_eq!(
+            repo.status().await.unwrap().branch.upstream.as_deref(),
+            Some(upstream.as_str())
+        );
+
+        let other = tempfile::tempdir().unwrap();
+        assert!(
+            Command::new("git")
+                .args([
+                    "clone",
+                    "-q",
+                    remote.path().to_str().unwrap(),
+                    other.path().to_str().unwrap(),
+                ])
+                .status()
+                .await
+                .unwrap()
+                .success()
+        );
+        for args in [
+            ["config", "user.name", "Other Test"],
+            ["config", "user.email", "other@example.invalid"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(other.path())
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            );
+        }
+        fs::write(other.path().join("remote.txt"), "remote\n").unwrap();
+        for args in [
+            vec!["add", "remote.txt"],
+            vec!["commit", "-qm", "remote"],
+            vec!["push", "-q"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(other.path())
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            );
+        }
+        fs::write(directory.path().join("local.txt"), "local\n").unwrap();
+        repo.stage(Path::new("local.txt")).await.unwrap();
+        repo.commit("local", CommitOptions::default())
+            .await
+            .unwrap();
+        repo.command(["config", "pull.rebase", "false"], None)
+            .await
+            .unwrap();
+
+        repo.sync().await.unwrap();
+        let status = repo.status().await.unwrap();
+        assert_eq!((status.branch.ahead, status.branch.behind), (0, 0));
+        assert!(directory.path().join("remote.txt").exists());
     }
 
     #[tokio::test]
