@@ -12,8 +12,11 @@ use crate::{
     model::{Change, ChangeKind},
 };
 
-const BG: Color = Color::Rgb(24, 24, 24);
-const PANEL: Color = Color::Rgb(31, 31, 31);
+// Reset delegates the canvas to the terminal profile instead of painting an
+// opaque application background. This preserves Ghostty, tmux, and terminal
+// theme background colors (including transparency).
+const BG: Color = Color::Reset;
+const PANEL: Color = Color::Reset;
 const BORDER: Color = Color::Rgb(62, 62, 62);
 const TEXT: Color = Color::Rgb(204, 204, 204);
 const MUTED: Color = Color::Rgb(145, 145, 145);
@@ -845,6 +848,15 @@ mod tests {
             })
             .unwrap()
             .rect;
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((panel.x + 2, panel.bottom().saturating_sub(2)))
+                .unwrap()
+                .bg,
+            Color::Reset
+        );
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: panel.x + panel.width / 2,
