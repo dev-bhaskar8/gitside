@@ -81,6 +81,11 @@ Single click selects, double click opens, the wheel scrolls, and toolbar buttons
 are clickable. Right click opens contextual actions. tmux must have
 `set -g mouse on` for mouse events to reach terminal applications.
 
+Fetch, Pull, Push, and Refresh are always available as transparent outlined
+buttons. Compact panes abbreviate their labels only when the full words cannot
+fit. The footer shows shortcuts for the currently focused panel instead of a
+fixed list of unexplained keys.
+
 ## Configuration
 
 The default configuration file is:

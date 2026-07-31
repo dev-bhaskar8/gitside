@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
+use unicode_width::UnicodeWidthChar;
 
 use crate::{
     app::{App, Focus, HitRegion, Overlay, UiAction},
@@ -49,7 +50,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(header_height(area.width)),
             Constraint::Length(if area.height < 20 { 3 } else { 5 }),
             Constraint::Min(5),
             Constraint::Length(1),
@@ -72,6 +73,10 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     if let Some(overlay) = app.overlay.clone() {
         render_overlay(frame, app, area, overlay);
     }
+}
+
+fn header_height(width: u16) -> u16 {
+    if width < 75 { 5 } else { 4 }
 }
 
 fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -108,43 +113,40 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     );
 
     let thin_toolbar = area.width < 75;
-    let buttons = if area.width >= 24 {
-        vec![
-            (" Fetch ", UiAction::Fetch),
-            (" Pull ", UiAction::Pull),
-            (" Push ", UiAction::Push),
-            (" ↻ ", UiAction::Refresh),
-        ]
-    } else if area.width >= 14 {
-        vec![
-            (" F ", UiAction::Fetch),
-            (" L ", UiAction::Pull),
-            (" P ", UiAction::Push),
-            (" ↻ ", UiAction::Refresh),
-        ]
+    let full_labels = area.width >= 34;
+    let labels = if full_labels {
+        ["Fetch", "Pull", "Push", "↻"]
     } else {
-        vec![
-            ("F ", UiAction::Fetch),
-            ("L ", UiAction::Pull),
-            ("P ", UiAction::Push),
-            ("↻ ", UiAction::Refresh),
-        ]
+        ["F", "L", "P", "↻"]
     };
-    let mut right = area.right().saturating_sub(1);
-    let button_y = if thin_toolbar && area.height > 2 {
-        area.y + 1
-    } else {
-        area.y
-    };
-    for (label, action) in buttons.into_iter().rev() {
-        let width = label.chars().count() as u16;
-        let rect = Rect::new(right.saturating_sub(width), button_y, width, 1);
+    let actions = [
+        UiAction::Fetch,
+        UiAction::Pull,
+        UiAction::Push,
+        UiAction::Refresh,
+    ];
+    let padding = u16::from(full_labels);
+    let gap = u16::from(area.width >= 15);
+    let widths = labels.map(|label| label.chars().count() as u16 + 2 + padding * 2);
+    let total_width = widths.iter().sum::<u16>() + gap * 3;
+    let mut left = area.right().saturating_sub(total_width);
+    let button_y = if thin_toolbar { area.y + 1 } else { area.y };
+    for (index, ((label, action), width)) in labels.into_iter().zip(actions).zip(widths).enumerate()
+    {
+        let rect = Rect::new(left, button_y, width, 3);
         frame.render_widget(
-            Paragraph::new(label).style(Style::default().fg(BLUE).bg(PANEL)),
+            Paragraph::new(label)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(TEXT).bg(PANEL))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(BLUE)),
+                ),
             rect,
         );
         app.hits.push(HitRegion { rect, action });
-        right = rect.x;
+        left = rect.right() + u16::from(index < 3) * gap;
     }
 }
 
@@ -741,14 +743,13 @@ fn render_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    let help = if area.width >= 70 {
-        "  ? Help  │  Tab Focus  │  Space Stage  │  q Quit"
-    } else {
-        "  ?  Tab  Space  q"
-    };
-    let available = area.width.saturating_sub(help.len() as u16) as usize;
-    let mut status = app.status_line.clone();
-    status.truncate(available);
+    let help = contextual_footer_hint(app.focus, area.width);
+    let help_width = display_width(help);
+    let available = area
+        .width
+        .saturating_sub(help_width as u16)
+        .saturating_sub(1) as usize;
+    let status = truncate_to_width(&app.status_line, available);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(format!(" {status}"), muted_style().bg(PANEL)),
@@ -757,11 +758,65 @@ fn render_status(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .style(Style::default().bg(PANEL)),
         area,
     );
-    let help_rect = Rect::new(area.right().saturating_sub(8), area.y, 8, 1);
+    let help_x = area.right().saturating_sub(help_width as u16);
+    let help_rect = Rect::new(help_x, area.y, 7.min(area.width), 1);
     app.hits.push(HitRegion {
         rect: help_rect,
         action: UiAction::ToggleHelp,
     });
+}
+
+fn contextual_footer_hint(focus: Focus, width: u16) -> &'static str {
+    if width < 18 {
+        return " ? Help";
+    }
+    if width < 24 {
+        return " ? Help · More";
+    }
+    if width < 50 {
+        return match focus {
+            Focus::Commit => " ? Help · Commit",
+            Focus::Changes => " ? Help · Space Stage",
+            Focus::Staged => " ? Help · Space Unstage",
+            Focus::Graph => " ? Help · Enter View",
+            Focus::Branches => " ? Help · Enter Switch",
+            Focus::Stashes => " ? Help · A Apply",
+            Focus::Worktrees => " ? Help · X Remove",
+            Focus::GitHub => " ? Help · Enter View",
+            Focus::Preview => " ? Help · Esc Close",
+        };
+    }
+    match focus {
+        Focus::Commit => " ? Help · Ctrl+Enter Commit · Esc Done",
+        Focus::Changes => " ? Help · Space Stage · Enter Diff",
+        Focus::Staged => " ? Help · Space Unstage · Enter Diff",
+        Focus::Graph => " ? Help · Enter View · y Pick · v Revert",
+        Focus::Branches => " ? Help · Enter Switch · n New · x Delete",
+        Focus::Stashes => " ? Help · Enter View · A Apply · P Pop",
+        Focus::Worktrees => " ? Help · w Add · X Remove",
+        Focus::GitHub => " ? Help · Enter View · i Type · o Open",
+        Focus::Preview => " ? Help · j/k Hunk · Space Stage · Esc Close",
+    }
+}
+
+fn display_width(value: &str) -> usize {
+    value.chars().filter_map(UnicodeWidthChar::width).sum()
+}
+
+fn truncate_to_width(value: &str, max_width: usize) -> String {
+    let mut width = 0;
+    value
+        .chars()
+        .take_while(|character| {
+            let character_width = UnicodeWidthChar::width(*character).unwrap_or(0);
+            if width + character_width > max_width {
+                false
+            } else {
+                width += character_width;
+                true
+            }
+        })
+        .collect()
 }
 
 fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Overlay) {
@@ -978,9 +1033,6 @@ mod tests {
         assert!(output.contains("A apply"));
         assert!(output.contains("P pop"));
         assert!(output.contains("X drop"));
-        assert!(output.contains("Fetch"));
-        assert!(output.contains("Pull"));
-        assert!(output.contains("Push"));
         assert!(
             app.hits
                 .iter()
@@ -996,5 +1048,62 @@ mod tests {
                 .iter()
                 .any(|hit| matches!(hit.action, UiAction::Push))
         );
+    }
+
+    #[tokio::test]
+    async fn outlined_remote_buttons_fit_supported_widths() {
+        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+
+        for width in [14, 20, 24, 34, 50, 74, 100] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let buttons = app
+                .hits
+                .iter()
+                .filter(|hit| {
+                    matches!(
+                        hit.action,
+                        UiAction::Fetch | UiAction::Pull | UiAction::Push | UiAction::Refresh
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            assert_eq!(buttons.len(), 4, "width {width}");
+            for button in &buttons {
+                assert_eq!(button.rect.height, 3, "width {width}");
+                assert!(button.rect.right() <= width, "width {width}");
+                let top_left = terminal
+                    .backend()
+                    .buffer()
+                    .cell((button.rect.x, button.rect.y))
+                    .unwrap();
+                assert_eq!(top_left.symbol(), "┌", "width {width}");
+                assert_eq!(top_left.bg, Color::Reset, "width {width}");
+            }
+            for (index, button) in buttons.iter().enumerate() {
+                for other in buttons.iter().skip(index + 1) {
+                    assert!(
+                        button.rect.right() <= other.rect.x || other.rect.right() <= button.rect.x,
+                        "button hit regions overlap at width {width}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn footer_hints_are_contextual_and_unicode_truncation_is_safe() {
+        assert_eq!(
+            contextual_footer_hint(Focus::Changes, 40),
+            " ? Help · Space Stage"
+        );
+        assert_eq!(
+            contextual_footer_hint(Focus::Graph, 80),
+            " ? Help · Enter View · y Pick · v Revert"
+        );
+        assert!(!contextual_footer_hint(Focus::Changes, 40).contains("Tab"));
+        assert_eq!(truncate_to_width("répo 🚀", 6), "répo ");
+        assert_eq!(truncate_to_width("répo 🚀", 7), "répo 🚀");
     }
 }
