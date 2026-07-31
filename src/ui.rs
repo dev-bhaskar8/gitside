@@ -290,6 +290,14 @@ fn render_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect, staged: bool
         .borders(Borders::ALL)
         .border_style(Style::default().fg(if focused { BLUE } else { BORDER }));
     frame.render_widget(List::new(items).block(block), area);
+    app.hits.push(HitRegion {
+        rect: area,
+        action: UiAction::Focus(if staged {
+            Focus::Staged
+        } else {
+            Focus::Changes
+        }),
+    });
     let visible = area.height.saturating_sub(2) as usize;
     for (row, _) in changes.iter().take(visible).enumerate() {
         app.hits.push(HitRegion {
@@ -345,6 +353,10 @@ fn render_graph(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(if focused { BLUE } else { BORDER }));
     frame.render_widget(List::new(items).block(block), area);
+    app.hits.push(HitRegion {
+        rect: area,
+        action: UiAction::Focus(Focus::Graph),
+    });
     for row in 0..app
         .active()
         .history
@@ -398,6 +410,10 @@ fn render_branches(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         ),
         area,
     );
+    app.hits.push(HitRegion {
+        rect: area,
+        action: UiAction::Focus(Focus::Branches),
+    });
     for row in 0..app
         .active()
         .branches
@@ -445,6 +461,10 @@ fn render_stashes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         ),
         area,
     );
+    app.hits.push(HitRegion {
+        rect: area,
+        action: UiAction::Focus(Focus::Stashes),
+    });
     for row in 0..app
         .active()
         .stashes
@@ -504,6 +524,10 @@ fn render_worktrees(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         ),
         area,
     );
+    app.hits.push(HitRegion {
+        rect: area,
+        action: UiAction::Focus(Focus::Worktrees),
+    });
     for row in 0..app
         .active()
         .worktrees
@@ -524,6 +548,10 @@ fn render_worktrees(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
 fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::GitHub;
+    app.hits.push(HitRegion {
+        rect: area,
+        action: UiAction::Focus(Focus::GitHub),
+    });
     if !app.active().github_available {
         frame.render_widget(
             Paragraph::new("GitHub CLI is unavailable.\n\nInstall `gh` and run `gh auth login`.")
@@ -645,6 +673,10 @@ fn render_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         ),
         area,
     );
+    app.hits.push(HitRegion {
+        rect: area,
+        action: UiAction::Focus(Focus::Preview),
+    });
 }
 
 fn render_status(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -782,6 +814,11 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use crate::config::{Cli, Settings};
 
     #[test]
     fn middle_truncation_preserves_ends() {
@@ -790,5 +827,32 @@ mod tests {
             "src/c…nel.rs"
         );
         assert_eq!(truncate_middle("short", 12), "short");
+    }
+
+    #[tokio::test]
+    async fn clicking_empty_change_panel_space_moves_focus_from_commit() {
+        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Commit;
+        let mut terminal = Terminal::new(TestBackend::new(50, 40)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let panel = app
+            .hits
+            .iter()
+            .find(|hit| {
+                hit.rect.height > 1 && matches!(hit.action, UiAction::Focus(Focus::Changes))
+            })
+            .unwrap()
+            .rect;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: panel.x + panel.width / 2,
+            row: panel.bottom().saturating_sub(2),
+            modifiers: KeyModifiers::NONE,
+        })
+        .await;
+
+        assert_eq!(app.focus, Focus::Changes);
     }
 }
