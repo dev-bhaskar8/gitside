@@ -30,10 +30,11 @@ are inherited by child processes and never copied into Sourcepane state or logs.
 The renderer recalculates geometry and hit regions for every frame, including
 tmux pane resize events.
 
-The header uses compact one-line outlined remote-action controls. At narrow
-widths the toolbar moves below the repository title and abbreviates labels only
-when necessary. Footer hints are derived from the focused panel and status text
-is truncated by terminal-cell width rather than UTF-8 byte length.
+The header uses compact one-line outlined remote-action controls with their
+keyboard equivalents embedded in the labels. At narrow widths the toolbar moves
+below the repository title and reduces to `[f] [l] [p] [r]`. Footer hints are
+derived from the focused panel and status text is truncated by terminal-cell
+width rather than UTF-8 byte length.
 
 The help overlay derives its first section from the active focus target and
 then presents the full shortcut reference. It owns an independent, clamped

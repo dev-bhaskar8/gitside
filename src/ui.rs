@@ -115,9 +115,9 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let thin_toolbar = area.width < 75;
     let full_labels = area.width >= 34;
     let labels = if full_labels {
-        ["Fetch", "Pull", "Push", "↻"]
+        ["f Fetch", "l Pull", "p Push", "r ↻"]
     } else {
-        ["F", "L", "P", "↻"]
+        ["f", "l", "p", "r"]
     };
     let actions = [
         UiAction::Fetch,
@@ -1252,6 +1252,25 @@ mod tests {
                         "button hit regions overlap at width {width}"
                     );
                 }
+            }
+
+            let output: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            if width >= 34 {
+                assert!(output.contains("[f Fetch]"), "width {width}");
+                assert!(output.contains("[l Pull]"), "width {width}");
+                assert!(output.contains("[p Push]"), "width {width}");
+                assert!(output.contains("[r ↻]"), "width {width}");
+            } else {
+                assert!(output.contains("[f]"), "width {width}");
+                assert!(output.contains("[l]"), "width {width}");
+                assert!(output.contains("[p]"), "width {width}");
+                assert!(output.contains("[r]"), "width {width}");
             }
         }
     }

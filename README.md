@@ -82,9 +82,10 @@ are clickable. Right click opens contextual actions. tmux must have
 `set -g mouse on` for mouse events to reach terminal applications.
 
 Fetch, Pull, Push, and Refresh are always available as compact, transparent
-one-line outlined buttons. Compact panes abbreviate their labels only when the
-full words cannot fit. The footer shows shortcuts for the currently focused
-panel instead of a fixed list of unexplained keys.
+one-line outlined buttons. Each button displays its keyboard equivalent; compact
+panes reduce them to `[f] [l] [p] [r]` when the full labels cannot fit. The
+footer shows shortcuts for the currently focused panel instead of a fixed list
+of unexplained keys.
 
 Help opens with shortcuts for the currently focused panel, followed by the
 complete reference. Use `j`/`k`, arrows, Page Up/Down, Home/End, or the mouse
