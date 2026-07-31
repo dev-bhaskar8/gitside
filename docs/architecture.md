@@ -70,3 +70,8 @@ panel switches to Merge Changes only while conflicts exist, and whole-file
 current/incoming/both plus operation continue/abort commands are then exposed
 through contextual shortcuts and Help. Resolving a file stages it so Git can
 recognize that the conflict is complete.
+
+Search is an ephemeral overlay rather than a persistent toolbar. A query maps
+to searchable text owned by the focused view, selects the next matching model
+index, and is retained only so `N` can continue the search after the overlay
+closes.

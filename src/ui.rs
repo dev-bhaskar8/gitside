@@ -866,6 +866,13 @@ fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Ove
             format!("{label}\n\n{value}█\n\nEnter to confirm · Esc to cancel"),
             BLUE,
         ),
+        Overlay::Search { value } => (
+            " Search focused view ".to_owned(),
+            format!(
+                "Find files, commits, branches, or items in the current panel.\n\n/{value}█\n\nEnter to find · Esc to cancel · N finds next"
+            ),
+            BLUE,
+        ),
     };
     frame.render_widget(
         Paragraph::new(body).wrap(Wrap { trim: false }).block(
@@ -1063,7 +1070,7 @@ fn help_text(focus: Focus, has_conflicts: bool, has_operation: bool) -> String {
     };
 
     format!(
-        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  ? / F1         Open/close help\n  q              Quit\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External editor\n\nRepository\n  c                    Commit message\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  f / l / p            Fetch/pull/push\n  s / z                Create/list stashes\n  W                    Worktree list\n  r                    Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, ?, or F1 to close."
+        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  /              Search focused view\n  N              Next search match\n  ? / F1         Open/close help\n  q              Quit\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External editor\n\nRepository\n  c                    Commit message\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  f / l / p            Fetch/pull/push\n  s / z                Create/list stashes\n  W                    Worktree list\n  r                    Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, ?, or F1 to close."
     )
 }
 

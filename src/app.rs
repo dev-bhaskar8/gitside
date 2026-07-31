@@ -88,6 +88,9 @@ pub enum Overlay {
         value: String,
         action: PromptAction,
     },
+    Search {
+        value: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +154,7 @@ pub struct App {
     pub hits: Vec<HitRegion>,
     last_click: Option<(u16, u16, Instant)>,
     background_task: Option<JoinHandle<BackgroundResult>>,
+    last_search: Option<String>,
 }
 
 enum BackgroundResult {
@@ -234,6 +238,7 @@ impl App {
             hits: Vec::new(),
             last_click: None,
             background_task: None,
+            last_search: None,
         })
     }
 
@@ -386,6 +391,11 @@ impl App {
         match key.code {
             KeyCode::Char('q') => return EventOutcome::Quit,
             KeyCode::Char('?') => self.open_help(),
+            KeyCode::Char('/') => {
+                self.overlay = Some(Overlay::Search {
+                    value: String::new(),
+                })
+            }
             KeyCode::Char('r') => self.refresh().await,
             KeyCode::Char('O') if self.conflicts_focused() => {
                 self.resolve_selected_conflict(ConflictChoice::Current)
@@ -435,6 +445,7 @@ impl App {
                     action: PromptAction::CreateBranch,
                 });
             }
+            KeyCode::Char('N') => self.repeat_search(),
             KeyCode::Char('x') if self.focus == Focus::Branches => {
                 self.request_delete_branch().await
             }
@@ -553,6 +564,31 @@ impl App {
                 }
                 KeyCode::Char(character) => {
                     if let Some(Overlay::Prompt { value, .. }) = &mut self.overlay {
+                        value.push(character);
+                    }
+                }
+                _ => {}
+            },
+            Overlay::Search { .. } => match key.code {
+                KeyCode::Esc => self.overlay = None,
+                KeyCode::Backspace => {
+                    if let Some(Overlay::Search { value }) = &mut self.overlay {
+                        value.pop();
+                    }
+                }
+                KeyCode::Enter => {
+                    let value = match self.overlay.take() {
+                        Some(Overlay::Search { value }) => value,
+                        _ => String::new(),
+                    };
+                    self.search_focused(value, false);
+                }
+                KeyCode::Char(character)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    if let Some(Overlay::Search { value }) = &mut self.overlay {
                         value.push(character);
                     }
                 }
@@ -696,6 +732,146 @@ impl App {
             scroll: 0,
             max_scroll: 0,
         });
+    }
+
+    fn repeat_search(&mut self) {
+        let Some(query) = self.last_search.clone() else {
+            self.status_line = "Press / to search the focused view".into();
+            return;
+        };
+        self.search_focused(query, true);
+    }
+
+    fn search_focused(&mut self, query: String, after_current: bool) {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            self.status_line = "Search text cannot be empty".into();
+            return;
+        }
+        self.last_search = Some(query.clone());
+        if self.focus == Focus::Preview {
+            let Some(preview) = &mut self.preview else {
+                return;
+            };
+            let start = if after_current {
+                usize::from(preview.scroll).saturating_add(1)
+            } else {
+                usize::from(preview.scroll)
+            };
+            let lines = preview.body.lines().collect::<Vec<_>>();
+            if let Some(index) = (0..lines.len()).find_map(|offset| {
+                let index = (start + offset) % lines.len().max(1);
+                lines[index]
+                    .to_lowercase()
+                    .contains(&query)
+                    .then_some(index)
+            }) {
+                preview.scroll = index.min(u16::MAX as usize) as u16;
+                self.status_line = format!("Found {query}");
+            } else {
+                self.status_line = format!("No match for {query}");
+            }
+            return;
+        }
+        let len = self.current_len();
+        if len == 0 {
+            self.status_line = format!("No match for {query}");
+            return;
+        }
+        let start = if after_current {
+            (self.current_selection() + 1) % len
+        } else {
+            self.current_selection().min(len - 1)
+        };
+        if let Some(index) = (0..len).find_map(|offset| {
+            let index = (start + offset) % len;
+            self.search_text(index)
+                .to_lowercase()
+                .contains(&query)
+                .then_some(index)
+        }) {
+            self.set_selection(index);
+            self.status_line = format!("Found {query}");
+        } else {
+            self.status_line = format!("No match for {query}");
+        }
+    }
+
+    fn search_text(&self, index: usize) -> String {
+        match self.focus {
+            Focus::Changes if !self.active().status.conflicts.is_empty() => self
+                .active()
+                .status
+                .conflicts
+                .get(index)
+                .map(|change| change.path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            Focus::Changes => self
+                .active()
+                .status
+                .unstaged
+                .get(index)
+                .map(|change| change.path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            Focus::Staged => self
+                .active()
+                .status
+                .staged
+                .get(index)
+                .map(|change| change.path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            Focus::Graph => self
+                .active()
+                .history
+                .get(index)
+                .map(|commit| {
+                    format!(
+                        "{} {} {} {}",
+                        commit.oid,
+                        commit.subject,
+                        commit.author,
+                        commit.decorations.join(" ")
+                    )
+                })
+                .unwrap_or_default(),
+            Focus::Branches => self
+                .active()
+                .branches
+                .get(index)
+                .map(|branch| branch.name.clone())
+                .unwrap_or_default(),
+            Focus::Stashes => self
+                .active()
+                .stashes
+                .get(index)
+                .map(|stash| format!("{} {}", stash.reference, stash.subject))
+                .unwrap_or_default(),
+            Focus::Worktrees => self
+                .active()
+                .worktrees
+                .get(index)
+                .map(|worktree| {
+                    format!(
+                        "{} {}",
+                        worktree.path.display(),
+                        worktree.branch.as_deref().unwrap_or_default()
+                    )
+                })
+                .unwrap_or_default(),
+            Focus::GitHub if self.github_show_issues => self
+                .active()
+                .issues
+                .get(index)
+                .map(|issue| format!("{} {} {}", issue.number, issue.title, issue.author))
+                .unwrap_or_default(),
+            Focus::GitHub => self
+                .active()
+                .pull_requests
+                .get(index)
+                .map(|pr| format!("{} {} {} {}", pr.number, pr.title, pr.author, pr.head))
+                .unwrap_or_default(),
+            Focus::Commit | Focus::Preview => String::new(),
+        }
     }
 
     async fn open_change_preview(&mut self) {
@@ -1729,5 +1905,38 @@ mod tests {
         assert_eq!(fs::read_to_string(file).unwrap(), "original\n");
         assert!(app.overlay.is_none());
         assert!(app.active().status.unstaged.is_empty());
+    }
+
+    #[tokio::test]
+    async fn slash_search_targets_only_the_focused_view_and_repeats() {
+        let cli = Cli::try_parse_from(["sourcepane", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Changes;
+        app.active_mut().status.conflicts.clear();
+        app.active_mut().status.unstaged = ["alpha.rs", "beta.rs", "alpha-test.rs"]
+            .into_iter()
+            .map(|path| Change {
+                path: path.into(),
+                original_path: None,
+                kind: crate::model::ChangeKind::Modified,
+                staged: false,
+            })
+            .collect();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+            .await;
+        assert!(matches!(app.overlay, Some(Overlay::Search { .. })));
+        for character in "alpha".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.selected_change, 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT))
+            .await;
+        assert_eq!(app.selected_change, 2);
+        assert_eq!(app.last_search.as_deref(), Some("alpha"));
     }
 }

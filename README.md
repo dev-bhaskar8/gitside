@@ -84,6 +84,7 @@ Run `sourcepane --help` for command-line options.
 | `C` / `A` | Continue/abort an in-progress Git operation |
 | `?` | Toggle help |
 | `F1` | Toggle help, including while editing a commit message |
+| `/` / `N` | Search the focused view / find the next match |
 | `q` | Quit |
 
 Single click selects, double click opens, the wheel scrolls, and toolbar buttons
@@ -99,6 +100,10 @@ of unexplained keys.
 Help opens with shortcuts for the currently focused panel, followed by the
 complete reference. Use `j`/`k`, arrows, Page Up/Down, Home/End, or the mouse
 wheel to scroll; the border shows the current position and remaining overflow.
+
+Search is invoked on demand with `/` and disappears after submission or
+cancellation. It searches only the focused Changes, Staged, Graph, Branches,
+Stashes, Worktrees, GitHub, or Preview view; `N` advances to the next match.
 
 When conflicts exist, the normal Changes panel temporarily becomes Merge
 Changes and shows only conflicted files. Resolution and continue/abort actions
