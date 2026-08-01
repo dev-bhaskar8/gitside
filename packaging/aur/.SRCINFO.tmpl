@@ -1,0 +1,17 @@
+pkgbase = gitside-bin
+	pkgdesc = VS Code-inspired source control panel for the terminal
+	pkgver = __VERSION__
+	pkgrel = 1
+	url = https://dev-bhaskar8.github.io/gitside/
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	depends = git
+	provides = gitside
+	conflicts = gitside
+	source_x86_64 = gitside-__VERSION__-x86_64.tar.xz::https://github.com/dev-bhaskar8/gitside/releases/download/v__VERSION__/gitside-x86_64-unknown-linux-gnu.tar.xz
+	sha256sums_x86_64 = __X64_LINUX_SHA256__
+	source_aarch64 = gitside-__VERSION__-aarch64.tar.xz::https://github.com/dev-bhaskar8/gitside/releases/download/v__VERSION__/gitside-aarch64-unknown-linux-gnu.tar.xz
+	sha256sums_aarch64 = __ARM64_LINUX_SHA256__
+
+pkgname = gitside-bin

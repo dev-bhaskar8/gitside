@@ -1,0 +1,234 @@
+name: Publish package managers
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable release tag
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  attestations: write
+  id-token: write
+
+concurrency:
+  group: package-managers-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Build native packages and manifests
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - name: Validate release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name == "gitside") | .version')
+          test "$RELEASE_TAG" = "v$package_version"
+      - name: Download canonical release assets
+        shell: bash
+        run: |
+          mkdir -p target/package-assets
+          gh release download "$RELEASE_TAG" --dir target/package-assets \
+            --pattern 'sha256.sum' \
+            --pattern 'gitside-*-unknown-linux-gnu.tar.xz' \
+            --pattern 'gitside-*-pc-windows-msvc.zip' \
+            --pattern 'gitside-*-pc-windows-msvc.msi'
+      - name: Install nfpm
+        env:
+          GOBIN: ${{ runner.temp }}/bin
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+          echo "$GOBIN" >> "$GITHUB_PATH"
+      - name: Build Linux packages
+        run: scripts/build-linux-packages.sh "$RELEASE_TAG" target/package-assets target/packages
+      - name: Render registry manifests
+        run: scripts/render-package-manifests.sh "$RELEASE_TAG" target/package-assets target/manifests
+      - name: Bundle manifests and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C target/manifests -czf "target/packages/package-manifests-${RELEASE_TAG}.tar.gz" .
+          (cd target/packages && sha256sum ./*.deb ./*.rpm ./*.tar.gz > packages-sha256.sum)
+      - name: Attest generated packages
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            target/packages/*.deb
+            target/packages/*.rpm
+            target/packages/package-manifests-*.tar.gz
+      - name: Attach native packages to release
+        run: gh release upload "$RELEASE_TAG" target/packages/* --clobber
+      - name: Upload package publication bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: package-publication-${{ env.RELEASE_TAG }}
+          path: |
+            target/manifests/**
+            target/packages/**
+          include-hidden-files: true
+
+  scoop:
+    name: Publish Scoop bucket
+    needs: package
+    runs-on: ubuntu-24.04
+    environment: registry
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: package-publication-${{ github.event.release.tag_name || inputs.tag }}
+          path: package-publication
+      - uses: actions/checkout@v7
+        with:
+          repository: dev-bhaskar8/scoop-bucket
+          token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          path: scoop-bucket
+      - name: Update manifest
+        run: |
+          install -Dm644 package-publication/manifests/scoop/gitside.json scoop-bucket/bucket/gitside.json
+          cd scoop-bucket
+          git config user.name dev-bhaskar8
+          git config user.email vaas.ygg@gmail.com
+          git add bucket/gitside.json
+          git diff --cached --quiet || git commit -m "gitside ${{ github.event.release.tag_name || inputs.tag }}"
+          git push
+
+  chocolatey:
+    name: Publish Chocolatey package
+    needs: package
+    if: ${{ vars.ENABLE_CHOCOLATEY == 'true' }}
+    runs-on: windows-2025
+    environment: registry
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: package-publication-${{ env.RELEASE_TAG }}
+          path: package-publication
+      - name: Build package
+        shell: pwsh
+        run: choco pack package-publication/manifests/chocolatey/gitside.nuspec --output-directory package-publication/packages
+      - name: Publish package
+        shell: pwsh
+        run: choco push (Get-ChildItem package-publication/packages/gitside.*.nupkg) --source https://push.chocolatey.org/ --api-key '${{ secrets.CHOCOLATEY_API_KEY }}'
+      - name: Attach package to release
+        shell: pwsh
+        run: gh release upload $env:RELEASE_TAG package-publication/packages/gitside.*.nupkg --clobber
+
+  aur:
+    name: Publish AUR package
+    needs: package
+    if: ${{ vars.ENABLE_AUR == 'true' }}
+    runs-on: ubuntu-24.04
+    environment: registry
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: package-publication-${{ github.event.release.tag_name || inputs.tag }}
+          path: package-publication
+      - name: Configure AUR SSH access
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts
+          printf 'Host aur.archlinux.org\n  IdentityFile ~/.ssh/aur\n  IdentitiesOnly yes\n' >> ~/.ssh/config
+      - name: Update AUR repository
+        run: |
+          git clone ssh://aur@aur.archlinux.org/gitside-bin.git aur
+          install -Dm644 package-publication/manifests/aur/PKGBUILD aur/PKGBUILD
+          install -Dm644 package-publication/manifests/aur/.SRCINFO aur/.SRCINFO
+          cd aur
+          git config user.name dev-bhaskar8
+          git config user.email vaas.ygg@gmail.com
+          git add PKGBUILD .SRCINFO
+          git diff --cached --quiet || git commit -m "gitside ${{ github.event.release.tag_name || inputs.tag }}"
+          git push
+
+  winget:
+    name: Submit WinGet manifests
+    needs: package
+    runs-on: ubuntu-24.04
+    environment: registry
+    env:
+      GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: package-publication-${{ env.RELEASE_TAG }}
+          path: package-publication
+      - name: Prepare sparse WinGet fork
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=${RELEASE_TAG#v}
+          branch=gitside-$version
+          gh repo clone dev-bhaskar8/winget-pkgs winget-pkgs -- --filter=blob:none --no-checkout
+          cd winget-pkgs
+          git sparse-checkout init --cone
+          git sparse-checkout set manifests/d/DevBhaskar8/Gitside
+          git checkout master
+          git checkout -B "$branch"
+          rm -rf manifests/d/DevBhaskar8/Gitside
+          mkdir -p manifests/d/DevBhaskar8
+          cp -R ../package-publication/manifests/winget/d/DevBhaskar8/Gitside manifests/d/DevBhaskar8/
+          git config user.name dev-bhaskar8
+          git config user.email vaas.ygg@gmail.com
+          git add manifests/d/DevBhaskar8/Gitside
+          git commit -m "New package: DevBhaskar8.Gitside version $version" || true
+          git push --force-with-lease origin "$branch"
+          existing=$(gh pr list --repo microsoft/winget-pkgs --head "dev-bhaskar8:$branch" --json url --jq '.[0].url // empty')
+          if test -n "$existing"; then
+            echo "$existing"
+          else
+            gh pr create --repo microsoft/winget-pkgs --head "dev-bhaskar8:$branch" --base master \
+              --title "New package: DevBhaskar8.Gitside version $version" \
+              --body "Adds Gitside $version from its signed GitHub release artifacts."
+          fi
+
+  snap:
+    name: Publish Snap (${{ matrix.arch }})
+    needs: package
+    if: ${{ vars.ENABLE_SNAP == 'true' }}
+    environment: registry
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          persist-credentials: false
+      - name: Build snap
+        id: build
+        uses: snapcore/action-build@b391f430cb2650fd359ed4d2cfe88b2c481800e0
+      - name: Publish stable snap
+        uses: snapcore/action-publish@9334eecb267cfd97a0ce3c8654215d095927252f
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: stable

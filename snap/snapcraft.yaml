@@ -1,0 +1,30 @@
+name: gitside
+base: core24
+version: '0.1.0'
+summary: Source control that fits your terminal
+description: |
+  Gitside is a responsive Git source-control TUI designed for both full
+  terminals and narrow tmux side panes. It supports keyboard and mouse
+  workflows while inheriting the active terminal palette.
+grade: stable
+confinement: classic
+license: MIT
+website: https://dev-bhaskar8.github.io/gitside/
+source-code: https://github.com/dev-bhaskar8/gitside
+issues: https://github.com/dev-bhaskar8/gitside/issues
+
+platforms:
+  amd64:
+  arm64:
+
+apps:
+  gitside:
+    command: bin/gitside
+
+parts:
+  gitside:
+    plugin: rust
+    source: .
+    rust-channel: '1.85'
+    build-packages:
+      - pkg-config

@@ -1,0 +1,30 @@
+{
+  "version": "__VERSION__",
+  "description": "A VS Code-inspired source control panel for the terminal",
+  "homepage": "https://dev-bhaskar8.github.io/gitside/",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/dev-bhaskar8/gitside/releases/download/v__VERSION__/gitside-x86_64-pc-windows-msvc.zip",
+      "hash": "__X64_ZIP_SHA256__"
+    },
+    "arm64": {
+      "url": "https://github.com/dev-bhaskar8/gitside/releases/download/v__VERSION__/gitside-aarch64-pc-windows-msvc.zip",
+      "hash": "__ARM64_ZIP_SHA256__"
+    }
+  },
+  "bin": "gitside.exe",
+  "checkver": {
+    "github": "https://github.com/dev-bhaskar8/gitside"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/dev-bhaskar8/gitside/releases/download/v$version/gitside-x86_64-pc-windows-msvc.zip"
+      },
+      "arm64": {
+        "url": "https://github.com/dev-bhaskar8/gitside/releases/download/v$version/gitside-aarch64-pc-windows-msvc.zip"
+      }
+    }
+  }
+}
