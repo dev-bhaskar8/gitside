@@ -47,6 +47,12 @@ Generation is opt-in and always creates an editable draft. It never stages
 files, creates a repository, switches branches, commits, or pushes. Every mode
 uses staged changes only. Enable one of the following modes:
 
+The AI panel is always available in the normal `Tab` sequence, just like
+Stashes and Worktrees. From that panel, press `e` to enable generation for the
+current session, `1`/`2`/`3` to choose Local/Agent/API, and `x` to toggle emoji.
+These panel controls make Smart Local usable immediately. The configuration
+below persists choices and supplies provider-specific details across launches.
+
 ### Smart Local
 
 This deterministic mode is private, offline, and requires no AI service. It
@@ -131,5 +137,5 @@ endpoint = "http://127.0.0.1:11434/v1/chat/completions"
 # api_key_env = "LOCAL_AI_KEY"
 ```
 
-Press `Ctrl+G` from any panel or use the outlined Generate button. `G` also
-generates outside the commit editor, while `Y` opens the AI status panel.
+Press `Ctrl+G` from any panel or use Generate inside the AI panel. `G` also
+generates outside the commit editor, while `Y` opens the AI panel directly.

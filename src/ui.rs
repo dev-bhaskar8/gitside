@@ -10,7 +10,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::{
     ai,
     app::{App, Focus, HitRegion, Overlay, UiAction},
-    config::LayoutPreference,
+    config::{AiMode, LayoutPreference},
     github::{GitHubConnectionState, GitHubVisibility},
     model::{Change, ChangeKind},
 };
@@ -801,7 +801,7 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
 fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Ai;
-    let settings = &app.settings.ai;
+    let settings = app.settings.ai.clone();
     let enabled = if settings.enabled { "Yes" } else { "No" };
     let emoji = if settings.emoji { "On" } else { "Off" };
     let setup = match settings.mode {
@@ -827,45 +827,116 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         }
     };
     let body = format!(
-        "Enabled   {enabled}\nMode      {}\nProvider  {}\nStatus    {}\nEmoji     {emoji}\nLimit     {} bytes\n\n{setup}\n\nMCP is not required for generation. Built-in agent adapters request non-mutating, non-interactive operation. Custom commands are trusted programs.\n\nConfigure [ai], [ai.agent], and [ai.api] in config.toml.\n\nCtrl+G generates from staged changes and inserts an editable draft.",
-        ai::mode_label(settings),
-        ai::provider_label(settings),
-        ai::readiness(settings),
-        settings.max_diff_bytes,
+        "Enabled   {enabled} · Emoji {emoji}\nMode      {}\nProvider  {}\nStatus    {}\n\n{setup}\n\nMCP is not required. Output is an editable draft from staged changes only.\n\nSmart Local works immediately. Save Agent/API details in config.toml.\n\nKeys: e on/off · 1 local · 2 agent · 3 API · x emoji · G generate",
+        ai::mode_label(&settings),
+        ai::provider_label(&settings),
+        ai::readiness(&settings),
     );
     frame.render_widget(
-        Paragraph::new(body).wrap(Wrap { trim: false }).block(
-            Block::default()
-                .title(" AI Commit Messages ")
-                .borders(Borders::ALL)
-                .border_style(panel_border_style(focused)),
-        ),
+        Block::default()
+            .title(" AI ")
+            .borders(Borders::ALL)
+            .border_style(panel_border_style(focused)),
         area,
     );
     app.hits.push(HitRegion {
         rect: area,
         action: UiAction::Focus(Focus::Ai),
     });
-    if settings.enabled && area.width >= 8 && area.height >= 4 {
-        let label = if area.width >= 20 {
-            "[Generate]"
-        } else {
-            "[AI]"
-        };
-        let button = Rect::new(
-            area.x + 2,
-            area.bottom().saturating_sub(2),
-            label.len() as u16,
-            1,
-        );
+
+    let inner = area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    if inner.is_empty() {
+        return;
+    }
+    let verbose = inner.width >= 46;
+    let controls = [
+        (
+            if verbose {
+                if settings.enabled {
+                    "[e Enabled]"
+                } else {
+                    "[e Enable]"
+                }
+            } else if settings.enabled {
+                "[e On]"
+            } else {
+                "[e Off]"
+            },
+            UiAction::ToggleAiEnabled,
+            settings.enabled,
+        ),
+        (
+            if verbose { "[1 Local]" } else { "[1]" },
+            UiAction::SelectAiMode(AiMode::Local),
+            settings.mode == AiMode::Local,
+        ),
+        (
+            if verbose { "[2 Agent]" } else { "[2]" },
+            UiAction::SelectAiMode(AiMode::Agent),
+            settings.mode == AiMode::Agent,
+        ),
+        (
+            if verbose { "[3 API]" } else { "[3]" },
+            UiAction::SelectAiMode(AiMode::Api),
+            settings.mode == AiMode::Api,
+        ),
+        (
+            if verbose {
+                if settings.emoji {
+                    "[x Emoji on]"
+                } else {
+                    "[x Emoji off]"
+                }
+            } else if settings.emoji {
+                "[x On]"
+            } else {
+                "[x Off]"
+            },
+            UiAction::ToggleAiEmoji,
+            settings.emoji,
+        ),
+        (
+            if verbose { "[G Generate]" } else { "[G]" },
+            UiAction::GenerateCommitMessage,
+            false,
+        ),
+    ];
+    let mut x = inner.x;
+    let mut y = inner.y;
+    for (label, action, selected) in controls {
+        let width = label.len() as u16;
+        if x > inner.x && x.saturating_add(width) > inner.right() {
+            x = inner.x;
+            y = y.saturating_add(1);
+        }
+        if y >= inner.bottom() {
+            break;
+        }
+        let button = Rect::new(x, y, width.min(inner.right().saturating_sub(x)), 1);
         frame.render_widget(
-            Paragraph::new(label).style(Style::default().fg(BLUE)),
+            Paragraph::new(label).style(if selected {
+                Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(BLUE)
+            }),
             button,
         );
         app.hits.push(HitRegion {
             rect: button,
-            action: UiAction::GenerateCommitMessage,
+            action,
         });
+        x = button.right().saturating_add(1);
+    }
+
+    let body_y = y.saturating_add(2);
+    if body_y < inner.bottom() {
+        frame.render_widget(
+            Paragraph::new(body).wrap(Wrap { trim: false }),
+            Rect::new(inner.x, body_y, inner.width, inner.bottom() - body_y),
+        );
     }
 }
 
@@ -1305,7 +1376,7 @@ fn help_text(
         ),
         Focus::Ai => (
             "AI — current panel",
-            "  Ctrl+G / Enter Generate editable commit-message draft\n  G              Generate outside message editor\n  Y              Focus AI panel\n  Config         Select local, agent, or API mode",
+            "  e              Enable/disable for this session\n  1 / 2 / 3      Select Local/Agent/API\n  x              Toggle emoji\n  Ctrl+G / Enter Generate editable commit-message draft\n  Y              Focus AI panel",
         ),
         Focus::Preview => (
             "Preview — current panel",
@@ -1513,14 +1584,30 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
 
-        assert!(output.contains("AI Commit Messages"));
+        assert!(output.contains("AI"));
         assert!(output.contains("Existing Agent"));
         assert!(output.contains("Emoji"));
-        assert!(output.contains("MCP is not required"));
+        assert!(output.contains("MCP"));
+        assert!(output.contains("not required"));
         assert!(
             app.hits
                 .iter()
                 .any(|hit| matches!(hit.action, UiAction::GenerateCommitMessage))
+        );
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, UiAction::ToggleAiEnabled))
+        );
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, UiAction::SelectAiMode(AiMode::Local)))
+        );
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, UiAction::ToggleAiEmoji))
         );
     }
 

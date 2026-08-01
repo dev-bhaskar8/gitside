@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 
 use crate::{
     ai,
-    config::{Cli, Settings},
+    config::{AiMode, Cli, Settings},
     git::{CommitOptions, ConflictChoice, GitRepo},
     github::{GitHub, GitHubConnectionState, GitHubVisibility},
     model::{Branch, Change, Commit, Issue, PullRequest, Remote, RepoStatus, Stash, Worktree},
@@ -54,6 +54,9 @@ pub enum UiAction {
     CloseOverlay,
     PublishGitHub,
     GenerateCommitMessage,
+    ToggleAiEnabled,
+    SelectAiMode(AiMode),
+    ToggleAiEmoji,
     ConfirmGitHubVisibility(GitHubVisibility),
 }
 
@@ -570,6 +573,11 @@ impl App {
             KeyCode::Char('h') => self.focus_github(),
             KeyCode::Char('Y') => self.focus = Focus::Ai,
             KeyCode::Char('G') => self.queue_commit_message_generation(),
+            KeyCode::Char('e') if self.focus == Focus::Ai => self.toggle_ai_enabled(),
+            KeyCode::Char('1') if self.focus == Focus::Ai => self.select_ai_mode(AiMode::Local),
+            KeyCode::Char('2') if self.focus == Focus::Ai => self.select_ai_mode(AiMode::Agent),
+            KeyCode::Char('3') if self.focus == Focus::Ai => self.select_ai_mode(AiMode::Api),
+            KeyCode::Char('x') if self.focus == Focus::Ai => self.toggle_ai_emoji(),
             KeyCode::Char('a') => self.run_stage_all().await,
             KeyCode::Char('u') => self.run_unstage_all().await,
             KeyCode::Char('f') => self.run_remote("Fetching", RemoteAction::Fetch),
@@ -965,6 +973,9 @@ impl App {
             UiAction::CloseOverlay => self.overlay = None,
             UiAction::PublishGitHub => self.begin_publish_github(),
             UiAction::GenerateCommitMessage => self.queue_commit_message_generation(),
+            UiAction::ToggleAiEnabled => self.toggle_ai_enabled(),
+            UiAction::SelectAiMode(mode) => self.select_ai_mode(mode),
+            UiAction::ToggleAiEmoji => self.toggle_ai_emoji(),
             UiAction::ConfirmGitHubVisibility(visibility) => {
                 if let Some(Overlay::GitHubVisibility { name, .. }) = self.overlay.take() {
                     self.request_publish_github(name, visibility).await;
@@ -1407,6 +1418,38 @@ impl App {
                 result: ai::generate(&settings, &repo, &recent).await,
             }
         }));
+    }
+
+    fn toggle_ai_enabled(&mut self) {
+        self.settings.ai.enabled = !self.settings.ai.enabled;
+        self.status_line = if self.settings.ai.enabled {
+            format!(
+                "{} generation enabled for this session",
+                ai::mode_label(&self.settings.ai)
+            )
+        } else {
+            "Commit-message generation disabled for this session".into()
+        };
+    }
+
+    fn select_ai_mode(&mut self, mode: AiMode) {
+        self.settings.ai.mode = mode;
+        self.status_line = format!(
+            "Selected {} for this session",
+            ai::mode_label(&self.settings.ai)
+        );
+    }
+
+    fn toggle_ai_emoji(&mut self) {
+        self.settings.ai.emoji = !self.settings.ai.emoji;
+        self.status_line = format!(
+            "Commit-message emoji {} for this session",
+            if self.settings.ai.emoji {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
     }
 
     fn run_remote(&mut self, label: &'static str, action: RemoteAction) {
@@ -2124,32 +2167,16 @@ impl App {
             Focus::GitHub,
             Focus::Ai,
         ];
-        if self.focus == Focus::Ai && !self.settings.ai.enabled {
-            self.focus = if backwards {
-                Focus::GitHub
-            } else {
-                Focus::Commit
-            };
-            if self.focus == Focus::GitHub {
-                self.focus_github();
-            }
-            return;
-        }
-        let order = if self.settings.ai.enabled {
-            &ORDER[..]
-        } else {
-            &ORDER[..ORDER.len() - 1]
-        };
-        let current = order
+        let current = ORDER
             .iter()
             .position(|value| *value == self.focus)
             .unwrap_or(0);
         let next = if backwards {
-            current.checked_sub(1).unwrap_or(order.len() - 1)
+            current.checked_sub(1).unwrap_or(ORDER.len() - 1)
         } else {
-            (current + 1) % order.len()
+            (current + 1) % ORDER.len()
         };
-        self.focus = order[next];
+        self.focus = ORDER[next];
         if self.focus == Focus::GitHub {
             self.focus_github();
         }
@@ -2817,20 +2844,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tab_order_adds_no_ai_stop_until_generation_is_enabled() {
+    async fn tab_order_always_exposes_the_ai_panel() {
         let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.focus = Focus::GitHub;
 
         app.next_focus(false).await;
-        assert_eq!(app.focus, Focus::Commit);
-
-        app.settings.ai.enabled = true;
-        app.focus = Focus::GitHub;
-        app.next_focus(false).await;
         assert_eq!(app.focus, Focus::Ai);
         app.next_focus(false).await;
         assert_eq!(app.focus, Focus::Commit);
+    }
+
+    #[tokio::test]
+    async fn ai_panel_controls_work_without_editing_configuration() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Ai;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await;
+
+        assert!(app.settings.ai.enabled);
+        assert_eq!(app.settings.ai.mode, AiMode::Agent);
+        assert!(app.settings.ai.emoji);
     }
 
     #[tokio::test]

@@ -30,6 +30,7 @@ actions when terminal mouse events are enabled. In tmux, use `set -g mouse on`.
 | `c` | Focus commit message |
 | `Ctrl+G` | Generate an editable commit-message draft when enabled |
 | `G` / `Y` | Generate outside the editor / open AI status |
+| AI panel: `e`, `1`/`2`/`3`, `x` | Enable; choose Local/Agent/API; toggle emoji |
 | `Ctrl+Enter` | Commit |
 | `Ctrl+Shift+Enter` | Amend previous commit |
 | `Ctrl+Alt+Enter` | Commit with sign-off |

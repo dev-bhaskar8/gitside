@@ -121,7 +121,7 @@ gitside /path/to/repository
 | `j` / `k` | Move | `Tab` | Next panel |
 | `Space` | Stage / unstage | `Enter` | Open / activate |
 | `c` | Commit message | `Ctrl+Enter` | Commit |
-| `Ctrl+G` | Generate message draft | `Y` | AI status |
+| `Ctrl+G` | Generate message draft | `Y` | Open AI panel |
 | `f` / `l` / `p` | Fetch / pull / push | `r` | Refresh |
 | `g` / `b` / `h` | Graph / branches / GitHub | `/` | Search panel |
 | `?` / `F1` | Contextual help | `q` / `Ctrl+C` | Quit |
