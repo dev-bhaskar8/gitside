@@ -1,7 +1,9 @@
 <p align="center">
   <br />
-  <img src="site/assets/gitside-social.png" alt="Gitside — source control that fits your terminal" width="820" />
+  <img src="site/assets/gitside-showcase.png" alt="Real Gitside captures in a full terminal and narrow tmux side pane" width="820" />
 </p>
+
+<p align="center"><sub>Actual Gitside output captured at 118×42 and 46×58 terminal cells.</sub></p>
 
 <p align="center"><strong>Source control that fits your terminal.</strong></p>
 
