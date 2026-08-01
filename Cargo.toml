@@ -5,6 +5,12 @@ edition = "2024"
 description = "A VS Code-inspired source control panel for the terminal"
 license = "MIT"
 rust-version = "1.85"
+readme = "README.md"
+repository = "https://github.com/dev-bhaskar8/gitside"
+homepage = "https://dev-bhaskar8.github.io/gitside/"
+documentation = "https://dev-bhaskar8.github.io/gitside/docs/"
+keywords = ["git", "terminal", "tui", "source-control", "tmux"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "gitside"

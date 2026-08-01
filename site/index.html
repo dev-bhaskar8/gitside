@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#090b10" />
+    <meta name="description" content="Gitside is a responsive, mouse-friendly Git interface for the terminal." />
+    <meta property="og:title" content="Gitside — source control that fits your terminal" />
+    <meta property="og:description" content="A VS Code-inspired Git interface designed for full screens and narrow tmux panes." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://dev-bhaskar8.github.io/gitside/" />
+    <meta property="og:image" content="https://dev-bhaskar8.github.io/gitside/assets/gitside-social.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <title>Gitside — terminal source control</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="script.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="Gitside home"><span class="brand-mark">⌁</span> gitside</a>
+      <nav aria-label="Main navigation">
+        <a href="docs/">Docs</a>
+        <a href="https://github.com/dev-bhaskar8/gitside">GitHub</a>
+        <a class="nav-cta" href="#install">Install</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero section-shell">
+        <div class="eyebrow"><span></span> Git without leaving your terminal</div>
+        <h1>Source control that<br /><em>fits your terminal.</em></h1>
+        <p class="hero-copy">The familiar flow of VS Code Source Control, rebuilt for keyboards, mouse clicks, full screens, and tall tmux side panes.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="#install">Install Gitside</a>
+          <a class="button secondary" href="docs/">Read the docs <span aria-hidden="true">→</span></a>
+        </div>
+
+        <div class="terminal-wrap" aria-label="Gitside terminal interface preview">
+          <div class="terminal-chrome"><i></i><i></i><i></i><span>~/projects/gitside</span></div>
+          <div class="terminal-app">
+            <div class="terminal-top"><strong>gitside</strong><span>gitside</span><span>main</span><div><b>[f Fetch]</b><b>[l Pull]</b><b>[p Push]</b><b>[r ↻]</b></div></div>
+            <div class="terminal-grid">
+              <section class="panel commit-panel"><label> Commit </label><span>Message (c to edit, Ctrl+Enter to commit)</span><button>✓ Commit</button></section>
+              <section class="panel changes-panel"><label> Changes (3) </label><p><mark>M</mark> src/app.rs</p><p><mark>M</mark> src/ui.rs</p><p><mark>?</mark> site/index.html</p></section>
+              <section class="panel graph-panel"><label> Graph </label><p><i class="dot"></i> <code>f1a8632</code> Route publish through GitHub</p><p><i class="dot"></i> <code>1a55248</code> Add contextual GitHub publishing</p><p><i class="dot"></i> <code>ce8b2fb</code> Quit Gitside with Control-C</p></section>
+            </div>
+            <div class="terminal-status"><span>Ready</span><span>? Help · Tab Panel · Space Stage</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="proof-strip" aria-label="Product characteristics">
+        <span>Rust-native</span><span>Mouse + keyboard</span><span>tmux-ready</span><span>Terminal-themed</span>
+      </section>
+
+      <section class="section-shell feature-intro">
+        <div><p class="kicker">Built around your workflow</p><h2>Everything you need.<br />Nothing in the way.</h2></div>
+        <p>Gitside keeps the default view quiet. Advanced operations appear contextually when they become relevant, then disappear when the work is done.</p>
+      </section>
+
+      <section class="feature-grid section-shell">
+        <article><span class="feature-number">01</span><h3>Daily Git, complete</h3><p>Stage files and hunks, commit, inspect history, branch, stash, sync, rebase, and resolve conflicts.</p></article>
+        <article><span class="feature-number">02</span><h3>Actually responsive</h3><p>Use the same interface in a wide terminal or a narrow, tall pane. Panels reflow instead of disappearing.</p></article>
+        <article><span class="feature-number">03</span><h3>Click or type</h3><p>Every mouse target has a keyboard path. Ghostty and SGR terminals get real clickable controls.</p></article>
+        <article><span class="feature-number">04</span><h3>GitHub, contextually</h3><p>Publish repositories and work with pull requests and issues through your existing authenticated GitHub CLI.</p></article>
+        <article><span class="feature-number">05</span><h3>Never frozen</h3><p>Fetch, pull, push, refresh, and GitHub requests run in the background while input stays responsive.</p></article>
+        <article><span class="feature-number">06</span><h3>Your terminal stays yours</h3><p>Backgrounds inherit your terminal profile, preserving light themes, dark themes, and transparency.</p></article>
+      </section>
+
+      <section id="install" class="install section-shell">
+        <div><p class="kicker">Get started</p><h2>One source install.<br />Then just run it.</h2><p>Requires Rust 1.85+ and Git 2.30+. GitHub CLI is optional.</p></div>
+        <div class="install-card">
+          <div class="install-card-top"><span>Terminal</span><button class="copy" data-copy="git clone https://github.com/dev-bhaskar8/gitside.git&#10;cd gitside&#10;cargo install --locked --path .&#10;gitside" aria-label="Copy installation commands">Copy</button></div>
+          <pre><code><span>$</span> git clone https://github.com/dev-bhaskar8/gitside.git
+<span>$</span> cd gitside
+<span>$</span> cargo install --locked --path .
+<span>$</span> gitside</code></pre>
+        </div>
+      </section>
+
+      <section class="final-cta section-shell">
+        <p class="kicker">Open source · MIT</p>
+        <h2>Keep your code<br />and your Git side by side.</h2>
+        <div class="hero-actions"><a class="button primary" href="https://github.com/dev-bhaskar8/gitside">View on GitHub</a><a class="button secondary" href="docs/">Explore documentation</a></div>
+      </section>
+    </main>
+
+    <footer><a class="brand" href="./"><span class="brand-mark">⌁</span> gitside</a><p>Terminal-native source control. MIT licensed.</p><div><a href="docs/">Docs</a><a href="https://github.com/dev-bhaskar8/gitside">GitHub</a></div></footer>
+  </body>
+</html>
