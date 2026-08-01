@@ -66,8 +66,15 @@ Commit-message generation uses that same background-task boundary and inserts
 only an editable draft. The `ai` adapter supports deterministic local rules,
 built-in agent adapters that request non-mutating operation, trusted custom
 commands, and direct HTTPS APIs. All modes inspect only the staged index; direct
-API input is byte-bounded, credentials are read from environment variables, and
-failures preserve the user's current draft.
+API input is byte-bounded, credentials come from the OS credential store or an
+environment fallback, and failures preserve the user's current draft.
+
+The AI setup wizard persists only non-secret settings in the TOML document and
+preserves unrelated configuration. API keys use the native OS credential store
+and are redacted from overlays, diagnostics, errors, and serialization. When a
+credential store is unavailable, the secret is held only in zeroizing process
+memory for the current session. Credential operations run on blocking workers
+so keychain access never executes in the renderer.
 
 Every repository snapshot also classifies GitHub integration as CLI missing,
 unauthenticated, authenticated without a GitHub remote, or ready. This makes a

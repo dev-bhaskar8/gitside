@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -35,7 +36,7 @@ pub enum AgentProvider {
     Custom,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiProvider {
     #[default]
@@ -101,6 +102,8 @@ pub struct Settings {
     pub layout: LayoutPreference,
     pub editor: EditorSettings,
     pub ai: AiSettings,
+    #[serde(skip)]
+    pub config_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -188,6 +191,7 @@ impl Default for Settings {
             layout: LayoutPreference::Auto,
             editor: EditorSettings::default(),
             ai: AiSettings::default(),
+            config_path: None,
         }
     }
 }
@@ -199,11 +203,17 @@ impl Settings {
             return Ok(Self::default());
         };
         if !path.exists() {
-            return Ok(Self::default());
+            return Ok(Self {
+                config_path: Some(path),
+                ..Self::default()
+            });
         }
         let source = fs::read_to_string(&path)
             .with_context(|| format!("failed to read configuration {}", path.display()))?;
-        toml::from_str(&source).with_context(|| format!("invalid configuration {}", path.display()))
+        let mut settings: Self = toml::from_str(&source)
+            .with_context(|| format!("invalid configuration {}", path.display()))?;
+        settings.config_path = Some(path);
+        Ok(settings)
     }
 
     pub fn merge_cli(mut self, cli: &Cli) -> Self {
@@ -218,6 +228,47 @@ impl Settings {
             self.editor.args.clear();
         }
         self
+    }
+
+    pub fn save_ai(&self) -> Result<()> {
+        let path = self
+            .config_path
+            .as_ref()
+            .context("the platform configuration directory is unavailable")?;
+        let source = if path.exists() {
+            fs::read_to_string(path)
+                .with_context(|| format!("failed to read configuration {}", path.display()))?
+        } else {
+            String::new()
+        };
+        let mut document = if source.trim().is_empty() {
+            toml_edit::DocumentMut::new()
+        } else {
+            source
+                .parse::<toml_edit::DocumentMut>()
+                .with_context(|| format!("invalid configuration {}", path.display()))?
+        };
+        let ai =
+            toml_edit::ser::to_document(&self.ai).context("failed to serialize AI settings")?;
+        document["ai"] = toml_edit::Item::Table(ai.as_table().clone());
+        let parent = path.parent().context("configuration path has no parent")?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+            format!("failed to create a temporary file in {}", parent.display())
+        })?;
+        temporary
+            .write_all(document.to_string().as_bytes())
+            .context("failed to write AI configuration")?;
+        temporary
+            .as_file()
+            .sync_all()
+            .context("failed to sync AI configuration")?;
+        temporary
+            .persist(path)
+            .map_err(|error| error.error)
+            .with_context(|| format!("failed to replace configuration {}", path.display()))?;
+        Ok(())
     }
 }
 
@@ -280,5 +331,32 @@ api_key_env = "OPENROUTER_API_KEY"
         assert!(settings.ai.emoji);
         assert_eq!(settings.ai.agent.provider, AgentProvider::Claude);
         assert_eq!(settings.ai.api.provider, ApiProvider::Openrouter);
+    }
+
+    #[test]
+    fn saving_ai_preserves_other_configuration_and_never_writes_a_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        fs::write(
+            &path,
+            "# keep this comment\nmouse = false\n\n[ai]\nenabled = false\nmode = \"local\"\n",
+        )
+        .unwrap();
+        let mut settings = Settings::load(Some(&path)).unwrap();
+        settings.ai.enabled = true;
+        settings.ai.mode = AiMode::Api;
+        settings.ai.api.provider = ApiProvider::Openai;
+        settings.ai.api.model = Some("test-model".into());
+
+        settings.save_ai().unwrap();
+
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("# keep this comment"));
+        assert!(saved.contains("mouse = false"));
+        assert!(saved.contains("model = \"test-model\""));
+        assert!(!saved.to_ascii_lowercase().contains("api_key ="));
+        let loaded = Settings::load(Some(&path)).unwrap();
+        assert!(loaded.ai.enabled);
+        assert_eq!(loaded.ai.mode, AiMode::Api);
     }
 }

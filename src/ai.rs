@@ -35,7 +35,12 @@ struct GenerationContext {
     recent_subjects: Vec<String>,
 }
 
-pub async fn generate(settings: &AiSettings, repo: &GitRepo, recent: &[Commit]) -> Result<String> {
+pub async fn generate(
+    settings: &AiSettings,
+    repo: &GitRepo,
+    recent: &[Commit],
+    api_key: Option<&str>,
+) -> Result<String> {
     if !settings.enabled {
         bail!("commit-message generation is disabled in configuration");
     }
@@ -43,7 +48,7 @@ pub async fn generate(settings: &AiSettings, repo: &GitRepo, recent: &[Commit]) 
     let generated = match settings.mode {
         AiMode::Local => generate_local(&context, settings.max_files),
         AiMode::Agent => generate_with_agent(settings, repo.root(), &context).await?,
-        AiMode::Api => generate_with_api(settings, &context).await?,
+        AiMode::Api => generate_with_api(settings, &context, api_key).await?,
     };
     normalize_message(&generated, settings.emoji)
 }
@@ -316,7 +321,11 @@ async fn generate_with_agent(
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-async fn generate_with_api(settings: &AiSettings, context: &GenerationContext) -> Result<String> {
+async fn generate_with_api(
+    settings: &AiSettings,
+    context: &GenerationContext,
+    supplied_key: Option<&str>,
+) -> Result<String> {
     let model = nonempty(settings.api.model.as_deref()).context("set ai.api.model")?;
     let prompt = context.prompt(&settings.instructions);
     let client = Client::builder()
@@ -324,16 +333,18 @@ async fn generate_with_api(settings: &AiSettings, context: &GenerationContext) -
         .user_agent(format!("gitside/{}", env!("CARGO_PKG_VERSION")))
         .build()?;
     let endpoint = api_endpoint(settings, model)?;
-    let key = match api_key_env(settings) {
-        Some(name) => Some(env::var(name).with_context(|| format!("set {name}"))?),
-        None => None,
-    };
+    let key = supplied_key.map(str::to_owned).or_else(|| {
+        api_key_env(settings).and_then(|name| env::var(name).ok().filter(|value| !value.is_empty()))
+    });
 
     let response = match settings.api.provider {
         ApiProvider::Anthropic => {
             client
                 .post(endpoint)
-                .header("x-api-key", key.context("Anthropic API key is required")?)
+                .header(
+                    "x-api-key",
+                    key.as_deref().context("Anthropic API key is required")?,
+                )
                 .header("anthropic-version", "2023-06-01")
                 .json(&json!({
                     "model": model,
@@ -346,7 +357,10 @@ async fn generate_with_api(settings: &AiSettings, context: &GenerationContext) -
         ApiProvider::Gemini => {
             client
                 .post(endpoint)
-                .header("x-goog-api-key", key.context("Gemini API key is required")?)
+                .header(
+                    "x-goog-api-key",
+                    key.as_deref().context("Gemini API key is required")?,
+                )
                 .json(&json!({"contents": [{"parts": [{"text": prompt}]}]}))
                 .send()
                 .await?
@@ -357,7 +371,7 @@ async fn generate_with_api(settings: &AiSettings, context: &GenerationContext) -
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.2
             }));
-            if let Some(key) = key {
+            if let Some(key) = key.as_deref() {
                 request = request.bearer_auth(key);
             }
             request.send().await?
@@ -366,9 +380,21 @@ async fn generate_with_api(settings: &AiSettings, context: &GenerationContext) -
     let status = response.status();
     let body = response.text().await?;
     if !status.is_success() {
-        bail!("AI API returned {status}: {}", shorten_subject(&body, 300));
+        let safe_body = redact_secret(body, key.as_deref());
+        bail!(
+            "AI API returned {status}: {}",
+            shorten_subject(&safe_body, 300)
+        );
     }
     parse_api_response(settings.api.provider, &body)
+        .map(|message| redact_secret(message, key.as_deref()))
+}
+
+fn redact_secret(value: String, secret: Option<&str>) -> String {
+    secret
+        .filter(|secret| !secret.is_empty())
+        .map(|secret| value.replace(secret, "[REDACTED]"))
+        .unwrap_or(value)
 }
 
 fn parse_api_response(provider: ApiProvider, body: &str) -> Result<String> {
@@ -402,7 +428,7 @@ fn api_endpoint(settings: &AiSettings, model: &str) -> Result<String> {
     })
 }
 
-fn api_key_env(settings: &AiSettings) -> Option<&str> {
+pub(crate) fn api_key_env(settings: &AiSettings) -> Option<&str> {
     if let Some(value) = nonempty(settings.api.api_key_env.as_deref()) {
         return Some(value);
     }
@@ -612,6 +638,14 @@ mod tests {
     }
 
     #[test]
+    fn api_errors_redact_the_active_credential() {
+        assert_eq!(
+            redact_secret("request rejected for sk-private".into(), Some("sk-private")),
+            "request rejected for [REDACTED]"
+        );
+    }
+
+    #[test]
     fn parses_supported_api_response_shapes() {
         assert_eq!(
             parse_api_response(
@@ -679,7 +713,7 @@ mod tests {
         };
 
         assert_eq!(
-            generate(&settings, &repo, &[]).await.unwrap(),
+            generate(&settings, &repo, &[], None).await.unwrap(),
             "🤖 Add src/ai.rs"
         );
     }
@@ -704,7 +738,7 @@ mod tests {
         settings.agent.command = Some(script.to_string_lossy().into_owned());
 
         assert_eq!(
-            generate(&settings, &repo, &[]).await.unwrap(),
+            generate(&settings, &repo, &[], None).await.unwrap(),
             "Update AI adapter"
         );
     }
@@ -760,7 +794,7 @@ mod tests {
         settings.api.endpoint = Some(format!("http://{address}/chat/completions"));
 
         assert_eq!(
-            generate(&settings, &repo, &[]).await.unwrap(),
+            generate(&settings, &repo, &[], None).await.unwrap(),
             "Add direct API mode"
         );
         server.join().unwrap();

@@ -1,6 +1,7 @@
 mod ai;
 mod app;
 mod config;
+mod credentials;
 mod git;
 mod github;
 mod model;

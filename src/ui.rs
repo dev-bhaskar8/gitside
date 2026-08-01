@@ -212,20 +212,22 @@ fn render_commit(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     });
     if app.settings.ai.enabled {
         let label = if area.width >= 58 {
-            "[Generate]"
+            " ✦ Generate "
         } else {
-            "[AI]"
+            " ✦ "
         };
-        let width = label.len() as u16;
+        let width = display_width(label) as u16;
         let inner_left = area.x.saturating_add(1);
         if button.x.saturating_sub(inner_left) < width.saturating_add(1) {
             return;
         }
         let generate = Rect::new(button.x - width - 1, button.y, width, 1);
         frame.render_widget(
-            Paragraph::new(label)
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(BLUE)),
+            Paragraph::new(label).alignment(Alignment::Center).style(
+                Style::default()
+                    .fg(BLUE)
+                    .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            ),
             generate,
         );
         app.hits.push(HitRegion {
@@ -823,14 +825,19 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             }
         },
         crate::config::AiMode::Api => {
-            "Sends the staged text diff to the configured endpoint. Keys are read from environment variables only."
+            "Sends the staged text diff to the configured endpoint. Keys use the OS keychain with an environment fallback."
         }
     };
+    let credential = if settings.mode == AiMode::Api {
+        format!("\nCredential {}", app.ai_credential_status.label())
+    } else {
+        String::new()
+    };
     let body = format!(
-        "Enabled   {enabled} · Emoji {emoji}\nMode      {}\nProvider  {}\nStatus    {}\n\n{setup}\n\nMCP is not required. Output is an editable draft from staged changes only.\n\nSmart Local works immediately. Save Agent/API details in config.toml.\n\nKeys: e on/off · 1 local · 2 agent · 3 API · x emoji · G generate",
+        "Enabled   {enabled} · Emoji {emoji}\nMode      {}\nProvider  {}\nStatus    {}{credential}\n\n{setup}\n\nClick Configure to set provider, model, credentials, endpoint, and instructions.\n\nMCP is not required. Output is an editable draft from staged changes only.",
         ai::mode_label(&settings),
         ai::provider_label(&settings),
-        ai::readiness(&settings),
+        ai_panel_readiness(&settings, &app.ai_credential_status),
     );
     frame.render_widget(
         Block::default()
@@ -852,7 +859,7 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         return;
     }
     let verbose = inner.width >= 46;
-    let controls = [
+    let mut controls = vec![
         (
             if verbose {
                 if settings.enabled {
@@ -867,21 +874,25 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             },
             UiAction::ToggleAiEnabled,
             settings.enabled,
+            false,
         ),
         (
             if verbose { "[1 Local]" } else { "[1]" },
             UiAction::SelectAiMode(AiMode::Local),
             settings.mode == AiMode::Local,
+            false,
         ),
         (
             if verbose { "[2 Agent]" } else { "[2]" },
             UiAction::SelectAiMode(AiMode::Agent),
             settings.mode == AiMode::Agent,
+            false,
         ),
         (
             if verbose { "[3 API]" } else { "[3]" },
             UiAction::SelectAiMode(AiMode::Api),
             settings.mode == AiMode::Api,
+            false,
         ),
         (
             if verbose {
@@ -897,17 +908,38 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             },
             UiAction::ToggleAiEmoji,
             settings.emoji,
-        ),
-        (
-            if verbose { "[G Generate]" } else { "[G]" },
-            UiAction::GenerateCommitMessage,
             false,
         ),
     ];
+    controls.push((
+        if verbose { "[Configure]" } else { "[c]" },
+        UiAction::OpenAiSetup(settings.mode),
+        false,
+        false,
+    ));
+    if settings.mode == AiMode::Api
+        && !matches!(
+            app.ai_credential_status,
+            crate::credentials::CredentialStatus::Missing
+        )
+    {
+        controls.push((
+            if verbose { "[Remove key]" } else { "[k]" },
+            UiAction::RemoveAiCredential,
+            false,
+            false,
+        ));
+    }
+    controls.push((
+        if verbose { " ✦ Generate " } else { " ✦ " },
+        UiAction::GenerateCommitMessage,
+        false,
+        true,
+    ));
     let mut x = inner.x;
     let mut y = inner.y;
-    for (label, action, selected) in controls {
-        let width = label.len() as u16;
+    for (label, action, selected, magical) in controls {
+        let width = display_width(label) as u16;
         if x > inner.x && x.saturating_add(width) > inner.right() {
             x = inner.x;
             y = y.saturating_add(1);
@@ -917,7 +949,11 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         }
         let button = Rect::new(x, y, width.min(inner.right().saturating_sub(x)), 1);
         frame.render_widget(
-            Paragraph::new(label).style(if selected {
+            Paragraph::new(label).style(if magical {
+                Style::default()
+                    .fg(BLUE)
+                    .add_modifier(Modifier::REVERSED | Modifier::BOLD)
+            } else if selected {
                 Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(BLUE)
@@ -937,6 +973,43 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Paragraph::new(body).wrap(Wrap { trim: false }),
             Rect::new(inner.x, body_y, inner.width, inner.bottom() - body_y),
         );
+    }
+}
+
+fn ai_panel_readiness(
+    settings: &crate::config::AiSettings,
+    credential: &crate::credentials::CredentialStatus,
+) -> String {
+    if settings.mode != AiMode::Api {
+        return ai::readiness(settings);
+    }
+    if !settings.enabled {
+        return "Disabled".into();
+    }
+    if settings.api.model.as_deref().is_none_or(str::is_empty) {
+        return "Configure a model".into();
+    }
+    if settings.api.provider == crate::config::ApiProvider::Compatible {
+        return if settings
+            .api
+            .endpoint
+            .as_deref()
+            .is_some_and(|endpoint| !endpoint.is_empty())
+        {
+            "Ready · key optional".into()
+        } else {
+            "Configure an endpoint".into()
+        };
+    }
+    match credential {
+        crate::credentials::CredentialStatus::Stored
+        | crate::credentials::CredentialStatus::Environment(_)
+        | crate::credentials::CredentialStatus::SessionOnly => "Ready".into(),
+        crate::credentials::CredentialStatus::Unknown => "Credential checked on generate".into(),
+        crate::credentials::CredentialStatus::Missing => "Configure an API key".into(),
+        crate::credentials::CredentialStatus::Unavailable(reason) => {
+            format!("Credential unavailable · {reason}")
+        }
     }
 }
 
@@ -1048,7 +1121,7 @@ fn contextual_footer_hint(
             Focus::Stashes => " ? Help · A Apply",
             Focus::Worktrees => " ? Help · X Remove",
             Focus::GitHub => " ? Help · Enter View",
-            Focus::Ai => " ? Help · Ctrl+G Generate",
+            Focus::Ai => " ? Help · c Setup · ✦ Generate",
             Focus::Preview => " ? Help · Esc Close",
         };
     }
@@ -1063,7 +1136,7 @@ fn contextual_footer_hint(
         Focus::Stashes => " ? Help · Enter View · A Apply · P Pop",
         Focus::Worktrees => " ? Help · w Add · X Remove",
         Focus::GitHub => " ? Help · Enter View · i Type · o Open",
-        Focus::Ai => " ? Help · Ctrl+G Generate · Y AI",
+        Focus::Ai => " ? Help · c Configure · k Remove key · ✦ Generate",
         Focus::Preview => " ? Help · j/k Hunk · Space Stage · Esc Close",
     }
 }
@@ -1115,8 +1188,12 @@ fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Ove
         )
     };
     frame.render_widget(Clear, popup);
-    if let Overlay::Help { scroll, .. } = overlay {
-        render_help_overlay(frame, app, popup, scroll);
+    if let Overlay::Help { scroll, .. } = &overlay {
+        render_help_overlay(frame, app, popup, *scroll);
+        return;
+    }
+    if let Overlay::AiSetup(draft) = &overlay {
+        render_ai_setup_overlay(frame, app, popup, draft.clone());
         return;
     }
     let (title, body, border) = match overlay {
@@ -1161,6 +1238,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Ove
             ),
             BLUE,
         ),
+        Overlay::AiSetup(_) => unreachable!("AI setup overlays render separately"),
     };
     frame.render_widget(
         Paragraph::new(body).wrap(Wrap { trim: false }).block(
@@ -1187,6 +1265,169 @@ fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Ove
         app.hits.push(HitRegion {
             rect: public,
             action: UiAction::ConfirmGitHubVisibility(GitHubVisibility::Public),
+        });
+    }
+}
+
+fn render_ai_setup_overlay(
+    frame: &mut Frame<'_>,
+    app: &mut App,
+    popup: Rect,
+    draft: crate::app::AiSetupDraft,
+) {
+    frame.render_widget(Clear, popup);
+    let mode = match draft.mode {
+        AiMode::Agent => "Agent",
+        AiMode::Api => "API",
+        AiMode::Local => "Local",
+    };
+    let block = Block::default()
+        .title(format!(" Configure {mode} "))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BLUE))
+        .style(Style::default().bg(PANEL));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    app.hits.push(HitRegion {
+        rect: popup,
+        action: UiAction::CloseOverlay,
+    });
+
+    let (heading, body) = match draft.step {
+        crate::app::AiSetupStep::Provider => {
+            let providers: &[&str] = match draft.mode {
+                AiMode::Agent => &["Codex", "Claude Code", "OpenCode"],
+                AiMode::Api => &["OpenAI", "Anthropic", "Gemini", "OpenRouter", "Compatible"],
+                AiMode::Local => &["Smart Local"],
+            };
+            let selected = match draft.mode {
+                AiMode::Agent => match draft.agent_provider {
+                    crate::config::AgentProvider::Codex => 0,
+                    crate::config::AgentProvider::Claude => 1,
+                    crate::config::AgentProvider::Opencode => 2,
+                    crate::config::AgentProvider::Custom => 0,
+                },
+                AiMode::Api => match draft.api_provider {
+                    crate::config::ApiProvider::Openai => 0,
+                    crate::config::ApiProvider::Anthropic => 1,
+                    crate::config::ApiProvider::Gemini => 2,
+                    crate::config::ApiProvider::Openrouter => 3,
+                    crate::config::ApiProvider::Compatible => 4,
+                },
+                AiMode::Local => 0,
+            };
+            let mut lines = Vec::new();
+            for (index, provider) in providers.iter().enumerate() {
+                lines.push(if index == selected {
+                    format!("[{} {provider}]", index + 1)
+                } else {
+                    format!(" {} {provider}", index + 1)
+                });
+                if inner.height > index as u16 + 4 {
+                    app.hits.push(HitRegion {
+                        rect: Rect::new(inner.x, inner.y + 2 + index as u16, inner.width, 1),
+                        action: UiAction::AiSetupChoose(index),
+                    });
+                }
+            }
+            ("Choose a provider", lines.join("\n"))
+        }
+        crate::app::AiSetupStep::Model => (
+            if draft.mode == AiMode::Api {
+                "Model (required)"
+            } else {
+                "Model (optional)"
+            },
+            format!("{}█", draft.model),
+        ),
+        crate::app::AiSetupStep::ApiKey => (
+            "API key (leave empty to keep the current source)",
+            format!("{}█", draft.secret_mask()),
+        ),
+        crate::app::AiSetupStep::Endpoint => (
+            "Complete compatible chat-completions endpoint",
+            format!("{}█", draft.endpoint),
+        ),
+        crate::app::AiSetupStep::Instructions => (
+            "Commit-message instructions (optional)",
+            format!("{}█", draft.instructions),
+        ),
+        crate::app::AiSetupStep::Review => {
+            let provider = match draft.mode {
+                AiMode::Agent => match draft.agent_provider {
+                    crate::config::AgentProvider::Codex => "Codex",
+                    crate::config::AgentProvider::Claude => "Claude Code",
+                    crate::config::AgentProvider::Opencode => "OpenCode",
+                    crate::config::AgentProvider::Custom => "Custom",
+                },
+                AiMode::Api => match draft.api_provider {
+                    crate::config::ApiProvider::Openai => "OpenAI",
+                    crate::config::ApiProvider::Anthropic => "Anthropic",
+                    crate::config::ApiProvider::Gemini => "Gemini",
+                    crate::config::ApiProvider::Openrouter => "OpenRouter",
+                    crate::config::ApiProvider::Compatible => "Compatible",
+                },
+                AiMode::Local => "Smart Local",
+            };
+            (
+                "Review",
+                format!(
+                    "Provider  {provider}\nModel     {}\nAPI key   {}\nEndpoint  {}\nRules     {}\n\nSecrets are stored in the OS keychain, never config.toml.",
+                    if draft.model.trim().is_empty() {
+                        "Default"
+                    } else {
+                        draft.model.trim()
+                    },
+                    if draft.secret_is_empty() {
+                        "Keep existing"
+                    } else {
+                        "Replace securely"
+                    },
+                    if draft.endpoint.trim().is_empty() {
+                        "Provider default"
+                    } else {
+                        draft.endpoint.trim()
+                    },
+                    if draft.instructions.trim().is_empty() {
+                        "None"
+                    } else {
+                        draft.instructions.trim()
+                    },
+                ),
+            )
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(format!("{heading}\n\n{body}")).wrap(Wrap { trim: false }),
+        inner,
+    );
+
+    if inner.height >= 2 {
+        let y = inner.bottom().saturating_sub(1);
+        let back = Rect::new(inner.x, y, 8.min(inner.width), 1);
+        frame.render_widget(
+            Paragraph::new("[Back]").style(Style::default().fg(BLUE)),
+            back,
+        );
+        app.hits.push(HitRegion {
+            rect: back,
+            action: UiAction::AiSetupBack,
+        });
+        let label = if draft.step == crate::app::AiSetupStep::Review {
+            "[Save]"
+        } else {
+            "[Next]"
+        };
+        let width = label.len() as u16;
+        let next = Rect::new(inner.right().saturating_sub(width), y, width, 1);
+        frame.render_widget(Paragraph::new(label).style(Style::default().fg(BLUE)), next);
+        app.hits.push(HitRegion {
+            rect: next,
+            action: if draft.step == crate::app::AiSetupStep::Review {
+                UiAction::AiSetupSave
+            } else {
+                UiAction::AiSetupNext
+            },
         });
     }
 }
@@ -1376,7 +1617,7 @@ fn help_text(
         ),
         Focus::Ai => (
             "AI — current panel",
-            "  e              Enable/disable for this session\n  1 / 2 / 3      Select Local/Agent/API\n  x              Toggle emoji\n  Ctrl+G / Enter Generate editable commit-message draft\n  Y              Focus AI panel",
+            "  e              Enable/disable\n  1 / 2 / 3      Select Local/Agent/API\n  x              Toggle emoji\n  c / k          Guided setup/remove API key\n  Ctrl+G / Enter Generate editable commit-message draft\n  Y              Focus AI panel",
         ),
         Focus::Preview => (
             "Preview — current panel",
@@ -1587,8 +1828,7 @@ mod tests {
         assert!(output.contains("AI"));
         assert!(output.contains("Existing Agent"));
         assert!(output.contains("Emoji"));
-        assert!(output.contains("MCP"));
-        assert!(output.contains("not required"));
+        assert!(output.contains("Configure"));
         assert!(
             app.hits
                 .iter()
@@ -1609,6 +1849,108 @@ mod tests {
                 .iter()
                 .any(|hit| matches!(hit.action, UiAction::ToggleAiEmoji))
         );
+        let configure = app
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, UiAction::OpenAiSetup(AiMode::Agent)))
+            .expect("AI panel should expose clickable setup")
+            .rect;
+        let magical = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "✦")
+            .expect("AI panel should render a star Generate button");
+        assert!(magical.modifier.contains(Modifier::REVERSED));
+        assert!(magical.modifier.contains(Modifier::BOLD));
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: configure.x,
+            row: configure.y,
+            modifiers: KeyModifiers::NONE,
+        })
+        .await;
+        assert!(matches!(app.overlay, Some(Overlay::AiSetup(_))));
+    }
+
+    #[tokio::test]
+    async fn api_setup_masks_secrets_and_exposes_clickable_navigation() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Ai;
+        app.settings.ai.mode = AiMode::Api;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        for character in "test-model".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        for character in "sk-secret-123".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+                .await;
+        }
+        assert!(!format!("{:?}", app.overlay).contains("sk-secret-123"));
+
+        let mut terminal = Terminal::new(TestBackend::new(50, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!output.contains("sk-secret-123"));
+        assert!(output.contains("••••"));
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, UiAction::AiSetupBack))
+        );
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, UiAction::AiSetupNext))
+        );
+    }
+
+    #[tokio::test]
+    async fn all_ai_panel_controls_remain_clickable_at_supported_narrow_widths() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut settings = Settings::default();
+        settings.ai.enabled = true;
+        let mut app = App::new(cli, settings).await.unwrap();
+        app.focus = Focus::Ai;
+
+        for width in [14, 20, 24, 32, 50] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let controls = app
+                .hits
+                .iter()
+                .filter(|hit| {
+                    matches!(
+                        hit.action,
+                        UiAction::ToggleAiEnabled
+                            | UiAction::SelectAiMode(_)
+                            | UiAction::ToggleAiEmoji
+                            | UiAction::OpenAiSetup(_)
+                            | UiAction::GenerateCommitMessage
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert!(controls.len() >= 7, "missing AI controls at width {width}");
+            assert!(
+                controls.iter().all(|control| control.rect.right() <= width),
+                "AI control escaped the pane at width {width}"
+            );
+        }
     }
 
     #[tokio::test]

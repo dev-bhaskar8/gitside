@@ -50,8 +50,16 @@ uses staged changes only. Enable one of the following modes:
 The AI panel is always available in the normal `Tab` sequence, just like
 Stashes and Worktrees. From that panel, press `e` to enable generation for the
 current session, `1`/`2`/`3` to choose Local/Agent/API, and `x` to toggle emoji.
-These panel controls make Smart Local usable immediately. The configuration
-below persists choices and supplies provider-specific details across launches.
+Click Configure or press `c` to open the guided provider, model, credential,
+endpoint, and instruction setup. All controls and wizard choices support both
+mouse and keyboard input. Smart Local works immediately, while non-secret
+choices are saved automatically across launches.
+
+API keys entered in the wizard are masked and stored in macOS Keychain,
+Windows Credential Manager, or the Linux Secret Service. They are never written
+to this TOML file. If the platform credential service is unavailable, Gitside
+warns that the key is available only for the current session. Environment
+variables remain a fallback, and `k` removes the selected provider's stored key.
 
 ### Smart Local
 
@@ -108,9 +116,9 @@ repository state through ordinary Git commands.
 
 ### Direct API
 
-API keys are read from environment variables and are never stored in the
-configuration file. This mode sends the bounded staged text diff to the chosen
-provider.
+API keys can be entered through the masked setup wizard or read from environment
+variables. They are never stored in the configuration file. This mode sends the
+bounded staged text diff to the chosen provider.
 
 ```toml
 [ai]

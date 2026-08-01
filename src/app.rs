@@ -8,12 +8,15 @@ use std::{
 use anyhow::{Context, Result, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
+use secrecy::{ExposeSecret, SecretString};
 use tokio::process::Command;
 use tokio::task::JoinHandle;
+use zeroize::Zeroizing;
 
 use crate::{
     ai,
-    config::{AiMode, Cli, Settings},
+    config::{AgentProvider, AiMode, AiSettings, ApiProvider, Cli, Settings},
+    credentials::{CredentialStatus, CredentialStore},
     git::{CommitOptions, ConflictChoice, GitRepo},
     github::{GitHub, GitHubConnectionState, GitHubVisibility},
     model::{Branch, Change, Commit, Issue, PullRequest, Remote, RepoStatus, Stash, Worktree},
@@ -57,6 +60,12 @@ pub enum UiAction {
     ToggleAiEnabled,
     SelectAiMode(AiMode),
     ToggleAiEmoji,
+    OpenAiSetup(AiMode),
+    AiSetupChoose(usize),
+    AiSetupNext,
+    AiSetupBack,
+    AiSetupSave,
+    RemoveAiCredential,
     ConfirmGitHubVisibility(GitHubVisibility),
 }
 
@@ -104,6 +113,76 @@ pub enum Overlay {
     Search {
         value: String,
     },
+    AiSetup(AiSetupDraft),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiSetupStep {
+    Provider,
+    Model,
+    ApiKey,
+    Endpoint,
+    Instructions,
+    Review,
+}
+
+#[derive(Clone)]
+pub struct AiSetupDraft {
+    pub mode: AiMode,
+    pub step: AiSetupStep,
+    pub agent_provider: AgentProvider,
+    pub api_provider: ApiProvider,
+    pub model: String,
+    api_key: Zeroizing<String>,
+    pub endpoint: String,
+    pub instructions: String,
+}
+
+impl std::fmt::Debug for AiSetupDraft {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AiSetupDraft")
+            .field("mode", &self.mode)
+            .field("step", &self.step)
+            .field("agent_provider", &self.agent_provider)
+            .field("api_provider", &self.api_provider)
+            .field("model", &self.model)
+            .field("api_key", &"[REDACTED]")
+            .field("endpoint", &self.endpoint)
+            .field("instructions", &self.instructions)
+            .finish()
+    }
+}
+
+impl AiSetupDraft {
+    pub fn secret_is_empty(&self) -> bool {
+        self.api_key.is_empty()
+    }
+
+    pub fn secret_mask(&self) -> String {
+        "•".repeat(self.api_key.chars().count().min(48))
+    }
+
+    fn from_settings(settings: &AiSettings, mode: AiMode) -> Self {
+        Self {
+            mode,
+            step: AiSetupStep::Provider,
+            agent_provider: if settings.agent.provider == AgentProvider::Custom {
+                AgentProvider::Codex
+            } else {
+                settings.agent.provider
+            },
+            api_provider: settings.api.provider,
+            model: match mode {
+                AiMode::Agent => settings.agent.model.clone().unwrap_or_default(),
+                AiMode::Api => settings.api.model.clone().unwrap_or_default(),
+                AiMode::Local => String::new(),
+            },
+            api_key: Zeroizing::new(String::new()),
+            endpoint: settings.api.endpoint.clone().unwrap_or_default(),
+            instructions: settings.instructions.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -192,12 +271,14 @@ pub struct App {
     pub output: Vec<String>,
     pub status_line: String,
     pub busy: bool,
+    pub ai_credential_status: CredentialStatus,
     pub hits: Vec<HitRegion>,
     last_click: Option<(u16, u16, Instant)>,
     background_task: Option<JoinHandle<BackgroundResult>>,
     last_search: Option<String>,
     commit_history_index: Option<usize>,
     commit_history_draft: String,
+    credentials: CredentialStore,
 }
 
 enum BackgroundResult {
@@ -227,6 +308,13 @@ enum BackgroundResult {
     CommitMessage {
         repo_index: usize,
         result: Result<String>,
+    },
+    AiSetup {
+        settings: AiSettings,
+        result: Result<CredentialStatus>,
+    },
+    AiCredentialRemoved {
+        result: Result<CredentialStatus>,
     },
 }
 
@@ -277,6 +365,10 @@ impl App {
         if repos.is_empty() {
             bail!("no Git repositories were found");
         }
+        let ai_credential_status = ai::api_key_env(&settings.ai)
+            .filter(|name| env::var_os(name).is_some())
+            .map(|name| CredentialStatus::Environment(name.into()))
+            .unwrap_or(CredentialStatus::Unknown);
         Ok(Self {
             settings,
             repos,
@@ -296,12 +388,14 @@ impl App {
             output: Vec::new(),
             status_line: "Ready".into(),
             busy: false,
+            ai_credential_status,
             hits: Vec::new(),
             last_click: None,
             background_task: None,
             last_search: None,
             commit_history_index: None,
             commit_history_draft: String::new(),
+            credentials: CredentialStore::default(),
         })
     }
 
@@ -495,6 +589,26 @@ impl App {
                 }
                 Err(error) => self.report_error(error),
             },
+            Ok(BackgroundResult::AiSetup { settings, result }) => match result {
+                Ok(status) => {
+                    self.settings.ai = settings;
+                    self.ai_credential_status = status;
+                    self.status_line = if self.ai_credential_status == CredentialStatus::SessionOnly
+                    {
+                        "AI setup saved; keychain unavailable, so the key is session-only".into()
+                    } else {
+                        "AI setup saved".into()
+                    };
+                }
+                Err(error) => self.report_error(error),
+            },
+            Ok(BackgroundResult::AiCredentialRemoved { result }) => match result {
+                Ok(status) => {
+                    self.ai_credential_status = status;
+                    self.status_line = "Removed the stored API key".into();
+                }
+                Err(error) => self.report_error(error),
+            },
             Err(error) => self.report_error(anyhow::anyhow!("background Git task failed: {error}")),
         }
         true
@@ -567,6 +681,14 @@ impl App {
             KeyCode::Char('C') if self.operation_focused() => self.continue_operation().await,
             KeyCode::Char('A') if self.operation_focused() => self.abort_operation().await,
             KeyCode::Char('S') if self.operation_focused() => self.skip_operation().await,
+            KeyCode::Char('c') if self.focus == Focus::Ai => {
+                self.open_ai_setup(self.settings.ai.mode)
+            }
+            KeyCode::Char('k')
+                if self.focus == Focus::Ai && self.settings.ai.mode == AiMode::Api =>
+            {
+                self.remove_ai_credential()
+            }
             KeyCode::Char('c') => self.focus = Focus::Commit,
             KeyCode::Char('g') => self.focus = Focus::Graph,
             KeyCode::Char('b') => self.focus = Focus::Branches,
@@ -824,6 +946,7 @@ impl App {
                 }
                 _ => {}
             },
+            Overlay::AiSetup(draft) => self.handle_ai_setup_key(key, draft).await,
             _ => {
                 if matches!(
                     key.code,
@@ -976,6 +1099,12 @@ impl App {
             UiAction::ToggleAiEnabled => self.toggle_ai_enabled(),
             UiAction::SelectAiMode(mode) => self.select_ai_mode(mode),
             UiAction::ToggleAiEmoji => self.toggle_ai_emoji(),
+            UiAction::OpenAiSetup(mode) => self.open_ai_setup(mode),
+            UiAction::AiSetupChoose(index) => self.choose_ai_setup_provider(index),
+            UiAction::AiSetupNext => self.advance_ai_setup().await,
+            UiAction::AiSetupBack => self.retreat_ai_setup(),
+            UiAction::AiSetupSave => self.save_ai_setup(),
+            UiAction::RemoveAiCredential => self.remove_ai_credential(),
             UiAction::ConfirmGitHubVisibility(visibility) => {
                 if let Some(Overlay::GitHubVisibility { name, .. }) = self.overlay.take() {
                     self.request_publish_github(name, visibility).await;
@@ -1006,6 +1135,149 @@ impl App {
             scroll: 0,
             max_scroll: 0,
         });
+    }
+
+    fn open_ai_setup(&mut self, mode: AiMode) {
+        if mode == AiMode::Local {
+            self.select_ai_mode(mode);
+            self.settings.ai.enabled = true;
+            self.persist_ai_settings("Smart Local enabled");
+            return;
+        }
+        self.overlay = Some(Overlay::AiSetup(AiSetupDraft::from_settings(
+            &self.settings.ai,
+            mode,
+        )));
+    }
+
+    async fn handle_ai_setup_key(&mut self, key: KeyEvent, mut draft: AiSetupDraft) {
+        match key.code {
+            KeyCode::Esc => self.overlay = None,
+            KeyCode::BackTab => {
+                self.overlay = Some(Overlay::AiSetup(draft));
+                self.retreat_ai_setup();
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                self.overlay = Some(Overlay::AiSetup(draft));
+                self.advance_ai_setup().await;
+            }
+            KeyCode::Left | KeyCode::Up if draft.step == AiSetupStep::Provider => {
+                let count = provider_count(draft.mode);
+                let current = setup_provider_index(&draft);
+                set_setup_provider(&mut draft, (current + count - 1) % count);
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::Right | KeyCode::Down if draft.step == AiSetupStep::Provider => {
+                let count = provider_count(draft.mode);
+                let current = setup_provider_index(&draft);
+                set_setup_provider(&mut draft, (current + 1) % count);
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::Char(character @ '1'..='5') if draft.step == AiSetupStep::Provider => {
+                let index = character.to_digit(10).unwrap_or(1) as usize - 1;
+                if index < provider_count(draft.mode) {
+                    set_setup_provider(&mut draft, index);
+                }
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::Backspace if draft.step != AiSetupStep::Provider => {
+                ai_setup_input_mut(&mut draft).pop();
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::Char('a')
+                if draft.step != AiSetupStep::Provider
+                    && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                ai_setup_input_mut(&mut draft).clear();
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::Char(character)
+                if draft.step != AiSetupStep::Provider
+                    && draft.step != AiSetupStep::Review
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                ai_setup_input_mut(&mut draft).push(character);
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            _ => self.overlay = Some(Overlay::AiSetup(draft)),
+        }
+    }
+
+    fn choose_ai_setup_provider(&mut self, index: usize) {
+        if let Some(Overlay::AiSetup(draft)) = &mut self.overlay
+            && draft.step == AiSetupStep::Provider
+            && index < provider_count(draft.mode)
+        {
+            set_setup_provider(draft, index);
+        }
+    }
+
+    async fn advance_ai_setup(&mut self) {
+        let Some(Overlay::AiSetup(mut draft)) = self.overlay.take() else {
+            return;
+        };
+        match draft.step {
+            AiSetupStep::Provider => draft.step = AiSetupStep::Model,
+            AiSetupStep::Model => {
+                if draft.mode == AiMode::Api && draft.model.trim().is_empty() {
+                    self.status_line = "An API model is required".into();
+                    self.overlay = Some(Overlay::AiSetup(draft));
+                    return;
+                }
+                draft.step = if draft.mode == AiMode::Api {
+                    AiSetupStep::ApiKey
+                } else {
+                    AiSetupStep::Instructions
+                };
+            }
+            AiSetupStep::ApiKey => {
+                draft.step = if draft.api_provider == ApiProvider::Compatible {
+                    AiSetupStep::Endpoint
+                } else {
+                    AiSetupStep::Instructions
+                };
+            }
+            AiSetupStep::Endpoint => {
+                if !valid_ai_endpoint(&draft.endpoint) {
+                    self.status_line =
+                        "Enter a complete http(s) endpoint without embedded credentials".into();
+                    self.overlay = Some(Overlay::AiSetup(draft));
+                    return;
+                }
+                draft.step = AiSetupStep::Instructions;
+            }
+            AiSetupStep::Instructions => draft.step = AiSetupStep::Review,
+            AiSetupStep::Review => {
+                self.overlay = Some(Overlay::AiSetup(draft));
+                self.save_ai_setup();
+                return;
+            }
+        }
+        self.overlay = Some(Overlay::AiSetup(draft));
+    }
+
+    fn retreat_ai_setup(&mut self) {
+        let Some(Overlay::AiSetup(mut draft)) = self.overlay.take() else {
+            return;
+        };
+        draft.step = match draft.step {
+            AiSetupStep::Provider => {
+                self.overlay = None;
+                return;
+            }
+            AiSetupStep::Model => AiSetupStep::Provider,
+            AiSetupStep::ApiKey => AiSetupStep::Model,
+            AiSetupStep::Endpoint => AiSetupStep::ApiKey,
+            AiSetupStep::Instructions if draft.mode == AiMode::Agent => AiSetupStep::Model,
+            AiSetupStep::Instructions if draft.api_provider == ApiProvider::Compatible => {
+                AiSetupStep::Endpoint
+            }
+            AiSetupStep::Instructions => AiSetupStep::ApiKey,
+            AiSetupStep::Review => AiSetupStep::Instructions,
+        };
+        self.overlay = Some(Overlay::AiSetup(draft));
     }
 
     fn repeat_search(&mut self) {
@@ -1395,7 +1667,34 @@ impl App {
 
     fn queue_commit_message_generation(&mut self) {
         if !self.settings.ai.enabled {
-            self.status_line = "Enable [ai] in the Gitside configuration first".into();
+            if self.settings.ai.mode == AiMode::Local {
+                self.settings.ai.enabled = true;
+                self.persist_ai_settings("Smart Local enabled");
+            } else {
+                self.status_line = "Complete AI setup before generating".into();
+                self.open_ai_setup(self.settings.ai.mode);
+                return;
+            }
+        }
+        if self.settings.ai.mode == AiMode::Api
+            && (self
+                .settings
+                .ai
+                .api
+                .model
+                .as_deref()
+                .is_none_or(str::is_empty)
+                || (self.settings.ai.api.provider == ApiProvider::Compatible
+                    && self
+                        .settings
+                        .ai
+                        .api
+                        .endpoint
+                        .as_deref()
+                        .is_none_or(str::is_empty)))
+        {
+            self.status_line = "Complete API setup before generating".into();
+            self.open_ai_setup(AiMode::Api);
             return;
         }
         if self.background_task.is_some() {
@@ -1410,46 +1709,155 @@ impl App {
         let repo = self.active().repo.clone();
         let recent = self.active().history.clone();
         let settings = self.settings.ai.clone();
+        let credentials = self.credentials.clone();
         self.busy = true;
         self.status_line = format!("Generating with {}…", ai::mode_label(&settings));
         self.background_task = Some(tokio::spawn(async move {
+            let credential = if settings.mode == AiMode::Api {
+                match credentials
+                    .resolve(settings.api.provider, ai::api_key_env(&settings))
+                    .await
+                {
+                    Ok(credential) => credential,
+                    Err(error) => {
+                        return BackgroundResult::CommitMessage {
+                            repo_index,
+                            result: Err(error),
+                        };
+                    }
+                }
+            } else {
+                None
+            };
             BackgroundResult::CommitMessage {
                 repo_index,
-                result: ai::generate(&settings, &repo, &recent).await,
+                result: ai::generate(
+                    &settings,
+                    &repo,
+                    &recent,
+                    credential.as_ref().map(ExposeSecret::expose_secret),
+                )
+                .await,
             }
         }));
     }
 
     fn toggle_ai_enabled(&mut self) {
         self.settings.ai.enabled = !self.settings.ai.enabled;
-        self.status_line = if self.settings.ai.enabled {
-            format!(
-                "{} generation enabled for this session",
-                ai::mode_label(&self.settings.ai)
-            )
+        let status = if self.settings.ai.enabled {
+            format!("{} generation enabled", ai::mode_label(&self.settings.ai))
         } else {
-            "Commit-message generation disabled for this session".into()
+            "Commit-message generation disabled".into()
         };
+        self.persist_ai_settings(&status);
     }
 
     fn select_ai_mode(&mut self, mode: AiMode) {
         self.settings.ai.mode = mode;
-        self.status_line = format!(
-            "Selected {} for this session",
-            ai::mode_label(&self.settings.ai)
-        );
+        let status = format!("Selected {}", ai::mode_label(&self.settings.ai));
+        self.persist_ai_settings(&status);
     }
 
     fn toggle_ai_emoji(&mut self) {
         self.settings.ai.emoji = !self.settings.ai.emoji;
-        self.status_line = format!(
-            "Commit-message emoji {} for this session",
+        let status = format!(
+            "Commit-message emoji {}",
             if self.settings.ai.emoji {
                 "enabled"
             } else {
                 "disabled"
             }
         );
+        self.persist_ai_settings(&status);
+    }
+
+    fn persist_ai_settings(&mut self, success: &str) {
+        if self.settings.config_path.is_none() {
+            self.status_line = success.into();
+            return;
+        }
+        match self.settings.save_ai() {
+            Ok(()) => self.status_line = success.into(),
+            Err(error) => self.report_error(error),
+        }
+    }
+
+    fn save_ai_setup(&mut self) {
+        if self.background_task.is_some() {
+            self.status_line = "Another operation is still running".into();
+            return;
+        }
+        let Some(Overlay::AiSetup(draft)) = self.overlay.take() else {
+            return;
+        };
+        let mut settings = self.settings.clone();
+        settings.ai.enabled = true;
+        settings.ai.mode = draft.mode;
+        settings.ai.instructions = draft.instructions.trim().into();
+        match draft.mode {
+            AiMode::Agent => {
+                settings.ai.agent.provider = draft.agent_provider;
+                settings.ai.agent.model = nonempty_owned(draft.model);
+            }
+            AiMode::Api => {
+                settings.ai.api.provider = draft.api_provider;
+                settings.ai.api.model = nonempty_owned(draft.model);
+                settings.ai.api.endpoint = if draft.api_provider == ApiProvider::Compatible {
+                    nonempty_owned(draft.endpoint)
+                } else {
+                    None
+                };
+            }
+            AiMode::Local => {}
+        }
+        let ai_settings = settings.ai.clone();
+        let provider = draft.api_provider;
+        let secret = (!draft.api_key.is_empty())
+            .then(|| SecretString::from(draft.api_key.as_str().to_owned()));
+        let credentials = self.credentials.clone();
+        self.busy = true;
+        self.status_line = "Saving AI setup…".into();
+        self.background_task = Some(tokio::spawn(async move {
+            let save_result = tokio::task::spawn_blocking(move || settings.save_ai())
+                .await
+                .context("AI settings task failed")
+                .and_then(|result| result);
+            let result = match save_result {
+                Ok(()) if ai_settings.mode == AiMode::Api => match secret {
+                    Some(secret) => credentials.store(provider, secret).await,
+                    None => Ok(credentials
+                        .status(provider, ai::api_key_env(&ai_settings))
+                        .await),
+                },
+                Ok(()) => Ok(CredentialStatus::Unknown),
+                Err(error) => Err(error),
+            };
+            BackgroundResult::AiSetup {
+                settings: ai_settings,
+                result,
+            }
+        }));
+    }
+
+    fn remove_ai_credential(&mut self) {
+        if self.background_task.is_some() {
+            self.status_line = "Another operation is still running".into();
+            return;
+        }
+        let provider = self.settings.ai.api.provider;
+        let environment_name = ai::api_key_env(&self.settings.ai).map(str::to_owned);
+        let credentials = self.credentials.clone();
+        self.busy = true;
+        self.status_line = "Removing API key…".into();
+        self.background_task = Some(tokio::spawn(async move {
+            let result = match credentials.delete(provider).await {
+                Ok(_) => Ok(credentials
+                    .status(provider, environment_name.as_deref())
+                    .await),
+                Err(error) => Err(error),
+            };
+            BackgroundResult::AiCredentialRemoved { result }
+        }));
     }
 
     fn run_remote(&mut self, label: &'static str, action: RemoteAction) {
@@ -2424,6 +2832,92 @@ enum RemoteAction {
     Sync,
 }
 
+fn provider_count(mode: AiMode) -> usize {
+    match mode {
+        AiMode::Agent => 3,
+        AiMode::Api => 5,
+        AiMode::Local => 1,
+    }
+}
+
+fn setup_provider_index(draft: &AiSetupDraft) -> usize {
+    match draft.mode {
+        AiMode::Agent => match draft.agent_provider {
+            AgentProvider::Codex => 0,
+            AgentProvider::Claude => 1,
+            AgentProvider::Opencode => 2,
+            AgentProvider::Custom => 0,
+        },
+        AiMode::Api => match draft.api_provider {
+            ApiProvider::Openai => 0,
+            ApiProvider::Anthropic => 1,
+            ApiProvider::Gemini => 2,
+            ApiProvider::Openrouter => 3,
+            ApiProvider::Compatible => 4,
+        },
+        AiMode::Local => 0,
+    }
+}
+
+fn set_setup_provider(draft: &mut AiSetupDraft, index: usize) {
+    match draft.mode {
+        AiMode::Agent => {
+            let provider = match index {
+                1 => AgentProvider::Claude,
+                2 => AgentProvider::Opencode,
+                _ => AgentProvider::Codex,
+            };
+            if draft.agent_provider != provider {
+                draft.agent_provider = provider;
+                draft.model.clear();
+            }
+        }
+        AiMode::Api => {
+            let provider = match index {
+                1 => ApiProvider::Anthropic,
+                2 => ApiProvider::Gemini,
+                3 => ApiProvider::Openrouter,
+                4 => ApiProvider::Compatible,
+                _ => ApiProvider::Openai,
+            };
+            if draft.api_provider != provider {
+                draft.api_provider = provider;
+                draft.model.clear();
+                draft.endpoint.clear();
+            }
+        }
+        AiMode::Local => {}
+    }
+}
+
+fn ai_setup_input_mut(draft: &mut AiSetupDraft) -> &mut String {
+    match draft.step {
+        AiSetupStep::Model => &mut draft.model,
+        AiSetupStep::ApiKey => &mut draft.api_key,
+        AiSetupStep::Endpoint => &mut draft.endpoint,
+        AiSetupStep::Instructions | AiSetupStep::Provider | AiSetupStep::Review => {
+            &mut draft.instructions
+        }
+    }
+}
+
+fn valid_ai_endpoint(value: &str) -> bool {
+    reqwest::Url::parse(value.trim()).is_ok_and(|url| {
+        let sensitive_query = url.query_pairs().any(|(name, _)| {
+            let name = name.to_ascii_lowercase();
+            name.contains("key") || name.contains("token") || name.contains("secret")
+        });
+        matches!(url.scheme(), "http" | "https")
+            && url.username().is_empty()
+            && url.password().is_none()
+            && !sensitive_query
+    })
+}
+
+fn nonempty_owned(value: String) -> Option<String> {
+    (!value.trim().is_empty()).then(|| value.trim().to_owned())
+}
+
 fn commit_options_for_key(key: KeyEvent) -> Option<CommitOptions> {
     if key.code != KeyCode::Enter || !key.modifiers.contains(KeyModifiers::CONTROL) {
         return None;
@@ -2619,6 +3113,16 @@ mod tests {
             ]),
             "github-2"
         );
+    }
+
+    #[test]
+    fn compatible_ai_endpoints_reject_embedded_credentials() {
+        assert!(valid_ai_endpoint(
+            "http://127.0.0.1:11434/v1/chat/completions"
+        ));
+        assert!(!valid_ai_endpoint("ftp://example.com/v1/chat/completions"));
+        assert!(!valid_ai_endpoint("https://user:secret@example.com/v1"));
+        assert!(!valid_ai_endpoint("https://example.com/v1?api_key=secret"));
     }
 
     #[tokio::test]
@@ -2871,6 +3375,50 @@ mod tests {
         assert!(app.settings.ai.enabled);
         assert_eq!(app.settings.ai.mode, AiMode::Agent);
         assert!(app.settings.ai.emoji);
+    }
+
+    #[tokio::test]
+    async fn agent_setup_wizard_saves_global_settings_after_confirmation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut settings = Settings {
+            config_path: Some(path.clone()),
+            ..Settings::default()
+        };
+        settings.ai.mode = AiMode::Agent;
+        let mut app = App::new(cli, settings).await.unwrap();
+        app.focus = Focus::Ai;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        for character in "Use short subjects".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+        assert!(app.poll_background().await);
+        assert!(app.settings.ai.enabled);
+        assert_eq!(app.settings.ai.mode, AiMode::Agent);
+        assert_eq!(app.settings.ai.instructions, "Use short subjects");
+        let saved = fs::read_to_string(path).unwrap();
+        assert!(saved.contains("Use short subjects"));
+        assert!(!saved.to_ascii_lowercase().contains("api_key ="));
     }
 
     #[tokio::test]
