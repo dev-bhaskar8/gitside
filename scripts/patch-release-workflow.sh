@@ -16,6 +16,7 @@ replacements = {
   "          node-version: '20.x'" => "          node-version: '24.x'",
   '            npm publish --access public "./npm/${pkg}"' => '            npm publish --access public --provenance "./npm/${pkg}"',
   '${{ steps.cargo-cyclonedx.output.paths }}' => '${{ steps.cargo-cyclonedx.outputs.paths }}',
+  "    permissions:\n      \"id-token\": \"write\"\n      \"packages\": \"write\"\n\n  announce:" => "    permissions:\n      \"contents\": \"read\"\n      \"id-token\": \"write\"\n      \"packages\": \"write\"\n\n  announce:",
 }
 
 replacements.each do |from, to|
