@@ -26,8 +26,6 @@ checksum() {
 
 x64_zip=$(checksum gitside-x86_64-pc-windows-msvc.zip)
 arm64_zip=$(checksum gitside-aarch64-pc-windows-msvc.zip)
-x64_msi=$(checksum gitside-x86_64-pc-windows-msvc.msi)
-arm64_msi=$(checksum gitside-aarch64-pc-windows-msvc.msi)
 x64_linux=$(checksum gitside-x86_64-unknown-linux-gnu.tar.xz)
 arm64_linux=$(checksum gitside-aarch64-unknown-linux-gnu.tar.xz)
 release_date=${RELEASE_DATE:-$(date -u +%Y-%m-%d)}
@@ -41,8 +39,6 @@ render() {
     -e "s/__RELEASE_DATE__/$release_date/g" \
     -e "s/__X64_ZIP_SHA256__/$x64_zip/g" \
     -e "s/__ARM64_ZIP_SHA256__/$arm64_zip/g" \
-    -e "s/__X64_MSI_SHA256__/$x64_msi/g" \
-    -e "s/__ARM64_MSI_SHA256__/$arm64_msi/g" \
     -e "s/__X64_LINUX_SHA256__/$x64_linux/g" \
     -e "s/__ARM64_LINUX_SHA256__/$arm64_linux/g" \
     "$source_file" > "$destination"

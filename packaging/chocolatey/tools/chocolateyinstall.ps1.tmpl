@@ -2,11 +2,9 @@ $ErrorActionPreference = 'Stop'
 
 $packageArgs = @{
   packageName    = 'gitside'
-  fileType       = 'msi'
-  silentArgs     = '/qn /norestart'
-  validExitCodes = @(0, 1641, 3010)
-  url64bit       = 'https://github.com/dev-bhaskar8/gitside/releases/download/v__VERSION__/gitside-x86_64-pc-windows-msvc.msi'
-  checksum64     = '__X64_MSI_SHA256__'
+  unzipLocation  = Split-Path -Parent $MyInvocation.MyCommand.Definition
+  url64bit       = 'https://github.com/dev-bhaskar8/gitside/releases/download/v__VERSION__/gitside-x86_64-pc-windows-msvc.zip'
+  checksum64     = '__X64_ZIP_SHA256__'
   checksumType64 = 'sha256'
 }
 
@@ -15,8 +13,8 @@ if (Get-OSArchitectureWidth -eq 32) {
 }
 
 if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
-  $packageArgs.url64bit = 'https://github.com/dev-bhaskar8/gitside/releases/download/v__VERSION__/gitside-aarch64-pc-windows-msvc.msi'
-  $packageArgs.checksum64 = '__ARM64_MSI_SHA256__'
+  $packageArgs.url64bit = 'https://github.com/dev-bhaskar8/gitside/releases/download/v__VERSION__/gitside-aarch64-pc-windows-msvc.zip'
+  $packageArgs.checksum64 = '__ARM64_ZIP_SHA256__'
 }
 
-Install-ChocolateyPackage @packageArgs
+Install-ChocolateyZipPackage @packageArgs

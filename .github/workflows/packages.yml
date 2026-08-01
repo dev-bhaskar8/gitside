@@ -44,8 +44,7 @@ jobs:
           gh release download "$RELEASE_TAG" --dir target/package-assets \
             --pattern 'sha256.sum' \
             --pattern 'gitside-*-unknown-linux-gnu.tar.xz' \
-            --pattern 'gitside-*-pc-windows-msvc.zip' \
-            --pattern 'gitside-*-pc-windows-msvc.msi'
+            --pattern 'gitside-*-pc-windows-msvc.zip'
       - name: Install nfpm
         env:
           GOBIN: ${{ runner.temp }}/bin

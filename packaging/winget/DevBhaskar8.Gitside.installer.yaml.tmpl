@@ -1,7 +1,6 @@
 PackageIdentifier: DevBhaskar8.Gitside
 PackageVersion: __VERSION__
-InstallerType: wix
-Scope: machine
+InstallerType: zip
 InstallModes:
   - interactive
   - silent
@@ -10,12 +9,18 @@ UpgradeBehavior: install
 ReleaseDate: __RELEASE_DATE__
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/dev-bhaskar8/gitside/releases/download/v__VERSION__/gitside-x86_64-pc-windows-msvc.msi
-    InstallerSha256: __X64_MSI_SHA256__
-    ProductCode: '{ACD41B7D-CEDB-44F6-9C02-255AB8E92FB6}'
+    InstallerUrl: https://github.com/dev-bhaskar8/gitside/releases/download/v__VERSION__/gitside-x86_64-pc-windows-msvc.zip
+    InstallerSha256: __X64_ZIP_SHA256__
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: gitside.exe
+        PortableCommandAlias: gitside
   - Architecture: arm64
-    InstallerUrl: https://github.com/dev-bhaskar8/gitside/releases/download/v__VERSION__/gitside-aarch64-pc-windows-msvc.msi
-    InstallerSha256: __ARM64_MSI_SHA256__
-    ProductCode: '{ACD41B7D-CEDB-44F6-9C02-255AB8E92FB6}'
+    InstallerUrl: https://github.com/dev-bhaskar8/gitside/releases/download/v__VERSION__/gitside-aarch64-pc-windows-msvc.zip
+    InstallerSha256: __ARM64_ZIP_SHA256__
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: gitside.exe
+        PortableCommandAlias: gitside
 ManifestType: installer
 ManifestVersion: 1.10.0
