@@ -28,6 +28,8 @@ actions when terminal mouse events are enabled. In tmux, use `set -g mouse on`.
 | `E` | Interactive line staging |
 | `o` | Open working file in configured editor |
 | `c` | Focus commit message |
+| `Ctrl+G` | Generate an editable commit-message draft when enabled |
+| `G` / `Y` | Generate outside the editor / open AI status |
 | `Ctrl+Enter` | Commit |
 | `Ctrl+Shift+Enter` | Amend previous commit |
 | `Ctrl+Alt+Enter` | Commit with sign-off |

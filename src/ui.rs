@@ -8,6 +8,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthChar;
 
 use crate::{
+    ai,
     app::{App, Focus, HitRegion, Overlay, UiAction},
     config::LayoutPreference,
     github::{GitHubConnectionState, GitHubVisibility},
@@ -209,6 +210,29 @@ fn render_commit(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         rect: button,
         action: UiAction::Commit,
     });
+    if app.settings.ai.enabled {
+        let label = if area.width >= 58 {
+            "[Generate]"
+        } else {
+            "[AI]"
+        };
+        let width = label.len() as u16;
+        let inner_left = area.x.saturating_add(1);
+        if button.x.saturating_sub(inner_left) < width.saturating_add(1) {
+            return;
+        }
+        let generate = Rect::new(button.x - width - 1, button.y, width, 1);
+        frame.render_widget(
+            Paragraph::new(label)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(BLUE)),
+            generate,
+        );
+        app.hits.push(HitRegion {
+            rect: generate,
+            action: UiAction::GenerateCommitMessage,
+        });
+    }
 }
 
 fn render_compact_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -223,6 +247,7 @@ fn render_compact_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Focus::Stashes => render_stashes(frame, app, area),
             Focus::Worktrees => render_worktrees(frame, app, area),
             Focus::GitHub => render_github(frame, app, area),
+            Focus::Ai => render_ai(frame, app, area),
             Focus::Preview => render_preview(frame, app, area),
             _ => render_changes(frame, app, area, false),
         }
@@ -242,6 +267,7 @@ fn render_compact_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         Focus::Stashes => render_stashes(frame, app, sections[1]),
         Focus::Worktrees => render_worktrees(frame, app, sections[1]),
         Focus::GitHub => render_github(frame, app, sections[1]),
+        Focus::Ai => render_ai(frame, app, sections[1]),
         _ => render_graph(frame, app, sections[1]),
     }
 }
@@ -265,6 +291,8 @@ fn render_wide_body(frame: &mut Frame<'_>, app: &mut App, area: Rect, three: boo
         render_graph(frame, app, columns[1]);
         if app.preview.is_some() {
             render_preview(frame, app, columns[2]);
+        } else if app.focus == Focus::Ai {
+            render_ai(frame, app, columns[2]);
         } else if app.focus == Focus::GitHub {
             render_github(frame, app, columns[2]);
         } else if app.focus == Focus::Stashes {
@@ -287,6 +315,8 @@ fn render_wide_body(frame: &mut Frame<'_>, app: &mut App, area: Rect, three: boo
         render_graph(frame, app, left[1]);
         if app.preview.is_some() {
             render_preview(frame, app, columns[1]);
+        } else if app.focus == Focus::Ai {
+            render_ai(frame, app, columns[1]);
         } else if app.focus == Focus::GitHub {
             render_github(frame, app, columns[1]);
         } else if app.focus == Focus::Stashes {
@@ -769,6 +799,76 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     }
 }
 
+fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::Ai;
+    let settings = &app.settings.ai;
+    let enabled = if settings.enabled { "Yes" } else { "No" };
+    let emoji = if settings.emoji { "On" } else { "Off" };
+    let setup = match settings.mode {
+        crate::config::AiMode::Local => {
+            "Private and offline. Uses staged file status and statistics."
+        }
+        crate::config::AiMode::Agent => match settings.agent.provider {
+            crate::config::AgentProvider::Codex => {
+                "Uses `codex exec`. Authenticate with `codex login`."
+            }
+            crate::config::AgentProvider::Claude => {
+                "Uses `claude -p`. Authenticate by starting Claude Code once."
+            }
+            crate::config::AgentProvider::Opencode => {
+                "Uses `opencode run`. Configure it with `opencode auth login`."
+            }
+            crate::config::AgentProvider::Custom => {
+                "Sends the prompt to ai.agent.command over standard input."
+            }
+        },
+        crate::config::AiMode::Api => {
+            "Sends the staged text diff to the configured endpoint. Keys are read from environment variables only."
+        }
+    };
+    let body = format!(
+        "Enabled   {enabled}\nMode      {}\nProvider  {}\nStatus    {}\nEmoji     {emoji}\nLimit     {} bytes\n\n{setup}\n\nMCP is not required for generation. Built-in agent adapters request non-mutating, non-interactive operation. Custom commands are trusted programs.\n\nConfigure [ai], [ai.agent], and [ai.api] in config.toml.\n\nCtrl+G generates from staged changes and inserts an editable draft.",
+        ai::mode_label(settings),
+        ai::provider_label(settings),
+        ai::readiness(settings),
+        settings.max_diff_bytes,
+    );
+    frame.render_widget(
+        Paragraph::new(body).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .title(" AI Commit Messages ")
+                .borders(Borders::ALL)
+                .border_style(panel_border_style(focused)),
+        ),
+        area,
+    );
+    app.hits.push(HitRegion {
+        rect: area,
+        action: UiAction::Focus(Focus::Ai),
+    });
+    if settings.enabled && area.width >= 8 && area.height >= 4 {
+        let label = if area.width >= 20 {
+            "[Generate]"
+        } else {
+            "[AI]"
+        };
+        let button = Rect::new(
+            area.x + 2,
+            area.bottom().saturating_sub(2),
+            label.len() as u16,
+            1,
+        );
+        frame.render_widget(
+            Paragraph::new(label).style(Style::default().fg(BLUE)),
+            button,
+        );
+        app.hits.push(HitRegion {
+            rect: button,
+            action: UiAction::GenerateCommitMessage,
+        });
+    }
+}
+
 fn render_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let Some(preview) = app.preview.as_ref() else {
         return;
@@ -877,6 +977,7 @@ fn contextual_footer_hint(
             Focus::Stashes => " ? Help · A Apply",
             Focus::Worktrees => " ? Help · X Remove",
             Focus::GitHub => " ? Help · Enter View",
+            Focus::Ai => " ? Help · Ctrl+G Generate",
             Focus::Preview => " ? Help · Esc Close",
         };
     }
@@ -891,6 +992,7 @@ fn contextual_footer_hint(
         Focus::Stashes => " ? Help · Enter View · A Apply · P Pop",
         Focus::Worktrees => " ? Help · w Add · X Remove",
         Focus::GitHub => " ? Help · Enter View · i Type · o Open",
+        Focus::Ai => " ? Help · Ctrl+G Generate · Y AI",
         Focus::Preview => " ? Help · j/k Hunk · Space Stage · Esc Close",
     }
 }
@@ -1201,6 +1303,10 @@ fn help_text(
             "GitHub — current panel",
             "  j/k or arrows  Move\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks",
         ),
+        Focus::Ai => (
+            "AI — current panel",
+            "  Ctrl+G / Enter Generate editable commit-message draft\n  G              Generate outside message editor\n  Y              Focus AI panel\n  Config         Select local, agent, or API mode",
+        ),
         Focus::Preview => (
             "Preview — current panel",
             "  j/k or arrows  Select hunk\n  Space          Stage/unstage hunk\n  Esc            Close preview",
@@ -1208,7 +1314,7 @@ fn help_text(
     };
 
     format!(
-        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  /              Search focused view\n  N              Next search match\n  ? / F1         Open/close help\n  q / Ctrl+C     Quit\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External old/new difftool\n  E              Interactive line staging\n\nRepository\n  c                    Commit message\n  Up/Down              Previous/next message\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  U                    Undo last commit\n  f / l / p            Fetch/pull/push\n  L                    Pull with rebase\n  P / T                Push to/pull from target\n  F                    Force push with lease\n  D                    Git diagnostics\n  s / z                Create/list stashes\n  W                    Worktree list\n  r                    Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGit operations\n  C / S / A      Continue/skip/abort\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, ?, or F1 to close."
+        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  /              Search focused view\n  N              Next search match\n  ? / F1         Open/close help\n  q / Ctrl+C     Quit\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External old/new difftool\n  E              Interactive line staging\n\nRepository\n  c                    Commit message\n  Up/Down              Previous/next message\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  Ctrl+G               Generate commit message\n  U                    Undo last commit\n  f / l / p            Fetch/pull/push\n  L                    Pull with rebase\n  P / T                Push to/pull from target\n  F                    Force push with lease\n  D                    Git diagnostics\n  s / z                Create/list stashes\n  W                    Worktree list\n  Y                    AI panel\n  r                    Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGit operations\n  C / S / A      Continue/skip/abort\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, ?, or F1 to close."
     )
 }
 
@@ -1296,7 +1402,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     use crate::{
-        config::{Cli, Settings},
+        config::{AiMode, Cli, Settings},
         model::Branch,
     };
 
@@ -1350,6 +1456,72 @@ mod tests {
         .await;
 
         assert_eq!(app.focus, Focus::Changes);
+    }
+
+    #[tokio::test]
+    async fn commit_generator_is_hidden_until_enabled_and_never_overlaps_commit() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+
+        for width in [14, 24, 50, 74] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            assert!(
+                !app.hits
+                    .iter()
+                    .any(|hit| matches!(hit.action, UiAction::GenerateCommitMessage)),
+                "generator should be absent while disabled at width {width}"
+            );
+        }
+
+        app.settings.ai.enabled = true;
+        for width in [14, 24, 50, 74] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let generate = app
+                .hits
+                .iter()
+                .find(|hit| matches!(hit.action, UiAction::GenerateCommitMessage))
+                .expect("enabled generator should expose a compact hit target")
+                .rect;
+            let commit = app
+                .hits
+                .iter()
+                .find(|hit| matches!(hit.action, UiAction::Commit))
+                .unwrap()
+                .rect;
+            assert!(generate.right() <= commit.x, "width {width}");
+            assert!(generate.right() <= width, "width {width}");
+        }
+    }
+
+    #[tokio::test]
+    async fn ai_panel_explains_the_selected_mode_in_a_narrow_pane() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut settings = Settings::default();
+        settings.ai.enabled = true;
+        settings.ai.mode = AiMode::Agent;
+        let mut app = App::new(cli, settings).await.unwrap();
+        app.focus = Focus::Ai;
+        let mut terminal = Terminal::new(TestBackend::new(32, 40)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(output.contains("AI Commit Messages"));
+        assert!(output.contains("Existing Agent"));
+        assert!(output.contains("Emoji"));
+        assert!(output.contains("MCP is not required"));
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, UiAction::GenerateCommitMessage))
+        );
     }
 
     #[tokio::test]

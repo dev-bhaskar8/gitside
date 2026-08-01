@@ -12,6 +12,7 @@ use tokio::process::Command;
 use tokio::task::JoinHandle;
 
 use crate::{
+    ai,
     config::{Cli, Settings},
     git::{CommitOptions, ConflictChoice, GitRepo},
     github::{GitHub, GitHubConnectionState, GitHubVisibility},
@@ -28,6 +29,7 @@ pub enum Focus {
     Stashes,
     Worktrees,
     GitHub,
+    Ai,
     Preview,
 }
 
@@ -51,6 +53,7 @@ pub enum UiAction {
     ToggleHelp,
     CloseOverlay,
     PublishGitHub,
+    GenerateCommitMessage,
     ConfirmGitHubVisibility(GitHubVisibility),
 }
 
@@ -217,6 +220,10 @@ enum BackgroundResult {
     PublishGitHub {
         repo_index: usize,
         result: Result<()>,
+    },
+    CommitMessage {
+        repo_index: usize,
+        result: Result<String>,
     },
 }
 
@@ -472,6 +479,19 @@ impl App {
                 }
                 Err(error) => self.report_error(error),
             },
+            Ok(BackgroundResult::CommitMessage { repo_index, result }) => match result {
+                Ok(message) if repo_index == self.active_repo => {
+                    self.commit_message = message;
+                    self.commit_history_index = None;
+                    self.focus = Focus::Commit;
+                    self.status_line = "Generated editable commit message".into();
+                }
+                Ok(_) => {
+                    self.status_line =
+                        "Generated message discarded because the repository changed".into();
+                }
+                Err(error) => self.report_error(error),
+            },
             Err(error) => self.report_error(anyhow::anyhow!("background Git task failed: {error}")),
         }
         true
@@ -486,6 +506,10 @@ impl App {
         }
         if key.code == KeyCode::F(1) {
             self.open_help();
+            return EventOutcome::Continue;
+        }
+        if key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.queue_commit_message_generation();
             return EventOutcome::Continue;
         }
         if self.focus == Focus::Commit {
@@ -544,6 +568,8 @@ impl App {
             KeyCode::Char('g') => self.focus = Focus::Graph,
             KeyCode::Char('b') => self.focus = Focus::Branches,
             KeyCode::Char('h') => self.focus_github(),
+            KeyCode::Char('Y') => self.focus = Focus::Ai,
+            KeyCode::Char('G') => self.queue_commit_message_generation(),
             KeyCode::Char('a') => self.run_stage_all().await,
             KeyCode::Char('u') => self.run_unstage_all().await,
             KeyCode::Char('f') => self.run_remote("Fetching", RemoteAction::Fetch),
@@ -938,6 +964,7 @@ impl App {
             UiAction::ToggleHelp => self.open_help(),
             UiAction::CloseOverlay => self.overlay = None,
             UiAction::PublishGitHub => self.begin_publish_github(),
+            UiAction::GenerateCommitMessage => self.queue_commit_message_generation(),
             UiAction::ConfirmGitHubVisibility(visibility) => {
                 if let Some(Overlay::GitHubVisibility { name, .. }) = self.overlay.take() {
                     self.request_publish_github(name, visibility).await;
@@ -957,6 +984,7 @@ impl App {
                 self.begin_publish_github()
             }
             Focus::GitHub => self.open_github_preview().await,
+            Focus::Ai => self.queue_commit_message_generation(),
             Focus::Preview => {}
             _ => {}
         }
@@ -1105,7 +1133,7 @@ impl App {
                 .get(index)
                 .map(|pr| format!("{} {} {} {}", pr.number, pr.title, pr.author, pr.head))
                 .unwrap_or_default(),
-            Focus::Commit | Focus::Preview => String::new(),
+            Focus::Commit | Focus::Ai | Focus::Preview => String::new(),
         }
     }
 
@@ -1352,6 +1380,33 @@ impl App {
             (false, false) => "Committed changes",
         };
         self.finish_action(result, success).await;
+    }
+
+    fn queue_commit_message_generation(&mut self) {
+        if !self.settings.ai.enabled {
+            self.status_line = "Enable [ai] in the Gitside configuration first".into();
+            return;
+        }
+        if self.background_task.is_some() {
+            self.status_line = "Another Git operation is still running".into();
+            return;
+        }
+        if self.active().status.staged.is_empty() {
+            self.status_line = "Stage at least one change before generating a message".into();
+            return;
+        }
+        let repo_index = self.active_repo;
+        let repo = self.active().repo.clone();
+        let recent = self.active().history.clone();
+        let settings = self.settings.ai.clone();
+        self.busy = true;
+        self.status_line = format!("Generating with {}…", ai::mode_label(&settings));
+        self.background_task = Some(tokio::spawn(async move {
+            BackgroundResult::CommitMessage {
+                repo_index,
+                result: ai::generate(&settings, &repo, &recent).await,
+            }
+        }));
     }
 
     fn run_remote(&mut self, label: &'static str, action: RemoteAction) {
@@ -2058,7 +2113,7 @@ impl App {
     }
 
     async fn next_focus(&mut self, backwards: bool) {
-        const ORDER: [Focus; 8] = [
+        const ORDER: [Focus; 9] = [
             Focus::Commit,
             Focus::Changes,
             Focus::Staged,
@@ -2067,17 +2122,34 @@ impl App {
             Focus::Stashes,
             Focus::Worktrees,
             Focus::GitHub,
+            Focus::Ai,
         ];
-        let current = ORDER
+        if self.focus == Focus::Ai && !self.settings.ai.enabled {
+            self.focus = if backwards {
+                Focus::GitHub
+            } else {
+                Focus::Commit
+            };
+            if self.focus == Focus::GitHub {
+                self.focus_github();
+            }
+            return;
+        }
+        let order = if self.settings.ai.enabled {
+            &ORDER[..]
+        } else {
+            &ORDER[..ORDER.len() - 1]
+        };
+        let current = order
             .iter()
             .position(|value| *value == self.focus)
             .unwrap_or(0);
         let next = if backwards {
-            current.checked_sub(1).unwrap_or(ORDER.len() - 1)
+            current.checked_sub(1).unwrap_or(order.len() - 1)
         } else {
-            (current + 1) % ORDER.len()
+            (current + 1) % order.len()
         };
-        self.focus = ORDER[next];
+        self.focus = order[next];
         if self.focus == Focus::GitHub {
             self.focus_github();
         }
@@ -2125,6 +2197,7 @@ impl App {
             Focus::Stashes => self.selected_stash,
             Focus::Worktrees => self.selected_worktree,
             Focus::GitHub => self.selected_github,
+            Focus::Ai => 0,
             _ => self.selected_change,
         }
     }
@@ -2141,6 +2214,7 @@ impl App {
             Focus::Worktrees => self.active().worktrees.len(),
             Focus::GitHub if self.github_show_issues => self.active().issues.len(),
             Focus::GitHub => self.active().pull_requests.len(),
+            Focus::Ai => 0,
             _ => self.active().status.unstaged.len(),
         }
     }
@@ -2154,6 +2228,7 @@ impl App {
             Focus::Stashes => self.selected_stash = clamped,
             Focus::Worktrees => self.selected_worktree = clamped,
             Focus::GitHub => self.selected_github = clamped,
+            Focus::Ai => {}
             _ => self.selected_change = clamped,
         }
         self.maybe_queue_history();
@@ -2631,6 +2706,131 @@ mod tests {
             value: String::new(),
         });
         assert_eq!(app.handle_key(control_c).await, EventOutcome::Quit);
+    }
+
+    #[tokio::test]
+    async fn generation_creates_an_editable_draft_without_committing() {
+        let directory = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "Gitside Test"],
+            vec!["config", "user.email", "gitside@example.invalid"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(directory.path())
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            );
+        }
+        fs::write(directory.path().join("feature.rs"), "pub fn feature() {}\n").unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "feature.rs"])
+                .current_dir(directory.path())
+                .status()
+                .await
+                .unwrap()
+                .success()
+        );
+
+        let cli = Cli::try_parse_from(["gitside", directory.path().to_str().unwrap()]).unwrap();
+        let mut settings = Settings::default();
+        settings.ai.enabled = true;
+        settings.ai.emoji = true;
+        let mut app = App::new(cli, settings).await.unwrap();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL))
+            .await;
+        assert!(app.busy);
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+        assert!(app.poll_background().await);
+
+        assert_eq!(app.commit_message, "🤖 Add feature.rs");
+        assert_eq!(app.focus, Focus::Commit);
+        assert_eq!(app.status_line, "Generated editable commit message");
+        let count = Command::new("git")
+            .args(["rev-list", "--count", "HEAD"])
+            .current_dir(directory.path())
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            !count.status.success(),
+            "generation must not create a commit"
+        );
+    }
+
+    #[tokio::test]
+    async fn generation_requires_staged_changes_and_preserves_the_draft() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut settings = Settings::default();
+        settings.ai.enabled = true;
+        let mut app = App::new(cli, settings).await.unwrap();
+        app.active_mut().status.staged.clear();
+        app.commit_message = "Keep my draft".into();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT))
+            .await;
+
+        assert_eq!(app.commit_message, "Keep my draft");
+        assert_eq!(
+            app.status_line,
+            "Stage at least one change before generating a message"
+        );
+        assert!(app.background_task.is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_generation_preserves_the_existing_draft() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.commit_message = "Keep my draft".into();
+        app.busy = true;
+        app.background_task = Some(tokio::spawn(async {
+            BackgroundResult::CommitMessage {
+                repo_index: 0,
+                result: Err(anyhow::anyhow!("generator unavailable")),
+            }
+        }));
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(app.poll_background().await);
+        assert_eq!(app.commit_message, "Keep my draft");
+        assert!(app.status_line.contains("generator unavailable"));
+        assert!(!app.busy);
+    }
+
+    #[tokio::test]
+    async fn tab_order_adds_no_ai_stop_until_generation_is_enabled() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::GitHub;
+
+        app.next_focus(false).await;
+        assert_eq!(app.focus, Focus::Commit);
+
+        app.settings.ai.enabled = true;
+        app.focus = Focus::GitHub;
+        app.next_focus(false).await;
+        assert_eq!(app.focus, Focus::Ai);
+        app.next_focus(false).await;
+        assert_eq!(app.focus, Focus::Commit);
     }
 
     #[tokio::test]

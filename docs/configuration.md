@@ -40,3 +40,96 @@ The `e` comparison action uses Git's own difftool configuration. For example:
 git config --global diff.tool vscode
 git config --global difftool.vscode.cmd 'code --wait --diff "$LOCAL" "$REMOTE"'
 ```
+
+## Commit-message generation
+
+Generation is opt-in and always creates an editable draft. It never stages
+files, creates a repository, switches branches, commits, or pushes. Every mode
+uses staged changes only. Enable one of the following modes:
+
+### Smart Local
+
+This deterministic mode is private, offline, and requires no AI service. It
+summarizes staged file statuses and statistics.
+
+```toml
+[ai]
+enabled = true
+mode = "local"
+emoji = false
+max_files = 3
+max_diff_bytes = 32000
+```
+
+Set `emoji = true` to prefix generated drafts with `🤖`. This toggle applies
+independently to all three modes.
+
+### Existing agent
+
+This mode invokes an already authenticated Codex, Claude Code, or OpenCode CLI
+non-interactively. The built-in adapters request non-mutating operation and
+provide a prompt based on the staged diff. Depending on the chosen agent, that
+diff may be sent to its configured provider.
+
+```toml
+[ai]
+enabled = true
+mode = "agent"
+emoji = false
+instructions = "Use conventional commit subjects."
+
+[ai.agent]
+provider = "codex" # codex, claude, opencode, or custom
+# model = "your-model"
+# args = ["additional", "arguments"]
+```
+
+For a custom generator, set `provider = "custom"` and `command` to a trusted
+executable. It runs with your user permissions, receives the generation prompt
+on standard input, and must print only the proposed commit message to standard
+output.
+
+```toml
+[ai.agent]
+provider = "custom"
+command = "/path/to/commit-message-generator"
+args = []
+```
+
+MCP is not needed for this direction of control: Gitside initiates generation,
+so it calls the agent's non-interactive CLI. Agents can continue controlling
+repository state through ordinary Git commands.
+
+### Direct API
+
+API keys are read from environment variables and are never stored in the
+configuration file. This mode sends the bounded staged text diff to the chosen
+provider.
+
+```toml
+[ai]
+enabled = true
+mode = "api"
+emoji = false
+max_diff_bytes = 32000
+
+[ai.api]
+provider = "openai" # openai, anthropic, gemini, openrouter, or compatible
+model = "your-model"
+# api_key_env = "OPENAI_API_KEY"
+```
+
+Default key variables are `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+`GEMINI_API_KEY`, and `OPENROUTER_API_KEY`. An OpenAI-compatible service can
+use a complete chat-completions endpoint and an optional key variable:
+
+```toml
+[ai.api]
+provider = "compatible"
+model = "local-model"
+endpoint = "http://127.0.0.1:11434/v1/chat/completions"
+# api_key_env = "LOCAL_AI_KEY"
+```
+
+Press `Ctrl+G` from any panel or use the outlined Generate button. `G` also
+generates outside the commit editor, while `Y` opens the AI status panel.

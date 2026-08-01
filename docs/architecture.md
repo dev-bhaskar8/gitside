@@ -62,6 +62,13 @@ slot serializes repository work and prevents overlapping network mutations.
 Completed remote actions refresh the repository they started from, even if the
 user has switched views.
 
+Commit-message generation uses that same background-task boundary and inserts
+only an editable draft. The `ai` adapter supports deterministic local rules,
+built-in agent adapters that request non-mutating operation, trusted custom
+commands, and direct HTTPS APIs. All modes inspect only the staged index; direct
+API input is byte-bounded, credentials are read from environment variables, and
+failures preserve the user's current draft.
+
 Every repository snapshot also classifies GitHub integration as CLI missing,
 unauthenticated, authenticated without a GitHub remote, or ready. This makes a
 new `gh` installation or login visible through the existing refresh cycle. The

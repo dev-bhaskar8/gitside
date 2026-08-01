@@ -112,6 +112,7 @@ gitside /path/to/repository
 - **GitHub when you need it.** Publish a repository, browse pull requests and issues, check out PRs, and inspect checks through the authenticated `gh` CLI.
 - **Your terminal, your colors.** Gitside inherits the terminal background instead of painting an opaque theme over it.
 - **Responsive and non-blocking.** Network work runs in the background and filesystem notifications keep repository state fresh.
+- **Optional commit drafts.** Generate an editable message with offline rules, an existing Codex/Claude Code/OpenCode login, or a direct API—with emoji independently optional.
 
 ## Essential controls
 
@@ -120,6 +121,7 @@ gitside /path/to/repository
 | `j` / `k` | Move | `Tab` | Next panel |
 | `Space` | Stage / unstage | `Enter` | Open / activate |
 | `c` | Commit message | `Ctrl+Enter` | Commit |
+| `Ctrl+G` | Generate message draft | `Y` | AI status |
 | `f` / `l` / `p` | Fetch / pull / push | `r` | Refresh |
 | `g` / `b` / `h` | Graph / branches / GitHub | `/` | Search panel |
 | `?` / `F1` | Contextual help | `q` / `Ctrl+C` | Quit |
