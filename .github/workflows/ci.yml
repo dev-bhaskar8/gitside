@@ -42,7 +42,8 @@ jobs:
           sudo install -m755 actionlint /usr/local/bin/actionlint
           sudo apt-get update
           sudo apt-get install --yes shellcheck
-          cargo install cargo-dist --version 0.32.0 --locked
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh
       - name: Validate scripts and package templates
         run: |
           shellcheck scripts/*.sh
