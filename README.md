@@ -32,29 +32,72 @@
 Prebuilt packages are published for macOS, Linux, and Windows with each stable
 release. Git 2.30+ is required at runtime.
 
+### macOS and Linux
+
 ```sh
-# macOS or Linux
+# Homebrew
 brew install dev-bhaskar8/tap/gitside
-
-# Any platform with Node.js
-npm install --global gitside
-
-# Any platform with Rust 1.85+
-cargo install gitside --locked
 ```
 
+### Arch Linux
+
+Install the prebuilt AUR package with your preferred helper:
+
+#### paru
+
+```sh
+paru -S gitside-bin
+```
+
+#### yay
+
+```sh
+yay -S gitside-bin
+```
+
+### Windows
+
+#### Chocolatey
+
 ```powershell
-# Windows
+choco install gitside
+```
+
+#### Scoop
+
+```powershell
 scoop bucket add gitside https://github.com/dev-bhaskar8/scoop-bucket
 scoop install gitside
 ```
 
-Signed installers, portable archives, `.deb`, and `.rpm` packages are available
-from [GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases/latest).
+### Cross-platform
+
+#### npm
+
+```sh
+npm install --global gitside
+```
+
+The npm package installs the matching native binary.
+
+#### Cargo
+
+```sh
+cargo install gitside --locked
+```
+
+Cargo builds Gitside from source and requires Rust 1.85 or newer.
+
+### Direct downloads and pending channels
+
+Signed macOS, Linux, and Windows installers, portable archives, `.deb`, and
+`.rpm` packages are available from
+[GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases/latest).
 The [WinGet submission](https://github.com/microsoft/winget-pkgs/pull/410857)
-is awaiting approval. See the
-[installation matrix](docs/distribution.md#installation-matrix) for the remaining
-package channels.
+is awaiting approval. Snap is registered and awaiting classic-confinement
+review, so neither command is advertised as available yet. See the
+[installation matrix](docs/distribution.md#installation-matrix) for package and
+architecture details.
 
 Pass a repository path from anywhere:
 
