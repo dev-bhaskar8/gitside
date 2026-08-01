@@ -108,6 +108,7 @@ jobs:
   chocolatey:
     name: Publish Chocolatey package
     needs: package
+    if: ${{ vars.ENABLE_CHOCOLATEY == 'true' }}
     runs-on: windows-2025
     environment: registry
     env:
@@ -131,6 +132,7 @@ jobs:
   aur:
     name: Publish AUR package
     needs: package
+    if: ${{ vars.ENABLE_AUR == 'true' }}
     runs-on: ubuntu-24.04
     environment: registry
     steps:
@@ -204,6 +206,7 @@ jobs:
   snap:
     name: Publish Snap (${{ matrix.arch }})
     needs: package
+    if: ${{ vars.ENABLE_SNAP == 'true' }}
     environment: registry
     strategy:
       fail-fast: false

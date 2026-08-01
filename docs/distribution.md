@@ -50,18 +50,34 @@ secrets provide the minimum token required by each publisher.
 
 ## Maintainer release checklist
 
-Before the first release, reserve `gitside` on crates.io, npm, Chocolatey, AUR,
-and Snapcraft; create the Homebrew tap and Scoop bucket; fork WinGet; and add
-these secrets to the `registry` GitHub environment:
+The core release can publish after reserving `gitside` on crates.io and npm,
+creating the Homebrew tap and Scoop bucket, forking WinGet, and adding these
+secrets to the `registry` GitHub environment:
 
 - `CARGO_REGISTRY_TOKEN`
 - `NPM_TOKEN`
 - `HOMEBREW_TAP_TOKEN`
 - `SCOOP_BUCKET_TOKEN`
-- `CHOCOLATEY_API_KEY`
-- `AUR_SSH_PRIVATE_KEY`
 - `WINGET_TOKEN`
-- `SNAPCRAFT_STORE_CREDENTIALS`
+
+Chocolatey, AUR, and Snap are disabled until their credentials exist. Add the
+appropriate secret and enable its repository Actions variable:
+
+| Publisher | Environment secret | Repository variable |
+| --- | --- | --- |
+| Chocolatey | `CHOCOLATEY_API_KEY` | `ENABLE_CHOCOLATEY=true` |
+| AUR | `AUR_SSH_PRIVATE_KEY` | `ENABLE_AUR=true` |
+| Snap | `SNAPCRAFT_STORE_CREDENTIALS` | `ENABLE_SNAP=true` |
+
+For example, after configuring Chocolatey:
+
+```sh
+gh variable set ENABLE_CHOCOLATEY --body true
+gh workflow run packages.yml --ref v0.1.0 -f tag=v0.1.0
+```
+
+The manual run safely reuses the existing release. Scoop is idempotent and the
+WinGet publisher reuses an existing submission pull request.
 
 Then:
 
