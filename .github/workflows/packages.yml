@@ -126,7 +126,7 @@ jobs:
         run: choco push (Get-ChildItem package-publication/packages/gitside.*.nupkg) --source https://push.chocolatey.org/ --api-key '${{ secrets.CHOCOLATEY_API_KEY }}'
       - name: Attach package to release
         shell: pwsh
-        run: gh release upload $env:RELEASE_TAG package-publication/packages/gitside.*.nupkg --clobber
+        run: gh release upload $env:RELEASE_TAG package-publication/packages/gitside.*.nupkg --clobber --repo dev-bhaskar8/gitside
 
   aur:
     name: Publish AUR package
@@ -194,7 +194,9 @@ jobs:
           git add manifests/d/DevBhaskar8/Gitside
           git commit -m "New package: DevBhaskar8.Gitside version $version" || true
           git push --force-with-lease origin "$branch"
-          existing=$(gh pr list --repo microsoft/winget-pkgs --head "dev-bhaskar8:$branch" --json url --jq '.[0].url // empty')
+          existing=$(gh api --method GET repos/microsoft/winget-pkgs/pulls \
+            -f head="dev-bhaskar8:$branch" -f state=open \
+            --jq '.[0].html_url // empty')
           if test -n "$existing"; then
             echo "$existing"
           else
