@@ -22,7 +22,7 @@ pages automatically as the Graph selection approaches the current boundary.
 
 - Rust 1.85 or newer to build
 - Git 2.30 or newer
-- Optional: GitHub CLI (`gh`) for pull requests and issues
+- Optional: GitHub CLI (`gh`) for publishing, pull requests, and issues
 
 Gitside does not store credentials. Git and GitHub CLI continue to use their
 existing credential helpers, SSH configuration, signing setup, and keychain.
@@ -141,6 +141,13 @@ wheel to scroll; the border shows the current position and remaining overflow.
 Search is invoked on demand with `/` and disappears after submission or
 cancellation. It searches only the focused Changes, Staged, Graph, Branches,
 Stashes, Worktrees, GitHub, or Preview view; `N` advances to the next match.
+
+Gitside rechecks the installed GitHub CLI, its authentication, and repository
+remotes during normal repository refreshes. After `gh auth login`, no restart is
+needed. If an authenticated repository has no GitHub remote, the GitHub panel
+shows a contextual Publish action. Publishing asks for an editable repository
+name, private or public visibility (private is selected first), and a final
+confirmation. Gitside never creates a remote repository automatically.
 
 When conflicts exist, the normal Changes panel temporarily becomes Merge
 Changes and shows only conflicted files. Resolution and continue/abort actions

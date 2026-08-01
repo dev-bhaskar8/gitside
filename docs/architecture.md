@@ -62,6 +62,13 @@ slot serializes repository work and prevents overlapping network mutations.
 Completed remote actions refresh the repository they started from, even if the
 user has switched views.
 
+Every repository snapshot also classifies GitHub integration as CLI missing,
+unauthenticated, authenticated without a GitHub remote, or ready. This makes a
+new `gh` installation or login visible through the existing refresh cycle. The
+no-remote state progressively exposes a publish flow; repository name and
+visibility live in temporary overlays, and the external create operation always
+requires final confirmation before it runs as a background task.
+
 Native filesystem notifications mark repository state dirty and are coalesced
 before refresh. Git object-store churn and read-only events are ignored. A
 low-frequency safety poll remains active, and the configured polling interval is

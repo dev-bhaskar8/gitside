@@ -14,7 +14,7 @@ use tokio::task::JoinHandle;
 use crate::{
     config::{Cli, Settings},
     git::{CommitOptions, ConflictChoice, GitRepo},
-    github::GitHub,
+    github::{GitHub, GitHubConnectionState, GitHubVisibility},
     model::{Branch, Change, Commit, Issue, PullRequest, Remote, RepoStatus, Stash, Worktree},
 };
 
@@ -50,6 +50,8 @@ pub enum UiAction {
     UnstageAll,
     ToggleHelp,
     CloseOverlay,
+    PublishGitHub,
+    ConfirmGitHubVisibility(GitHubVisibility),
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +89,11 @@ pub enum Overlay {
         label: String,
         value: String,
         action: PromptAction,
+        replace_on_type: bool,
+    },
+    GitHubVisibility {
+        name: String,
+        selected: GitHubVisibility,
     },
     Search {
         value: String,
@@ -95,13 +102,33 @@ pub enum Overlay {
 
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
-    Discard { path: PathBuf, untracked: bool },
-    DeleteBranch { name: String },
-    Rebase { branch: String },
-    DropStash { reference: String },
-    RemoveWorktree { path: PathBuf },
+    Discard {
+        path: PathBuf,
+        untracked: bool,
+    },
+    DeleteBranch {
+        name: String,
+    },
+    Rebase {
+        branch: String,
+    },
+    DropStash {
+        reference: String,
+    },
+    RemoveWorktree {
+        path: PathBuf,
+    },
     UndoLastCommit,
-    ForcePush { remote: String, branch: String },
+    ForcePush {
+        remote: String,
+        branch: String,
+    },
+    PublishGitHub {
+        name: String,
+        visibility: GitHubVisibility,
+        remote: String,
+        push: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +138,7 @@ pub enum PromptAction {
     AddWorktree { branch: String },
     PushTarget { remote: String, branch: String },
     PullTarget { remote: String, branch: String },
+    PublishGitHubName,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +159,8 @@ pub struct RepoView {
     pub remotes: Vec<Remote>,
     pub stashes: Vec<Stash>,
     pub worktrees: Vec<Worktree>,
-    pub github_available: bool,
+    pub github_state: GitHubConnectionState,
+    github_loaded: bool,
     pub pull_requests: Vec<PullRequest>,
     pub issues: Vec<Issue>,
     history_limit: usize,
@@ -185,6 +214,10 @@ enum BackgroundResult {
         repo_index: usize,
         result: Result<(Vec<PullRequest>, Vec<Issue>)>,
     },
+    PublishGitHub {
+        repo_index: usize,
+        result: Result<()>,
+    },
 }
 
 struct RepoSnapshot {
@@ -194,6 +227,7 @@ struct RepoSnapshot {
     remotes: Vec<Remote>,
     stashes: Vec<Stash>,
     worktrees: Vec<Worktree>,
+    github_state: GitHubConnectionState,
 }
 
 impl App {
@@ -212,27 +246,18 @@ impl App {
             {
                 continue;
             }
-            let status = repo.status().await?;
-            let history = repo.history(settings.graph_page_size).await?;
-            let branches = repo.branches().await?;
-            let remotes = repo.remotes().await?;
-            let stashes = repo.stashes().await?;
-            let worktrees = repo.worktrees().await?;
-            let history_exhausted = history.len() < settings.graph_page_size;
-            let github = GitHub::new(repo.root());
-            let has_github_remote = remotes.iter().any(|remote| {
-                remote.fetch_url.contains("github.com") || remote.push_url.contains("github.com")
-            });
-            let github_available = has_github_remote && github.available().await;
+            let snapshot = load_repo_snapshot(repo.clone(), settings.graph_page_size).await?;
+            let history_exhausted = snapshot.history.len() < settings.graph_page_size;
             repos.push(RepoView {
                 repo,
-                status,
-                history,
-                branches,
-                remotes,
-                stashes,
-                worktrees,
-                github_available,
+                status: snapshot.status,
+                history: snapshot.history,
+                branches: snapshot.branches,
+                remotes: snapshot.remotes,
+                stashes: snapshot.stashes,
+                worktrees: snapshot.worktrees,
+                github_state: snapshot.github_state,
+                github_loaded: false,
                 pull_requests: Vec::new(),
                 issues: Vec::new(),
                 history_limit: settings.graph_page_size,
@@ -347,6 +372,12 @@ impl App {
             view.remotes = snapshot.remotes;
             view.stashes = snapshot.stashes;
             view.worktrees = snapshot.worktrees;
+            view.github_state = snapshot.github_state;
+            if view.github_state != GitHubConnectionState::Ready {
+                view.github_loaded = false;
+                view.pull_requests.clear();
+                view.issues.clear();
+            }
         }
         if repo_index == self.active_repo {
             self.clamp_selections();
@@ -410,6 +441,13 @@ impl App {
                     if show_status {
                         self.status_line = "Repository refreshed".into();
                     }
+                    if repo_index == self.active_repo
+                        && self.focus == Focus::GitHub
+                        && self.active().github_state == GitHubConnectionState::Ready
+                        && !self.active().github_loaded
+                    {
+                        self.load_github();
+                    }
                 }
                 Err(error) => self.report_error(error),
             },
@@ -418,8 +456,19 @@ impl App {
                     if let Some(view) = self.repos.get_mut(repo_index) {
                         view.pull_requests = pull_requests;
                         view.issues = issues;
+                        view.github_loaded = true;
                     }
                     self.status_line = "Loaded GitHub data".into();
+                }
+                Err(error) => self.report_error(error),
+            },
+            Ok(BackgroundResult::PublishGitHub { repo_index, result }) => match result {
+                Ok(()) => {
+                    self.refresh_repo(repo_index, false).await;
+                    self.status_line = "Published repository to GitHub".into();
+                    if repo_index == self.active_repo && self.focus == Focus::GitHub {
+                        self.load_github();
+                    }
                 }
                 Err(error) => self.report_error(error),
             },
@@ -494,10 +543,7 @@ impl App {
             KeyCode::Char('c') => self.focus = Focus::Commit,
             KeyCode::Char('g') => self.focus = Focus::Graph,
             KeyCode::Char('b') => self.focus = Focus::Branches,
-            KeyCode::Char('h') => {
-                self.focus = Focus::GitHub;
-                self.load_github();
-            }
+            KeyCode::Char('h') => self.focus_github(),
             KeyCode::Char('a') => self.run_stage_all().await,
             KeyCode::Char('u') => self.run_unstage_all().await,
             KeyCode::Char('f') => self.run_remote("Fetching", RemoteAction::Fetch),
@@ -518,6 +564,7 @@ impl App {
                         title: "Add worktree".into(),
                         label: format!("Path for branch {}", branch.name),
                         value: String::new(),
+                        replace_on_type: false,
                         action: PromptAction::AddWorktree {
                             branch: branch.name.clone(),
                         },
@@ -529,6 +576,7 @@ impl App {
                     title: "Create branch".into(),
                     label: "Branch name".into(),
                     value: String::new(),
+                    replace_on_type: false,
                     action: PromptAction::CreateBranch,
                 });
             }
@@ -546,6 +594,7 @@ impl App {
                         title: "Create tag".into(),
                         label: "Tag name".into(),
                         value: String::new(),
+                        replace_on_type: false,
                         action: PromptAction::CreateTag {
                             oid: commit.oid.clone(),
                         },
@@ -652,8 +701,18 @@ impl App {
             Overlay::Prompt { action, .. } => match key.code {
                 KeyCode::Esc => self.overlay = None,
                 KeyCode::Backspace => {
-                    if let Some(Overlay::Prompt { value, .. }) = &mut self.overlay {
-                        value.pop();
+                    if let Some(Overlay::Prompt {
+                        value,
+                        replace_on_type,
+                        ..
+                    }) = &mut self.overlay
+                    {
+                        if *replace_on_type {
+                            value.clear();
+                            *replace_on_type = false;
+                        } else {
+                            value.pop();
+                        }
                     }
                 }
                 KeyCode::Enter => {
@@ -664,9 +723,45 @@ impl App {
                     self.execute_prompt(action, value).await;
                 }
                 KeyCode::Char(character) => {
-                    if let Some(Overlay::Prompt { value, .. }) = &mut self.overlay {
+                    if let Some(Overlay::Prompt {
+                        value,
+                        replace_on_type,
+                        ..
+                    }) = &mut self.overlay
+                    {
+                        if *replace_on_type {
+                            value.clear();
+                            *replace_on_type = false;
+                        }
                         value.push(character);
                     }
+                }
+                _ => {}
+            },
+            Overlay::GitHubVisibility { name, mut selected } => match key.code {
+                KeyCode::Esc => self.overlay = None,
+                KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
+                    selected = match selected {
+                        GitHubVisibility::Private => GitHubVisibility::Public,
+                        GitHubVisibility::Public => GitHubVisibility::Private,
+                    };
+                    self.overlay = Some(Overlay::GitHubVisibility { name, selected });
+                }
+                KeyCode::Char('p') => {
+                    self.overlay = Some(Overlay::GitHubVisibility {
+                        name,
+                        selected: GitHubVisibility::Private,
+                    })
+                }
+                KeyCode::Char('u') => {
+                    self.overlay = Some(Overlay::GitHubVisibility {
+                        name,
+                        selected: GitHubVisibility::Public,
+                    })
+                }
+                KeyCode::Enter => {
+                    self.overlay = None;
+                    self.request_publish_github(name, selected).await;
                 }
                 _ => {}
             },
@@ -753,8 +848,18 @@ impl App {
                     .find(|hit| hit.rect.contains((event.column, event.row).into()))
                     .map(|hit| hit.action.clone())
                 {
+                    let activate_on_double_click = matches!(
+                        action,
+                        UiAction::SelectChange { .. }
+                            | UiAction::SelectCommit(_)
+                            | UiAction::SelectBranch(_)
+                            | UiAction::SelectStash(_)
+                            | UiAction::SelectWorktree(_)
+                            | UiAction::SelectPullRequest(_)
+                            | UiAction::SelectIssue(_)
+                    );
                     self.perform_ui_action(action).await;
-                    if double {
+                    if double && activate_on_double_click {
                         self.activate().await;
                     }
                 }
@@ -772,6 +877,7 @@ impl App {
 
     async fn perform_ui_action(&mut self, action: UiAction) {
         match action {
+            UiAction::Focus(Focus::GitHub) => self.focus_github(),
             UiAction::Focus(focus) => self.focus = focus,
             UiAction::SelectChange { staged, index } => {
                 if staged {
@@ -812,6 +918,12 @@ impl App {
             UiAction::UnstageAll => self.run_unstage_all().await,
             UiAction::ToggleHelp => self.open_help(),
             UiAction::CloseOverlay => self.overlay = None,
+            UiAction::PublishGitHub => self.begin_publish_github(),
+            UiAction::ConfirmGitHubVisibility(visibility) => {
+                if let Some(Overlay::GitHubVisibility { name, .. }) = self.overlay.take() {
+                    self.request_publish_github(name, visibility).await;
+                }
+            }
         }
     }
 
@@ -822,6 +934,9 @@ impl App {
             Focus::Branches => self.checkout_selected().await,
             Focus::Stashes => self.open_stash_preview().await,
             Focus::Worktrees => self.status_line = "Use X to remove a linked worktree".into(),
+            Focus::GitHub if self.active().github_state == GitHubConnectionState::NoRemote => {
+                self.begin_publish_github()
+            }
             Focus::GitHub => self.open_github_preview().await,
             Focus::Preview => {}
             _ => {}
@@ -1146,6 +1261,7 @@ impl App {
             title: if push { "Push to" } else { "Pull from" }.into(),
             label: format!("Remote and branch (default: {remote} {branch})"),
             value: String::new(),
+            replace_on_type: false,
             action: if push {
                 PromptAction::PushTarget {
                     remote: remote.into(),
@@ -1510,6 +1626,17 @@ impl App {
                     RemoteAction::PullFrom { remote, branch },
                 );
             }
+            PromptAction::PublishGitHubName => {
+                if !valid_github_repository_name(value) {
+                    self.status_line =
+                        "Use letters, numbers, '.', '-' or '_' for the repository name".into();
+                    return;
+                }
+                self.overlay = Some(Overlay::GitHubVisibility {
+                    name: value.into(),
+                    selected: GitHubVisibility::Private,
+                });
+            }
         }
     }
 
@@ -1587,6 +1714,14 @@ impl App {
                     },
                 );
             }
+            ConfirmAction::PublishGitHub {
+                name,
+                visibility,
+                remote,
+                push,
+            } => {
+                self.queue_publish_github(name, visibility, remote, push);
+            }
         }
     }
 
@@ -1601,12 +1736,100 @@ impl App {
         }
     }
 
-    fn load_github(&mut self) {
-        if !self.active().github_available {
-            self.status_line = "GitHub CLI unavailable or repository is not authenticated".into();
+    fn begin_publish_github(&mut self) {
+        if self.active().github_state != GitHubConnectionState::NoRemote {
+            self.load_github();
             return;
         }
-        if !self.active().pull_requests.is_empty() || !self.active().issues.is_empty() {
+        self.overlay = Some(Overlay::Prompt {
+            title: "Publish to GitHub".into(),
+            label: "Repository name".into(),
+            value: self.active().repo.name(),
+            action: PromptAction::PublishGitHubName,
+            replace_on_type: true,
+        });
+    }
+
+    async fn request_publish_github(&mut self, name: String, visibility: GitHubVisibility) {
+        if self.active().github_state != GitHubConnectionState::NoRemote {
+            self.status_line = "GitHub connection changed; refresh and try again".into();
+            return;
+        }
+        let remote = github_remote_name(&self.active().remotes);
+        let push = !self.active().history.is_empty() && self.active().status.branch.head.is_some();
+        let visibility_label = match visibility {
+            GitHubVisibility::Private => "private",
+            GitHubVisibility::Public => "public",
+        };
+        let dirty = !self.active().status.staged.is_empty()
+            || !self.active().status.unstaged.is_empty()
+            || !self.active().status.conflicts.is_empty();
+        let mut prompt = format!(
+            "Create {name} as a {visibility_label} GitHub repository using remote '{remote}'?"
+        );
+        if push {
+            prompt.push_str("\nThe current branch and committed history will be pushed.");
+        } else {
+            prompt.push_str("\nThe repository will be connected without pushing.");
+        }
+        if dirty {
+            prompt.push_str("\nUncommitted changes will remain local.");
+        }
+        prompt.push_str("\n\n[y/N]");
+        // Publishing creates an external repository, so it always requires an
+        // explicit confirmation even when local destructive confirmations are disabled.
+        self.overlay = Some(Overlay::Confirm {
+            prompt,
+            action: ConfirmAction::PublishGitHub {
+                name,
+                visibility,
+                remote,
+                push,
+            },
+        });
+    }
+
+    fn queue_publish_github(
+        &mut self,
+        name: String,
+        visibility: GitHubVisibility,
+        remote: String,
+        push: bool,
+    ) {
+        if self.background_task.is_some() {
+            self.status_line = "Another Git operation is still running".into();
+            return;
+        }
+        if self.active().github_state != GitHubConnectionState::NoRemote {
+            self.status_line = "A GitHub remote is already configured".into();
+            return;
+        }
+        self.status_line = "Publishing to GitHub…".into();
+        self.busy = true;
+        let repo_index = self.active_repo;
+        let github = GitHub::new(self.active().repo.root());
+        self.background_task = Some(tokio::spawn(async move {
+            BackgroundResult::PublishGitHub {
+                repo_index,
+                result: github
+                    .publish_repository(&name, visibility, &remote, push)
+                    .await,
+            }
+        }));
+    }
+
+    fn load_github(&mut self) {
+        if self.active().github_state != GitHubConnectionState::Ready {
+            self.status_line = match self.active().github_state {
+                GitHubConnectionState::CliMissing => "GitHub CLI is not installed",
+                GitHubConnectionState::Unauthenticated => "GitHub CLI is not authenticated",
+                GitHubConnectionState::NoRemote => "Publish or add a GitHub remote to continue",
+                GitHubConnectionState::Ready => unreachable!(),
+            }
+            .into();
+            return;
+        }
+        if self.active().github_loaded {
             return;
         }
         if self.background_task.is_some() {
@@ -1626,6 +1849,17 @@ impl App {
             .await;
             BackgroundResult::GitHub { repo_index, result }
         }));
+    }
+
+    fn focus_github(&mut self) {
+        self.focus = Focus::GitHub;
+        if self.active().github_state == GitHubConnectionState::Ready {
+            self.load_github();
+        } else {
+            // Recheck immediately when the panel is entered so a newly installed
+            // or authenticated `gh` does not have to wait for the safety poll.
+            self.queue_refresh(false);
+        }
     }
 
     async fn open_github_preview(&mut self) {
@@ -1822,7 +2056,7 @@ impl App {
         };
         self.focus = ORDER[next];
         if self.focus == Focus::GitHub {
-            self.load_github();
+            self.focus_github();
         }
     }
 
@@ -2031,6 +2265,7 @@ async fn load_repo_snapshot(repo: GitRepo, history_limit: usize) -> Result<RepoS
         repo.stashes(),
         repo.worktrees(),
     )?;
+    let github_state = GitHub::new(repo.root()).connection_state(&remotes).await;
     Ok(RepoSnapshot {
         status,
         history,
@@ -2038,6 +2273,7 @@ async fn load_repo_snapshot(repo: GitRepo, history_limit: usize) -> Result<RepoS
         remotes,
         stashes,
         worktrees,
+        github_state,
     })
 }
 
@@ -2091,6 +2327,28 @@ fn parse_remote_target(
         bail!("remote target requires a remote and branch");
     }
     Ok((fields[0].into(), fields[1].into()))
+}
+
+fn valid_github_repository_name(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value.len() <= 100
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+        })
+}
+
+fn github_remote_name(remotes: &[Remote]) -> String {
+    for candidate in std::iter::once("origin".to_owned())
+        .chain(std::iter::once("github".to_owned()))
+        .chain((2..).map(|suffix| format!("github-{suffix}")))
+    {
+        if remotes.iter().all(|remote| remote.name != candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("the unbounded suffix sequence always contains a free remote name")
 }
 
 fn editor_candidates() -> &'static [&'static str] {
@@ -2202,6 +2460,104 @@ mod tests {
             ("upstream".into(), "trunk".into())
         );
         assert!(parse_remote_target("origin", "origin".into(), "main".into()).is_err());
+    }
+
+    #[test]
+    fn validates_publish_names_and_avoids_overwriting_origin() {
+        assert!(valid_github_repository_name("gitside.rs_2"));
+        assert!(!valid_github_repository_name(""));
+        assert!(!valid_github_repository_name("."));
+        assert!(!valid_github_repository_name(".."));
+        assert!(!valid_github_repository_name("owner/repository"));
+        assert!(!valid_github_repository_name(&"x".repeat(101)));
+        assert_eq!(github_remote_name(&[]), "origin");
+        assert_eq!(
+            github_remote_name(&[Remote {
+                name: "origin".into(),
+                fetch_url: "https://example.com/repository.git".into(),
+                push_url: "https://example.com/repository.git".into(),
+            }]),
+            "github"
+        );
+        assert_eq!(
+            github_remote_name(&[
+                Remote {
+                    name: "origin".into(),
+                    fetch_url: String::new(),
+                    push_url: String::new(),
+                },
+                Remote {
+                    name: "github".into(),
+                    fetch_url: String::new(),
+                    push_url: String::new(),
+                },
+            ]),
+            "github-2"
+        );
+    }
+
+    #[tokio::test]
+    async fn github_publish_flow_is_contextual_editable_and_always_confirmed() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let settings = Settings {
+            confirm_destructive: false,
+            ..Settings::default()
+        };
+        let mut app = App::new(cli, settings).await.unwrap();
+        app.focus = Focus::GitHub;
+        app.active_mut().github_state = GitHubConnectionState::NoRemote;
+        app.active_mut().remotes.clear();
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        let Some(Overlay::Prompt {
+            value,
+            replace_on_type,
+            ..
+        }) = &app.overlay
+        else {
+            panic!("publish should start with the repository-name prompt");
+        };
+        assert!(!value.is_empty());
+        assert!(*replace_on_type);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await;
+        assert!(matches!(
+            &app.overlay,
+            Some(Overlay::Prompt {
+                value,
+                replace_on_type: false,
+                ..
+            }) if value == "x"
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert!(matches!(
+            &app.overlay,
+            Some(Overlay::GitHubVisibility {
+                selected: GitHubVisibility::Private,
+                ..
+            })
+        ));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert!(matches!(
+            &app.overlay,
+            Some(Overlay::Confirm {
+                action: ConfirmAction::PublishGitHub {
+                    name,
+                    visibility: GitHubVisibility::Public,
+                    remote,
+                    ..
+                },
+                ..
+            }) if name == "x" && remote == "origin"
+        ));
+        assert!(app.background_task.is_none());
     }
 
     #[tokio::test]

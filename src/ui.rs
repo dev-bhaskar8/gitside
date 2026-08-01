@@ -10,6 +10,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::{
     app::{App, Focus, HitRegion, Overlay, UiAction},
     config::LayoutPreference,
+    github::{GitHubConnectionState, GitHubVisibility},
     model::{Change, ChangeKind},
 };
 
@@ -627,18 +628,52 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         rect: area,
         action: UiAction::Focus(Focus::GitHub),
     });
-    if !app.active().github_available {
+    if app.active().github_state != GitHubConnectionState::Ready {
+        let (message, publish) = match app.active().github_state {
+            GitHubConnectionState::CliMissing => (
+                "GitHub CLI is not installed.\n\nInstall `gh`; Gitside will detect it automatically.",
+                false,
+            ),
+            GitHubConnectionState::Unauthenticated => (
+                "GitHub CLI is installed but not authenticated.\n\nRun `gh auth login`; Gitside will detect it automatically.",
+                false,
+            ),
+            GitHubConnectionState::NoRemote => (
+                "GitHub CLI is ready, but this repository has no GitHub remote.",
+                true,
+            ),
+            GitHubConnectionState::Ready => unreachable!(),
+        };
         frame.render_widget(
-            Paragraph::new("GitHub CLI is unavailable.\n\nInstall `gh` and run `gh auth login`.")
-                .wrap(Wrap { trim: false })
-                .block(
-                    Block::default()
-                        .title(" GitHub ")
-                        .borders(Borders::ALL)
-                        .border_style(panel_border_style(focused)),
-                ),
+            Paragraph::new(message).wrap(Wrap { trim: false }).block(
+                Block::default()
+                    .title(" GitHub ")
+                    .borders(Borders::ALL)
+                    .border_style(panel_border_style(focused)),
+            ),
             area,
         );
+        if publish && area.width > 8 && area.height > 4 {
+            let label = if area.width >= 19 {
+                "[Enter Publish]"
+            } else {
+                "[Publish]"
+            };
+            let button = Rect::new(
+                area.x + 2,
+                area.bottom().saturating_sub(2),
+                label.len() as u16,
+                1,
+            );
+            frame.render_widget(
+                Paragraph::new(label).style(Style::default().fg(BLUE)),
+                button,
+            );
+            app.hits.push(HitRegion {
+                rect: button,
+                action: UiAction::PublishGitHub,
+            });
+        }
         return;
     }
     let items: Vec<ListItem<'_>> = if app.github_show_issues {
@@ -755,12 +790,18 @@ fn render_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    let help = contextual_footer_hint(
-        app.focus,
-        area.width,
-        !app.active().status.conflicts.is_empty(),
-        app.active().status.operation.is_some(),
-    );
+    let help = if app.focus == Focus::GitHub
+        && app.active().github_state == GitHubConnectionState::NoRemote
+    {
+        " ? Help · Enter Publish"
+    } else {
+        contextual_footer_hint(
+            app.focus,
+            area.width,
+            !app.active().status.conflicts.is_empty(),
+            app.active().status.operation.is_some(),
+        )
+    };
     let help_width = display_width(help);
     let available = area
         .width
@@ -854,6 +895,7 @@ fn truncate_to_width(value: &str, max_width: usize) -> String {
 }
 
 fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Overlay) {
+    let visibility_overlay = matches!(&overlay, Overlay::GitHubVisibility { .. });
     let popup = if matches!(overlay, Overlay::Search { .. }) {
         centered_sized_rect(
             area.width.saturating_sub(4).clamp(1, 72),
@@ -888,6 +930,25 @@ fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Ove
             format!("{label}\n\n{value}█\n\nEnter to confirm · Esc to cancel"),
             BLUE,
         ),
+        Overlay::GitHubVisibility { name, selected } => {
+            let private = if selected == GitHubVisibility::Private {
+                "[Private]"
+            } else {
+                " Private "
+            };
+            let public = if selected == GitHubVisibility::Public {
+                "[Public]"
+            } else {
+                " Public "
+            };
+            (
+                " Repository visibility ".to_owned(),
+                format!(
+                    "Publish {name}\n\n{private}   {public}\n\n←/→ choose · Enter confirm · Esc cancel"
+                ),
+                BLUE,
+            )
+        }
         Overlay::Search { value } => (
             " Search focused view ".to_owned(),
             format!(
@@ -910,6 +971,19 @@ fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Ove
         rect: popup,
         action: UiAction::CloseOverlay,
     });
+    if visibility_overlay && popup.width >= 24 && popup.height >= 5 {
+        let y = popup.y + 3;
+        let private = Rect::new(popup.x + 1, y, 9, 1);
+        let public = Rect::new(popup.x + 13, y, 8, 1);
+        app.hits.push(HitRegion {
+            rect: private,
+            action: UiAction::ConfirmGitHubVisibility(GitHubVisibility::Private),
+        });
+        app.hits.push(HitRegion {
+            rect: public,
+            action: UiAction::ConfirmGitHubVisibility(GitHubVisibility::Public),
+        });
+    }
 }
 
 fn render_help_overlay(frame: &mut Frame<'_>, app: &mut App, popup: Rect, requested_scroll: u16) {
@@ -924,6 +998,7 @@ fn render_help_overlay(frame: &mut Frame<'_>, app: &mut App, popup: Rect, reques
             app.focus,
             !app.active().status.conflicts.is_empty(),
             app.active().status.operation.is_some(),
+            app.active().github_state,
         ),
         inner.width,
     );
@@ -1043,7 +1118,12 @@ fn wrap_help_text(value: &str, width: u16) -> String {
     output.join("\n")
 }
 
-fn help_text(focus: Focus, has_conflicts: bool, has_operation: bool) -> String {
+fn help_text(
+    focus: Focus,
+    has_conflicts: bool,
+    has_operation: bool,
+    github_state: GitHubConnectionState,
+) -> String {
     let (context_title, context) = match focus {
         Focus::Commit => (
             "Commit — current panel",
@@ -1080,6 +1160,10 @@ fn help_text(focus: Focus, has_conflicts: bool, has_operation: bool) -> String {
         Focus::Worktrees => (
             "Worktrees — current panel",
             "  j/k or arrows  Move\n  X              Remove worktree",
+        ),
+        Focus::GitHub if github_state == GitHubConnectionState::NoRemote => (
+            "GitHub — current panel",
+            "  Enter / click  Publish repository to GitHub",
         ),
         Focus::GitHub => (
             "GitHub — current panel",
@@ -1231,6 +1315,62 @@ mod tests {
         .await;
 
         assert_eq!(app.focus, Focus::Changes);
+    }
+
+    #[tokio::test]
+    async fn github_states_are_accurate_and_publish_is_contextual_and_clickable() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::GitHub;
+        let mut terminal = Terminal::new(TestBackend::new(50, 30)).unwrap();
+
+        app.active_mut().github_state = GitHubConnectionState::CliMissing;
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(output.contains("GitHub CLI is not installed"));
+
+        app.active_mut().github_state = GitHubConnectionState::Unauthenticated;
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(output.contains("not authenticated"));
+
+        app.active_mut().github_state = GitHubConnectionState::NoRemote;
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(output.contains("GitHub remote."));
+        assert!(output.contains("Enter Publish"));
+        let publish = app
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, UiAction::PublishGitHub))
+            .expect("no-remote GitHub panel should expose Publish")
+            .rect;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: publish.x,
+            row: publish.y,
+            modifiers: KeyModifiers::NONE,
+        })
+        .await;
+        assert!(matches!(app.overlay, Some(Overlay::Prompt { .. })));
     }
 
     #[tokio::test]
