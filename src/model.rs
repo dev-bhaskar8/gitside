@@ -69,6 +69,7 @@ pub struct Commit {
     pub subject: String,
     pub author: String,
     pub relative_date: String,
+    pub pushed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

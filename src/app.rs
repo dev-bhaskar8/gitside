@@ -826,10 +826,12 @@ impl App {
 
         match event.kind {
             MouseEventKind::ScrollUp => {
+                self.focus_panel_at(event.column, event.row);
                 self.move_selection(-3);
                 return EventOutcome::Continue;
             }
             MouseEventKind::ScrollDown => {
+                self.focus_panel_at(event.column, event.row);
                 self.move_selection(3);
                 return EventOutcome::Continue;
             }
@@ -873,6 +875,23 @@ impl App {
             _ => {}
         }
         EventOutcome::Continue
+    }
+
+    fn focus_panel_at(&mut self, column: u16, row: u16) {
+        let focus = self.hits.iter().rev().find_map(|hit| {
+            if hit.rect.contains((column, row).into()) {
+                if let UiAction::Focus(focus) = &hit.action {
+                    return Some(*focus);
+                }
+            }
+            None
+        });
+        if let Some(focus) = focus {
+            self.focus = focus;
+            if focus == Focus::GitHub {
+                self.focus_github();
+            }
+        }
     }
 
     async fn perform_ui_action(&mut self, action: UiAction) {

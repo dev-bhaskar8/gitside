@@ -325,9 +325,13 @@ fn render_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect, staged: bool
     } else {
         format!(" Changes ({}) ", changes.len())
     };
+    let visible = area.height.saturating_sub(2) as usize;
+    let offset = viewport_start(selected, changes.len(), visible);
     let items = changes
         .iter()
         .enumerate()
+        .skip(offset)
+        .take(visible)
         .map(|(index, change)| {
             let selected_row = focused && selected == index;
             ListItem::new(change_line(change, area.width.saturating_sub(4))).style(
@@ -352,8 +356,7 @@ fn render_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect, staged: bool
             Focus::Changes
         }),
     });
-    let visible = area.height.saturating_sub(2) as usize;
-    for (row, _) in changes.iter().take(visible).enumerate() {
+    for (row, index) in (offset..changes.len()).take(visible).enumerate() {
         app.hits.push(HitRegion {
             rect: Rect::new(
                 area.x + 1,
@@ -361,7 +364,7 @@ fn render_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect, staged: bool
                 area.width.saturating_sub(2),
                 1,
             ),
-            action: UiAction::SelectChange { staged, index: row },
+            action: UiAction::SelectChange { staged, index },
         });
     }
     if area.width >= 28 {
@@ -379,11 +382,15 @@ fn render_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect, staged: bool
 
 fn render_graph(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Graph;
+    let visible = area.height.saturating_sub(2) as usize;
+    let offset = viewport_start(app.selected_commit, app.active().history.len(), visible);
     let items = app
         .active()
         .history
         .iter()
         .enumerate()
+        .skip(offset)
+        .take(visible)
         .map(|(index, commit)| {
             let oid = commit.oid.get(..7).unwrap_or(&commit.oid);
             let decorations = if commit.decorations.is_empty() {
@@ -391,8 +398,9 @@ fn render_graph(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             } else {
                 format!(" [{}]", commit.decorations.join(", "))
             };
+            let marker = if commit.pushed { "●" } else { "○" };
             let line = format!(
-                "● {} {}{}  {}",
+                "{marker} {} {}{}  {}",
                 oid, commit.subject, decorations, commit.author
             );
             ListItem::new(line).style(if focused && index == app.selected_commit {
@@ -411,11 +419,9 @@ fn render_graph(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         rect: area,
         action: UiAction::Focus(Focus::Graph),
     });
-    for row in 0..app
-        .active()
-        .history
-        .len()
-        .min(area.height.saturating_sub(2) as usize)
+    for (row, index) in (offset..app.active().history.len())
+        .take(visible)
+        .enumerate()
     {
         app.hits.push(HitRegion {
             rect: Rect::new(
@@ -424,23 +430,25 @@ fn render_graph(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 area.width.saturating_sub(2),
                 1,
             ),
-            action: UiAction::SelectCommit(row),
+            action: UiAction::SelectCommit(index),
         });
     }
 }
 
 fn render_branches(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Branches;
+    let visible = area.height.saturating_sub(2) as usize;
+    let offset = viewport_start(app.selected_branch, app.active().branches.len(), visible);
     let items = app
         .active()
         .branches
         .iter()
         .enumerate()
+        .skip(offset)
+        .take(visible)
         .map(|(index, branch)| {
-            let marker = if branch.current {
+            let marker = if branch.remote || branch.upstream.is_some() {
                 "●"
-            } else if branch.remote {
-                "☁"
             } else {
                 "○"
             };
@@ -468,11 +476,9 @@ fn render_branches(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         rect: area,
         action: UiAction::Focus(Focus::Branches),
     });
-    for row in 0..app
-        .active()
-        .branches
-        .len()
-        .min(area.height.saturating_sub(2) as usize)
+    for (row, index) in (offset..app.active().branches.len())
+        .take(visible)
+        .enumerate()
     {
         app.hits.push(HitRegion {
             rect: Rect::new(
@@ -481,7 +487,7 @@ fn render_branches(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 area.width.saturating_sub(2),
                 1,
             ),
-            action: UiAction::SelectBranch(row),
+            action: UiAction::SelectBranch(index),
         });
     }
 }
@@ -489,21 +495,6 @@ fn render_branches(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 fn render_stashes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Stashes;
     let narrow = area.width < 55;
-    let items = app
-        .active()
-        .stashes
-        .iter()
-        .enumerate()
-        .map(|(index, stash)| {
-            ListItem::new(format!("◇ {}  {}", stash.reference, stash.subject)).style(
-                if focused && index == app.selected_stash {
-                    selection_style()
-                } else {
-                    Style::default().fg(TEXT)
-                },
-            )
-        })
-        .collect::<Vec<_>>();
     let title = if narrow {
         format!(" Stashes ({}) ", app.active().stashes.len())
     } else {
@@ -546,26 +537,52 @@ fn render_stashes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     } else {
         inner
     };
+    let visible = list_area.height as usize;
+    let offset = viewport_start(app.selected_stash, app.active().stashes.len(), visible);
+    let items = app
+        .active()
+        .stashes
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(visible)
+        .map(|(index, stash)| {
+            ListItem::new(format!("◇ {}  {}", stash.reference, stash.subject)).style(
+                if focused && index == app.selected_stash {
+                    selection_style()
+                } else {
+                    Style::default().fg(TEXT)
+                },
+            )
+        })
+        .collect::<Vec<_>>();
     frame.render_widget(List::new(items), list_area);
     app.hits.push(HitRegion {
         rect: area,
         action: UiAction::Focus(Focus::Stashes),
     });
-    for row in 0..app.active().stashes.len().min(list_area.height as usize) {
+    for (row, index) in (offset..app.active().stashes.len())
+        .take(visible)
+        .enumerate()
+    {
         app.hits.push(HitRegion {
             rect: Rect::new(list_area.x, list_area.y + row as u16, list_area.width, 1),
-            action: UiAction::SelectStash(row),
+            action: UiAction::SelectStash(index),
         });
     }
 }
 
 fn render_worktrees(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Worktrees;
+    let visible = area.height.saturating_sub(2) as usize;
+    let offset = viewport_start(app.selected_worktree, app.active().worktrees.len(), visible);
     let items = app
         .active()
         .worktrees
         .iter()
         .enumerate()
+        .skip(offset)
+        .take(visible)
         .map(|(index, worktree)| {
             let branch = worktree.branch.as_deref().unwrap_or("detached");
             let flags = if worktree.locked {
@@ -604,11 +621,9 @@ fn render_worktrees(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         rect: area,
         action: UiAction::Focus(Focus::Worktrees),
     });
-    for row in 0..app
-        .active()
-        .worktrees
-        .len()
-        .min(area.height.saturating_sub(2) as usize)
+    for (row, index) in (offset..app.active().worktrees.len())
+        .take(visible)
+        .enumerate()
     {
         app.hits.push(HitRegion {
             rect: Rect::new(
@@ -617,7 +632,7 @@ fn render_worktrees(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 area.width.saturating_sub(2),
                 1,
             ),
-            action: UiAction::SelectWorktree(row),
+            action: UiAction::SelectWorktree(index),
         });
     }
 }
@@ -676,11 +691,20 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         }
         return;
     }
+    let count = if app.github_show_issues {
+        app.active().issues.len()
+    } else {
+        app.active().pull_requests.len()
+    };
+    let visible = area.height.saturating_sub(2) as usize;
+    let offset = viewport_start(app.selected_github, count, visible);
     let items: Vec<ListItem<'_>> = if app.github_show_issues {
         app.active()
             .issues
             .iter()
             .enumerate()
+            .skip(offset)
+            .take(visible)
             .map(|(index, issue)| {
                 ListItem::new(format!(
                     "#{} {}  @{}",
@@ -698,6 +722,8 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             .pull_requests
             .iter()
             .enumerate()
+            .skip(offset)
+            .take(visible)
             .map(|(index, pr)| {
                 let draft = if pr.is_draft { " [draft]" } else { "" };
                 ListItem::new(format!(
@@ -726,12 +752,7 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         ),
         area,
     );
-    let count = if app.github_show_issues {
-        app.active().issues.len()
-    } else {
-        app.active().pull_requests.len()
-    };
-    for row in 0..count.min(area.height.saturating_sub(2) as usize) {
+    for (row, index) in (offset..count).take(visible).enumerate() {
         app.hits.push(HitRegion {
             rect: Rect::new(
                 area.x + 1,
@@ -740,9 +761,9 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 1,
             ),
             action: if app.github_show_issues {
-                UiAction::SelectIssue(row)
+                UiAction::SelectIssue(index)
             } else {
-                UiAction::SelectPullRequest(row)
+                UiAction::SelectPullRequest(index)
             },
         });
     }
@@ -876,6 +897,17 @@ fn contextual_footer_hint(
 
 fn display_width(value: &str) -> usize {
     value.chars().filter_map(UnicodeWidthChar::width).sum()
+}
+
+fn viewport_start(selected: usize, total: usize, visible: usize) -> usize {
+    if visible == 0 || total <= visible {
+        return 0;
+    }
+    selected
+        .min(total.saturating_sub(1))
+        .saturating_add(1)
+        .saturating_sub(visible)
+        .min(total - visible)
 }
 
 fn truncate_to_width(value: &str, max_width: usize) -> String {
@@ -1147,11 +1179,11 @@ fn help_text(
         ),
         Focus::Graph => (
             "Graph — current panel",
-            "  j/k or arrows  Move\n  Enter          View commit\n  y / v / t      Cherry-pick/revert/tag",
+            "  ○ / ●          Local / present on a remote\n  j/k or arrows  Move\n  Enter          View commit\n  y / v / t      Cherry-pick/revert/tag",
         ),
         Focus::Branches => (
             "Branches — current panel",
-            "  j/k or arrows  Move\n  Enter          Switch branch\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree",
+            "  ○ / ●          Unpublished / upstream or remote\n  j/k or arrows  Move\n  Enter          Switch branch\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree",
         ),
         Focus::Stashes => (
             "Stashes — current panel",
@@ -1263,7 +1295,10 @@ mod tests {
     };
     use ratatui::{Terminal, backend::TestBackend};
 
-    use crate::config::{Cli, Settings};
+    use crate::{
+        config::{Cli, Settings},
+        model::Branch,
+    };
 
     #[test]
     fn middle_truncation_preserves_ends() {
@@ -1620,6 +1655,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(first_page.contains("Branches — current panel"));
+        assert!(first_page.contains("Unpublished / upstream"));
         assert!(first_page.contains("more"));
         let Some(Overlay::Help { scroll, max_scroll }) = &app.overlay else {
             panic!("help should remain open");
@@ -1748,6 +1784,126 @@ mod tests {
             .collect();
         assert!(output.contains("Merge Changes — current panel"));
         assert!(output.contains("Accept incoming file"));
+    }
+
+    #[test]
+    fn list_viewport_keeps_the_selection_visible() {
+        assert_eq!(viewport_start(0, 20, 5), 0);
+        assert_eq!(viewport_start(4, 20, 5), 0);
+        assert_eq!(viewport_start(5, 20, 5), 1);
+        assert_eq!(viewport_start(19, 20, 5), 15);
+        assert_eq!(viewport_start(50, 20, 5), 15);
+        assert_eq!(viewport_start(3, 4, 5), 0);
+        assert_eq!(viewport_start(3, 4, 0), 0);
+    }
+
+    #[tokio::test]
+    async fn graph_and_branch_viewports_scroll_and_preserve_absolute_click_targets() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(50, 20)).unwrap();
+
+        app.focus = Focus::Graph;
+        app.selected_commit = app.active().history.len() - 1;
+        let selected_commit = app.selected_commit;
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        assert!(app.hits.iter().any(
+            |hit| matches!(hit.action, UiAction::SelectCommit(index) if index == selected_commit)
+        ));
+
+        app.active_mut().branches = (0..20)
+            .map(|index| Branch {
+                name: format!("branch-{index}"),
+                current: index == 0,
+                remote: false,
+                oid: format!("{index:040x}"),
+                upstream: (index % 2 == 0).then(|| format!("origin/branch-{index}")),
+            })
+            .collect();
+        app.focus = Focus::Branches;
+        app.selected_branch = 19;
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, UiAction::SelectBranch(index) if index == 19))
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_and_branch_markers_distinguish_published_items() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.active_mut().history[0].pushed = false;
+        app.active_mut().history[1].pushed = true;
+        let local_oid = app.active().history[0].oid[..7].to_owned();
+        let pushed_oid = app.active().history[1].oid[..7].to_owned();
+        app.focus = Focus::Graph;
+        let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(output.contains(&format!("○ {local_oid}")));
+        assert!(output.contains(&format!("● {pushed_oid}")));
+
+        app.active_mut().branches = vec![
+            Branch {
+                name: "local-only".into(),
+                current: true,
+                remote: false,
+                oid: "a".repeat(40),
+                upstream: None,
+            },
+            Branch {
+                name: "published".into(),
+                current: false,
+                remote: false,
+                oid: "b".repeat(40),
+                upstream: Some("origin/published".into()),
+            },
+        ];
+        app.focus = Focus::Branches;
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(output.contains("○ local-only"));
+        assert!(output.contains("● published"));
+    }
+
+    #[tokio::test]
+    async fn mouse_wheel_focuses_the_panel_under_the_pointer() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Changes;
+        let mut terminal = Terminal::new(TestBackend::new(50, 40)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let graph = app
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, UiAction::Focus(Focus::Graph)))
+            .unwrap()
+            .rect;
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: graph.x + 1,
+            row: graph.y + 1,
+            modifiers: KeyModifiers::NONE,
+        })
+        .await;
+
+        assert_eq!(app.focus, Focus::Graph);
+        assert_eq!(app.selected_commit, 3);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     process::Stdio,
@@ -223,20 +224,44 @@ impl GitRepo {
 
     pub async fn history(&self, limit: usize) -> Result<Vec<Commit>> {
         let format = "%H%x1f%P%x1f%D%x1f%s%x1f%an%x1f%cr%x1e";
-        let output = self
-            .command(
-                vec![
-                    OsString::from("log"),
-                    OsString::from("--all"),
-                    OsString::from("--topo-order"),
-                    OsString::from(format!("--max-count={limit}")),
-                    OsString::from(format!("--format={format}")),
-                ],
-                None,
-            )
-            .await;
+        let history = self.command(
+            vec![
+                OsString::from("log"),
+                OsString::from("--all"),
+                OsString::from("--topo-order"),
+                OsString::from(format!("--max-count={limit}")),
+                OsString::from(format!("--format={format}")),
+            ],
+            None,
+        );
+        let remote_history = self.command(
+            vec![
+                OsString::from("log"),
+                OsString::from("--remotes"),
+                OsString::from("--topo-order"),
+                OsString::from(format!("--max-count={limit}")),
+                OsString::from("--format=%H"),
+            ],
+            None,
+        );
+        let (output, remote_output) = tokio::join!(history, remote_history);
         match output {
-            Ok(value) => Ok(parse_history(&value.stdout)),
+            Ok(value) => {
+                let pushed = remote_output
+                    .ok()
+                    .map(|value| {
+                        String::from_utf8_lossy(&value.stdout)
+                            .lines()
+                            .map(str::to_owned)
+                            .collect::<HashSet<_>>()
+                    })
+                    .unwrap_or_default();
+                let mut commits = parse_history(&value.stdout);
+                for commit in &mut commits {
+                    commit.pushed = pushed.contains(&commit.oid);
+                }
+                Ok(commits)
+            }
             Err(error) if error.to_string().contains("does not have any commits yet") => Ok(vec![]),
             Err(error) if error.to_string().contains("unknown revision") => Ok(vec![]),
             Err(error) => Err(error),
@@ -855,6 +880,7 @@ fn parse_history(input: &[u8]) -> Vec<Commit> {
                 subject: String::from_utf8_lossy(fields[3]).into_owned(),
                 author: String::from_utf8_lossy(fields[4]).into_owned(),
                 relative_date: String::from_utf8_lossy(fields[5]).trim().to_owned(),
+                pushed: false,
             })
         })
         .collect()
@@ -1261,6 +1287,19 @@ worktree /repo-feature\0HEAD def456\0branch refs/heads/feature\0locked reason\0\
         repo.commit("local", CommitOptions::default())
             .await
             .unwrap();
+        let history = repo.history(10).await.unwrap();
+        assert!(
+            history
+                .iter()
+                .find(|commit| commit.subject == "base")
+                .is_some_and(|commit| commit.pushed)
+        );
+        assert!(
+            history
+                .iter()
+                .find(|commit| commit.subject == "local")
+                .is_some_and(|commit| !commit.pushed)
+        );
         repo.command(["config", "pull.rebase", "false"], None)
             .await
             .unwrap();
