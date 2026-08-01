@@ -82,6 +82,18 @@ or pushes a remote repository automatically.
 - [Troubleshooting](docs/troubleshooting.md)
 - [Architecture](docs/architecture.md)
 
+## Support Gitside
+
+If Gitside saves you time, you can support its development using this EVM
+wallet address:
+
+```text
+0xC87efC9c71C422779F7dbeF14B2Fc4eef94b84fF
+```
+
+Verify that your chosen network and asset are compatible before sending.
+Cryptocurrency transfers cannot be reversed. See [support details](docs/support.md).
+
 ## Development
 
 ```sh
