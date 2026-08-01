@@ -36,20 +36,25 @@ release. Git 2.30+ is required at runtime.
 # macOS or Linux
 brew install dev-bhaskar8/tap/gitside
 
+# Any platform with Node.js
+npm install --global gitside
+
 # Any platform with Rust 1.85+
 cargo install gitside --locked
 ```
 
 ```powershell
 # Windows
-winget install DevBhaskar8.Gitside
+scoop bucket add gitside https://github.com/dev-bhaskar8/scoop-bucket
+scoop install gitside
 ```
 
-You can also use the signed [release installers](https://github.com/dev-bhaskar8/gitside/releases),
-Scoop, Chocolatey, npm, AUR, Nix, Snap, `.deb`, or `.rpm`. The registry commands
-become active with the first stable release; see the
-[installation matrix](docs/distribution.md#installation-matrix) for every command
-and its publication status.
+Signed installers, portable archives, `.deb`, and `.rpm` packages are available
+from [GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases/latest).
+The [WinGet submission](https://github.com/microsoft/winget-pkgs/pull/410857)
+is awaiting approval. See the
+[installation matrix](docs/distribution.md#installation-matrix) for the remaining
+package channels.
 
 Pass a repository path from anywhere:
 
