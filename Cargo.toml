@@ -22,12 +22,6 @@ include = [
     "LICENSE",
 ]
 
-[package.metadata.wix]
-upgrade-guid = "ACD41B7D-CEDB-44F6-9C02-255AB8E92FB6"
-path-guid = "F62DD601-1924-42A6-8CA7-E40959C52B22"
-license = false
-eula = false
-
 [[bin]]
 name = "gitside"
 path = "src/main.rs"

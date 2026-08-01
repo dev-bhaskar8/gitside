@@ -9,8 +9,6 @@ mkdir -p "$assets"
 
 artifacts='gitside-x86_64-pc-windows-msvc.zip
 gitside-aarch64-pc-windows-msvc.zip
-gitside-x86_64-pc-windows-msvc.msi
-gitside-aarch64-pc-windows-msvc.msi
 gitside-x86_64-unknown-linux-gnu.tar.xz
 gitside-aarch64-unknown-linux-gnu.tar.xz'
 
