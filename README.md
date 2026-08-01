@@ -1,6 +1,6 @@
 <p align="center">
   <br />
-  <img src="site/assets/gitside-showcase-color.png" alt="Real Gitside captures with native terminal colors in a full terminal and narrow tmux side pane" width="820" />
+  <img src="site/assets/gitside-showcase.jpg" alt="Real Gitside captures with native terminal colors in a full terminal and narrow tmux side pane" width="820" />
 </p>
 
 <p align="center"><sub>Actual Gitside output captured at 118×42 and 46×58 terminal cells.</sub></p>
