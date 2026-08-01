@@ -140,5 +140,5 @@ endpoint = "http://127.0.0.1:11434/v1/chat/completions"
 # api_key_env = "LOCAL_AI_KEY"
 ```
 
-Press `Ctrl+G` from any panel or use Generate inside the AI panel. `G` also
-generates outside the commit editor, while `Y` opens the AI panel directly.
+Press `Ctrl+G` from any panel, use `G` outside the commit editor, or click
+Generate beside Commit. `Y` opens the AI configuration and status panel.

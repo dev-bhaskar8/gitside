@@ -262,6 +262,48 @@ fn render_commit(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         rect: button,
         action: UiAction::Commit,
     });
+    if app.settings.ai.enabled {
+        let verbose = area.width >= 58;
+        let label = ai_generation_button_label(app.ai_generation_state, verbose);
+        let width = display_width(&label) as u16;
+        let inner_left = area.x.saturating_add(1);
+        if button.x.saturating_sub(inner_left) >= width.saturating_add(1) {
+            let generate = Rect::new(button.x - width - 1, button.y, width, 1);
+            frame.render_widget(
+                Paragraph::new(label).alignment(Alignment::Center).style(
+                    Style::default()
+                        .fg(BLUE)
+                        .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+                ),
+                generate,
+            );
+            app.hits.push(HitRegion {
+                rect: generate,
+                action: UiAction::GenerateCommitMessage,
+            });
+        }
+    }
+}
+
+fn ai_generation_button_label(state: AiGenerationState, verbose: bool) -> String {
+    match (state, verbose) {
+        (AiGenerationState::Idle, true) => " ✦ Generate ".into(),
+        (AiGenerationState::Queued, true) => " ◷ Queued ".into(),
+        (AiGenerationState::Generating(started), true) => {
+            format!("{} Generating", ai_spinner(started))
+        }
+        (AiGenerationState::Idle, false) => " ✦ ".into(),
+        (AiGenerationState::Queued, false) => " ◷ ".into(),
+        (AiGenerationState::Generating(started), false) => {
+            format!(" {} ", ai_spinner(started))
+        }
+    }
+}
+
+fn ai_spinner(started: std::time::Instant) -> char {
+    let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let frame = (started.elapsed().as_millis() / 100) as usize % frames.len();
+    frames[frame]
 }
 
 fn wrap_editor_text(value: &str, width: u16) -> Vec<String> {
@@ -911,110 +953,176 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     if inner.is_empty() {
         return;
     }
-    let mut control_rows = vec![
-        vec![(
-            if settings.enabled {
-                "[AI on]"
-            } else {
-                "[AI off]"
-            },
-            UiAction::ToggleAiEnabled,
-            settings.enabled,
-            false,
-        )],
-        vec![
-            (
-                "[Local]",
-                UiAction::SelectAiMode(AiMode::Local),
-                settings.mode == AiMode::Local,
-                false,
-            ),
-            (
-                "[Agent]",
-                UiAction::SelectAiMode(AiMode::Agent),
-                settings.mode == AiMode::Agent,
-                false,
-            ),
-            (
-                "[API]",
-                UiAction::SelectAiMode(AiMode::Api),
-                settings.mode == AiMode::Api,
-                false,
-            ),
-        ],
+    let enabled_label = if settings.enabled { "AI on" } else { "AI off" };
+    let top_controls = [
+        (enabled_label, UiAction::ToggleAiEnabled, settings.enabled),
+        (
+            "Local",
+            UiAction::SelectAiMode(AiMode::Local),
+            settings.mode == AiMode::Local,
+        ),
+        (
+            "Agent",
+            UiAction::SelectAiMode(AiMode::Agent),
+            settings.mode == AiMode::Agent,
+        ),
+        (
+            "API",
+            UiAction::SelectAiMode(AiMode::Api),
+            settings.mode == AiMode::Api,
+        ),
     ];
-    let mut setup_row = vec![(
-        "[Configure]",
-        UiAction::OpenAiSetup(settings.mode),
-        false,
-        false,
-    )];
-    if settings.mode == AiMode::Api
+    let wide = inner.width >= 48;
+    let mut body_y = inner.y;
+    if wide {
+        let gaps = 3;
+        let available = inner.width.saturating_sub(gaps);
+        let base = available / top_controls.len() as u16;
+        let mut remainder = available % top_controls.len() as u16;
+        let mut x = inner.x;
+        for (index, (label, action, selected)) in top_controls.into_iter().enumerate() {
+            let extra = u16::from(remainder > 0);
+            remainder = remainder.saturating_sub(extra);
+            let width = base + extra;
+            render_ai_button(
+                frame,
+                app,
+                Rect::new(x, inner.y, width, 1),
+                label,
+                action,
+                selected,
+            );
+            x = x.saturating_add(width + u16::from(index < 3));
+        }
+        body_y = body_y.saturating_add(2);
+    } else {
+        let (toggle_label, toggle_action, toggle_selected) = &top_controls[0];
+        let toggle_width = (display_width(toggle_label) + 2) as u16;
+        render_ai_button(
+            frame,
+            app,
+            Rect::new(inner.x, body_y, toggle_width.min(inner.width), 1),
+            toggle_label,
+            toggle_action.clone(),
+            *toggle_selected,
+        );
+        body_y = body_y.saturating_add(1);
+        let mut x = inner.x;
+        for (label, action, selected) in top_controls.into_iter().skip(1) {
+            let width = (display_width(label) + 2) as u16;
+            if x > inner.x && x.saturating_add(width) > inner.right() {
+                x = inner.x;
+                body_y = body_y.saturating_add(1);
+            }
+            render_ai_button(
+                frame,
+                app,
+                Rect::new(x, body_y, width.min(inner.right().saturating_sub(x)), 1),
+                label,
+                action,
+                selected,
+            );
+            x = x.saturating_add(width + 1);
+        }
+        body_y = body_y.saturating_add(2);
+    }
+
+    let removable_key = settings.mode == AiMode::Api
         && matches!(
             app.ai_credential_status,
             crate::credentials::CredentialStatus::Stored
                 | crate::credentials::CredentialStatus::SessionOnly
-        )
-    {
-        setup_row.push(("[Remove key]", UiAction::RemoveAiCredential, false, false));
-    }
-    control_rows.push(setup_row);
-    let generation_label = match app.ai_generation_state {
-        AiGenerationState::Idle => " ✦ Generate ".to_owned(),
-        AiGenerationState::Queued => " ◷ Queued ".to_owned(),
-        AiGenerationState::Generating(started) => {
-            let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-            let frame = (started.elapsed().as_millis() / 100) as usize % frames.len();
-            format!("{} Generating", frames[frame])
-        }
-    };
-    control_rows.push(vec![(
-        generation_label.as_str(),
-        UiAction::GenerateCommitMessage,
-        false,
-        true,
-    )]);
-    let mut y = inner.y;
-    for row in control_rows {
-        let mut x = inner.x;
-        for (label, action, selected, magical) in row {
-            let width = display_width(label) as u16;
-            if x > inner.x && x.saturating_add(width) > inner.right() {
-                x = inner.x;
-                y = y.saturating_add(1);
-            }
-            if y >= inner.bottom() {
-                break;
-            }
-            let button = Rect::new(x, y, width.min(inner.right().saturating_sub(x)), 1);
-            frame.render_widget(
-                Paragraph::new(label).style(if magical {
-                    Style::default()
-                        .fg(BLUE)
-                        .add_modifier(Modifier::REVERSED | Modifier::BOLD)
-                } else if selected {
-                    Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(BLUE)
-                }),
-                button,
+        );
+    let footer_y = inner.bottom().saturating_sub(1);
+    if wide {
+        let gap = u16::from(removable_key);
+        let configure_width = if removable_key {
+            inner.width.saturating_sub(gap) / 2
+        } else {
+            inner.width
+        };
+        render_ai_button(
+            frame,
+            app,
+            Rect::new(inner.x, footer_y, configure_width, 1),
+            "Configure",
+            UiAction::OpenAiSetup(settings.mode),
+            false,
+        );
+        if removable_key {
+            render_ai_button(
+                frame,
+                app,
+                Rect::new(
+                    inner.x + configure_width + gap,
+                    footer_y,
+                    inner.width.saturating_sub(configure_width + gap),
+                    1,
+                ),
+                "Remove key",
+                UiAction::RemoveAiCredential,
+                false,
             );
-            app.hits.push(HitRegion {
-                rect: button,
-                action,
-            });
-            x = button.right().saturating_add(1);
         }
-        y = y.saturating_add(1);
+    } else {
+        let configure_width = (display_width("Configure") + 2) as u16;
+        render_ai_button(
+            frame,
+            app,
+            Rect::new(inner.x, footer_y, configure_width.min(inner.width), 1),
+            "Configure",
+            UiAction::OpenAiSetup(settings.mode),
+            false,
+        );
+        if removable_key {
+            let remove_width = (display_width("Remove key") + 2) as u16;
+            let x = inner.x.saturating_add(configure_width + 1);
+            if x.saturating_add(remove_width) <= inner.right() {
+                render_ai_button(
+                    frame,
+                    app,
+                    Rect::new(x, footer_y, remove_width, 1),
+                    "Remove key",
+                    UiAction::RemoveAiCredential,
+                    false,
+                );
+            }
+        }
     }
 
-    let body_y = y.saturating_add(2);
-    if body_y < inner.bottom() {
+    if body_y < footer_y {
         frame.render_widget(
             Paragraph::new(body).wrap(Wrap { trim: false }),
-            Rect::new(inner.x, body_y, inner.width, inner.bottom() - body_y),
+            Rect::new(inner.x, body_y, inner.width, footer_y - body_y),
         );
     }
+}
+
+fn render_ai_button(
+    frame: &mut Frame<'_>,
+    app: &mut App,
+    rect: Rect,
+    label: &str,
+    action: UiAction,
+    selected: bool,
+) {
+    if rect.width < 2 || rect.is_empty() {
+        return;
+    }
+    let content_width = rect.width.saturating_sub(2) as usize;
+    let label = truncate_to_width(label, content_width);
+    let left = content_width.saturating_sub(display_width(&label)) / 2;
+    let right = content_width.saturating_sub(display_width(&label) + left);
+    let text = format!("[{}{}{}]", " ".repeat(left), label, " ".repeat(right));
+    frame.render_widget(
+        Paragraph::new(text).style(if selected {
+            Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(BLUE)
+        }),
+        rect,
+    );
+    app.hits.push(HitRegion { rect, action });
 }
 
 fn ai_panel_readiness(
@@ -1476,8 +1584,15 @@ fn render_ai_setup_overlay(
         inner.width,
         inner.height.saturating_sub(1),
     );
+    let placeholder = ai_setup_placeholder(&draft)
+        .map(|value| truncate_to_width(value, content_area.width.saturating_sub(1) as usize));
+    let body = placeholder
+        .as_ref()
+        .map(|placeholder| format!("{placeholder}█"))
+        .unwrap_or(body);
     let content = format!("{heading}\n\n{body}");
     let content_lines = wrap_editor_text(&content, content_area.width);
+    let placeholder_line = wrap_editor_text(heading, content_area.width).len() + 1;
     let max_scroll = content_lines
         .len()
         .saturating_sub(content_area.height as usize)
@@ -1500,6 +1615,24 @@ fn render_ai_setup_overlay(
         ),
         content_area,
     );
+    if let Some(placeholder) = placeholder {
+        if placeholder_line >= scroll as usize
+            && placeholder_line < scroll as usize + content_area.height as usize
+        {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(placeholder, muted_style()),
+                    Span::raw("█"),
+                ])),
+                Rect::new(
+                    content_area.x,
+                    content_area.y + placeholder_line as u16 - scroll,
+                    content_area.width,
+                    1,
+                ),
+            );
+        }
+    }
     if max_scroll > 0 {
         render_offset_scrollbar(frame, popup, scroll, max_scroll);
     }
@@ -1531,6 +1664,40 @@ fn render_ai_setup_overlay(
                 UiAction::AiSetupNext
             },
         });
+    }
+}
+
+fn ai_setup_placeholder(draft: &crate::app::AiSetupDraft) -> Option<&'static str> {
+    match draft.step {
+        crate::app::AiSetupStep::Command if draft.command.trim().is_empty() => {
+            Some("/path/to/commit-message-generator")
+        }
+        crate::app::AiSetupStep::Model if draft.model.trim().is_empty() => Some(match draft.mode {
+            AiMode::Agent => match draft.agent_provider {
+                crate::config::AgentProvider::Codex => "Optional, e.g. gpt-5",
+                crate::config::AgentProvider::Claude => "Optional, e.g. sonnet",
+                crate::config::AgentProvider::Opencode => "Optional provider/model name",
+                crate::config::AgentProvider::Custom => "Optional model name",
+            },
+            AiMode::Api => match draft.api_provider {
+                crate::config::ApiProvider::Openai => "e.g. gpt-4.1-mini",
+                crate::config::ApiProvider::Anthropic => "e.g. claude-sonnet-4-5",
+                crate::config::ApiProvider::Gemini => "e.g. gemini-2.5-flash",
+                crate::config::ApiProvider::Openrouter => "e.g. openai/gpt-4.1-mini",
+                crate::config::ApiProvider::Compatible => "Model name expected by the service",
+            },
+            AiMode::Local => "Optional model name",
+        }),
+        crate::app::AiSetupStep::ApiKey if draft.secret_is_empty() => {
+            Some("Leave empty to keep the existing or environment key")
+        }
+        crate::app::AiSetupStep::Endpoint if draft.endpoint.trim().is_empty() => {
+            Some("https://host.example/v1/chat/completions")
+        }
+        crate::app::AiSetupStep::Instructions if draft.instructions.trim().is_empty() => {
+            Some("e.g. Use conventional commits with concise subjects")
+        }
+        _ => None,
     }
 }
 
@@ -1675,7 +1842,7 @@ fn help_text(
     let (context_title, context) = match focus {
         Focus::Commit => (
             "Commit — current panel",
-            "  Type                 Edit message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  F1                   Help\n  Esc                  Leave message\n  Tab                  Next panel",
+            "  Type                 Edit message\n  Ctrl+U               Clear message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  F1                   Help\n  Esc                  Leave message\n  Tab                  Next panel",
         ),
         Focus::Changes if has_conflicts => (
             "Merge Changes — current panel",
@@ -1728,7 +1895,7 @@ fn help_text(
     };
 
     format!(
-        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  /              Search focused view\n  N              Next search match\n  ? / F1         Open/close help\n  q / Ctrl+C     Quit\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External old/new difftool\n  E              Interactive line staging\n\nRepository\n  c                    Commit message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  Ctrl+G               Generate commit message\n  U                    Undo last commit\n  f / l / p            Fetch/pull/push\n  L                    Pull with rebase\n  P / T                Push to/pull from target\n  F                    Force push with lease\n  D                    Git diagnostics\n  s / z                Create/list stashes\n  W                    Worktree list\n  Y                    AI panel\n  r                    Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGit operations\n  C / S / A      Continue/skip/abort\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, ?, or F1 to close."
+        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  /              Search focused view\n  N              Next search match\n  ? / F1         Open/close help\n  q / Ctrl+C     Quit\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External old/new difftool\n  E              Interactive line staging\n\nRepository\n  c                    Commit message\n  Ctrl+U               Clear commit message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  Ctrl+G               Generate commit message\n  U                    Undo last commit\n  f / l / p            Fetch/pull/push\n  L                    Pull with rebase\n  P / T                Push to/pull from target\n  F                    Force push with lease\n  D                    Git diagnostics\n  s / z                Create/list stashes\n  W                    Worktree list\n  Y                    AI panel\n  r                    Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGit operations\n  C / S / A      Continue/skip/abort\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, ?, or F1 to close."
     )
 }
 
@@ -1873,19 +2040,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn commit_panel_never_duplicates_the_ai_generator() {
+    async fn commit_panel_positions_the_ai_generator_without_overlap() {
         let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.settings.ai.enabled = true;
         for width in [14, 24, 50, 74] {
-            let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
-            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+            terminal
+                .draw(|frame| render_commit(frame, &mut app, Rect::new(0, 0, width, 8)))
+                .unwrap();
+            let generate = app
+                .hits
+                .iter()
+                .find(|hit| matches!(hit.action, UiAction::GenerateCommitMessage))
+                .expect("Commit should expose Generate")
+                .rect;
+            let commit = app
+                .hits
+                .iter()
+                .find(|hit| matches!(hit.action, UiAction::Commit))
+                .unwrap()
+                .rect;
             assert!(
-                !app.hits
-                    .iter()
-                    .any(|hit| matches!(hit.action, UiAction::GenerateCommitMessage)),
-                "the Commit panel duplicated Generate at width {width}"
+                generate.right() < commit.x,
+                "buttons overlapped at width {width}"
             );
+            assert!(generate.right() <= width, "Generate escaped width {width}");
         }
     }
 
@@ -1946,8 +2126,10 @@ mod tests {
         settings.ai.mode = AiMode::Agent;
         let mut app = App::new(cli, settings).await.unwrap();
         app.focus = Focus::Ai;
-        let mut terminal = Terminal::new(TestBackend::new(32, 40)).unwrap();
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(32, 20)).unwrap();
+        terminal
+            .draw(|frame| render_ai(frame, &mut app, Rect::new(0, 0, 32, 20)))
+            .unwrap();
         let output = terminal
             .backend()
             .buffer()
@@ -1960,7 +2142,7 @@ mod tests {
         assert!(output.contains("Existing Agent"));
         assert!(output.contains("Configure"));
         assert!(
-            app.hits
+            !app.hits
                 .iter()
                 .any(|hit| matches!(hit.action, UiAction::GenerateCommitMessage))
         );
@@ -1980,15 +2162,7 @@ mod tests {
             .find(|hit| matches!(hit.action, UiAction::OpenAiSetup(AiMode::Agent)))
             .expect("AI panel should expose clickable setup")
             .rect;
-        let magical = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .find(|cell| cell.symbol() == "✦")
-            .expect("AI panel should render a star Generate button");
-        assert!(magical.modifier.contains(Modifier::REVERSED));
-        assert!(magical.modifier.contains(Modifier::BOLD));
+        assert_eq!(configure.y, 18, "Configure should stay at the panel bottom");
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: configure.x,
@@ -2054,15 +2228,77 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ai_generate_button_shows_queued_and_animated_states() {
+    async fn ai_setup_shows_muted_examples_only_for_empty_fields() {
         let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.focus = Focus::Ai;
+        app.settings.ai.mode = AiMode::Agent;
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        let mut terminal = Terminal::new(TestBackend::new(50, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(output.contains("/path/to/commit-message-generator"));
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .any(|cell| cell.symbol() == "/" && cell.modifier.contains(Modifier::DIM))
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await;
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!output.contains("/path/to/commit-message-generator"));
+
+        app.overlay = None;
+        app.settings.ai.mode = AiMode::Api;
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(output.contains("e.g. gpt-4.1-mini"));
+    }
+
+    #[tokio::test]
+    async fn commit_generate_button_shows_queued_and_animated_states() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Commit;
         app.settings.ai.enabled = true;
-        let mut terminal = Terminal::new(TestBackend::new(24, 30)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
 
         app.ai_generation_state = AiGenerationState::Queued;
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        terminal
+            .draw(|frame| render_commit(frame, &mut app, Rect::new(0, 0, 60, 8)))
+            .unwrap();
         let queued = terminal
             .backend()
             .buffer()
@@ -2073,7 +2309,9 @@ mod tests {
         assert!(queued.contains("Queued"));
 
         app.ai_generation_state = AiGenerationState::Generating(std::time::Instant::now());
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        terminal
+            .draw(|frame| render_commit(frame, &mut app, Rect::new(0, 0, 60, 8)))
+            .unwrap();
         let generating = terminal
             .backend()
             .buffer()
@@ -2173,8 +2411,10 @@ mod tests {
         app.focus = Focus::Ai;
 
         for width in [14, 20, 24, 32, 50] {
-            let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
-            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+            terminal
+                .draw(|frame| render_ai(frame, &mut app, Rect::new(0, 0, width, 30)))
+                .unwrap();
             let controls = app
                 .hits
                 .iter()
@@ -2184,11 +2424,10 @@ mod tests {
                         UiAction::ToggleAiEnabled
                             | UiAction::SelectAiMode(_)
                             | UiAction::OpenAiSetup(_)
-                            | UiAction::GenerateCommitMessage
                     )
                 })
                 .collect::<Vec<_>>();
-            assert!(controls.len() >= 6, "missing AI controls at width {width}");
+            assert!(controls.len() >= 5, "missing AI controls at width {width}");
             assert!(
                 controls.iter().all(|control| control.rect.right() <= width),
                 "AI control escaped the pane at width {width}"
@@ -2209,6 +2448,10 @@ mod tests {
                 configure_y > mode_y,
                 "Configure shared the mode row at width {width}"
             );
+            assert_eq!(
+                configure_y, 28,
+                "Configure left the bottom at width {width}"
+            );
 
             let output = terminal
                 .backend()
@@ -2217,13 +2460,46 @@ mod tests {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect::<String>();
-            for label in ["AI on", "Local", "Agent", "API", "Configure", "Generate"] {
+            for label in ["AI on", "Local", "Agent", "API", "Configure"] {
                 assert!(
                     output.contains(label),
                     "{label} was shortened at width {width}"
                 );
             }
+            assert!(!output.contains("Generate"));
         }
+    }
+
+    #[tokio::test]
+    async fn wide_ai_controls_expand_across_the_panel() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Ai;
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| render_ai(frame, &mut app, Rect::new(0, 0, 80, 20)))
+            .unwrap();
+
+        let top = app
+            .hits
+            .iter()
+            .filter(|hit| {
+                matches!(
+                    hit.action,
+                    UiAction::ToggleAiEnabled | UiAction::SelectAiMode(_)
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(top.len(), 4);
+        assert_eq!(top.first().unwrap().rect.x, 1);
+        assert_eq!(top.last().unwrap().rect.right(), 79);
+        let configure = app
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, UiAction::OpenAiSetup(_)))
+            .unwrap()
+            .rect;
+        assert_eq!(configure, Rect::new(1, 18, 78, 1));
     }
 
     #[tokio::test]

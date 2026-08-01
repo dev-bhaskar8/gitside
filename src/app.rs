@@ -677,6 +677,13 @@ impl App {
             }
             match key.code {
                 KeyCode::Esc => self.focus = Focus::Changes,
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.commit_message.clear();
+                    self.commit_scroll = 0;
+                    self.commit_history_index = None;
+                    self.commit_history_draft.clear();
+                    self.status_line = "Cleared commit message".into();
+                }
                 KeyCode::Backspace => {
                     self.commit_message.pop();
                     self.commit_scroll = 0;
@@ -3324,6 +3331,24 @@ mod tests {
         app.recall_commit_message(1);
         assert_eq!(app.commit_message, "draft message");
         assert!(app.commit_history_index.is_none());
+    }
+
+    #[tokio::test]
+    async fn control_u_clears_the_commit_message_and_its_scroll_state() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Commit;
+        app.commit_message = "A long generated draft".into();
+        app.commit_scroll = 4;
+        app.commit_history_index = Some(0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
+            .await;
+
+        assert!(app.commit_message.is_empty());
+        assert_eq!(app.commit_scroll, 0);
+        assert_eq!(app.commit_history_index, None);
+        assert_eq!(app.status_line, "Cleared commit message");
     }
 
     #[tokio::test]
