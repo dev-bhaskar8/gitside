@@ -179,6 +179,7 @@ jobs:
           set -euo pipefail
           version=${RELEASE_TAG#v}
           branch=gitside-$version
+          gh auth setup-git
           gh repo clone dev-bhaskar8/winget-pkgs winget-pkgs -- --filter=blob:none --no-checkout
           cd winget-pkgs
           git sparse-checkout init --cone
