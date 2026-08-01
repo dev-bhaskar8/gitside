@@ -132,7 +132,9 @@ of unexplained keys.
 The existing `p` control adapts without adding another button: it becomes
 Publish when the current branch has no upstream, Sync when it has both incoming
 and outgoing commits, and Push otherwise. Publish prefers `origin`, then falls
-back to the first configured remote.
+back to the first configured remote. When no remote exists and authenticated
+GitHub CLI support is available, the same control opens the confirmed GitHub
+repository publishing flow.
 
 Help opens with shortcuts for the currently focused panel, followed by the
 complete reference. Use `j`/`k`, arrows, Page Up/Down, Home/End, or the mouse

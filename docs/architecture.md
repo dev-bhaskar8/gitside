@@ -93,5 +93,7 @@ then restore the terminal and refresh the repository snapshot.
 
 Remote actions also use progressive disclosure. The existing push hit region
 selects publish, sync, or push from branch upstream/ahead/behind state, and its
-label changes in place. This adds the missing workflow without increasing the
-toolbar's control count.
+label changes in place. If publishing has no target remote but authenticated
+GitHub CLI support is available, that same action enters the repository publish
+flow. This adds the missing workflow without increasing the toolbar's control
+count.

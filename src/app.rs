@@ -1384,6 +1384,10 @@ impl App {
                 .or_else(|| self.active().remotes.first())
                 .map(|remote| remote.name.clone());
             let Some(remote) = remote else {
+                if self.active().github_state == GitHubConnectionState::NoRemote {
+                    self.begin_publish_github();
+                    return;
+                }
                 self.status_line = "Add a remote before publishing this branch".into();
                 return;
             };
@@ -2556,6 +2560,27 @@ mod tests {
                 },
                 ..
             }) if name == "x" && remote == "origin"
+        ));
+        assert!(app.background_task.is_none());
+    }
+
+    #[tokio::test]
+    async fn publish_shortcut_creates_a_github_remote_when_none_exists() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.active_mut().github_state = GitHubConnectionState::NoRemote;
+        app.active_mut().remotes.clear();
+        app.active_mut().status.branch.upstream = None;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE))
+            .await;
+
+        assert!(matches!(
+            &app.overlay,
+            Some(Overlay::Prompt {
+                action: PromptAction::PublishGitHubName,
+                ..
+            })
         ));
         assert!(app.background_task.is_none());
     }
