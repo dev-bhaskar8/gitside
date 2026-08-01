@@ -32,13 +32,30 @@
 Prebuilt packages are published for macOS, Linux, and Windows with each stable
 release. Git 2.30+ is required at runtime.
 
+### Cross-platform
+
+#### npm
+
+```sh
+npm install --global gitside
+```
+
+The npm package installs the matching native binary.
+
+#### Cargo
+
+```sh
+cargo install gitside --locked
+```
+
+Cargo builds Gitside from source and requires Rust 1.85 or newer.
+
 ### macOS and Linux
 
 ```sh
 # Homebrew
 brew install dev-bhaskar8/tap/gitside
 ```
-
 ### Arch Linux
 
 Install the prebuilt AUR package with your preferred helper:
@@ -69,24 +86,6 @@ choco install gitside
 scoop bucket add gitside https://github.com/dev-bhaskar8/scoop-bucket
 scoop install gitside
 ```
-
-### Cross-platform
-
-#### npm
-
-```sh
-npm install --global gitside
-```
-
-The npm package installs the matching native binary.
-
-#### Cargo
-
-```sh
-cargo install gitside --locked
-```
-
-Cargo builds Gitside from source and requires Rust 1.85 or newer.
 
 ### Direct downloads and pending channels
 
