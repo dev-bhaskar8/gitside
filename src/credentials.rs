@@ -153,15 +153,22 @@ impl CredentialStore {
     }
 
     pub async fn delete(&self, provider: ApiProvider) -> Result<CredentialStatus> {
-        self.session
+        let has_session_secret = self
+            .session
             .lock()
             .map_err(|_| anyhow::anyhow!("credential memory lock is poisoned"))?
-            .remove(&provider);
+            .contains_key(&provider);
         let backend = self.backend.clone();
         let result = tokio::task::spawn_blocking(move || backend.delete(provider))
             .await
             .context("credential task failed")?;
-        result.context("failed to remove API key from the OS keychain")?;
+        if !has_session_secret {
+            result.context("failed to remove API key from the OS keychain")?;
+        }
+        self.session
+            .lock()
+            .map_err(|_| anyhow::anyhow!("credential memory lock is poisoned"))?
+            .remove(&provider);
         Ok(CredentialStatus::Missing)
     }
 
@@ -215,6 +222,7 @@ mod tests {
     struct MockBackend {
         values: Mutex<HashMap<ApiProvider, String>>,
         fail_writes: bool,
+        fail_deletes: bool,
     }
 
     impl CredentialBackend for MockBackend {
@@ -231,6 +239,9 @@ mod tests {
         }
 
         fn delete(&self, provider: ApiProvider) -> Result<()> {
+            if self.fail_deletes {
+                anyhow::bail!("mock keychain deletion failed");
+            }
             self.values.lock().unwrap().remove(&provider);
             Ok(())
         }
@@ -294,6 +305,53 @@ mod tests {
                 .unwrap()
                 .expose_secret(),
             "secret"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_persistent_deletion_does_not_claim_success_or_lose_the_key() {
+        let mut values = HashMap::new();
+        values.insert(ApiProvider::Anthropic, "persistent".into());
+        let store = CredentialStore::with_backend(Arc::new(MockBackend {
+            values: Mutex::new(values),
+            fail_deletes: true,
+            ..MockBackend::default()
+        }));
+
+        assert!(store.delete(ApiProvider::Anthropic).await.is_err());
+        assert_eq!(
+            store
+                .resolve(ApiProvider::Anthropic, None)
+                .await
+                .unwrap()
+                .unwrap()
+                .expose_secret(),
+            "persistent"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_key_can_be_removed_when_the_keychain_is_unavailable() {
+        let store = CredentialStore::with_backend(Arc::new(MockBackend {
+            fail_writes: true,
+            fail_deletes: true,
+            ..MockBackend::default()
+        }));
+        store
+            .store(
+                ApiProvider::Gemini,
+                SecretString::from("session".to_owned()),
+            )
+            .await
+            .unwrap();
+
+        store.delete(ApiProvider::Gemini).await.unwrap();
+        assert!(
+            store
+                .resolve(ApiProvider::Gemini, None)
+                .await
+                .unwrap()
+                .is_none()
         );
     }
 }

@@ -28,9 +28,11 @@ actions when terminal mouse events are enabled. In tmux, use `set -g mouse on`.
 | `E` | Interactive line staging |
 | `o` | Open working file in configured editor |
 | `c` | Focus commit message |
+| `Page Up` / `Page Down` in message | Scroll a long draft |
+| `Ctrl+Home` / `Ctrl+End` in message | Top / bottom of a long draft |
 | `Ctrl+G` | Generate an editable commit-message draft when enabled |
 | `G` / `Y` | Generate outside the editor / open AI status |
-| AI panel: `e`, `1`/`2`/`3`, `x` | Enable; choose Local/Agent/API; toggle emoji |
+| AI panel: `e`, `1`/`2`/`3` | Enable; choose Local/Agent/API |
 | AI panel: `c` / `k` | Guided setup / remove selected provider key |
 | `Ctrl+Enter` | Commit |
 | `Ctrl+Shift+Enter` | Amend previous commit |

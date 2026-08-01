@@ -45,12 +45,13 @@ git config --global difftool.vscode.cmd 'code --wait --diff "$LOCAL" "$REMOTE"'
 
 Generation is opt-in and always creates an editable draft. It never stages
 files, creates a repository, switches branches, commits, or pushes. Every mode
-uses staged changes only. Enable one of the following modes:
+prefers staged changes and falls back to current unstaged and untracked changes
+when the index is empty. Enable one of the following modes:
 
 The AI panel is always available in the normal `Tab` sequence, just like
 Stashes and Worktrees. From that panel, press `e` to enable generation for the
-current session, `1`/`2`/`3` to choose Local/Agent/API, and `x` to toggle emoji.
-Click Configure or press `c` to open the guided provider, model, credential,
+current session and `1`/`2`/`3` to choose Local/Agent/API. Click Configure or
+press `c` to open the guided provider, model, credential,
 endpoint, and instruction setup. All controls and wizard choices support both
 mouse and keyboard input. Smart Local works immediately, while non-secret
 choices are saved automatically across launches.
@@ -64,32 +65,27 @@ variables remain a fallback, and `k` removes the selected provider's stored key.
 ### Smart Local
 
 This deterministic mode is private, offline, and requires no AI service. It
-summarizes staged file statuses and statistics.
+summarizes the staged index or, when it is empty, the current working tree.
 
 ```toml
 [ai]
 enabled = true
 mode = "local"
-emoji = false
 max_files = 3
 max_diff_bytes = 32000
 ```
-
-Set `emoji = true` to prefix generated drafts with `🤖`. This toggle applies
-independently to all three modes.
 
 ### Existing agent
 
 This mode invokes an already authenticated Codex, Claude Code, or OpenCode CLI
 non-interactively. The built-in adapters request non-mutating operation and
-provide a prompt based on the staged diff. Depending on the chosen agent, that
-diff may be sent to its configured provider.
+provide a Git-specific system prompt based on the selected changes. Depending
+on the chosen agent, that diff may be sent to its configured provider.
 
 ```toml
 [ai]
 enabled = true
 mode = "agent"
-emoji = false
 instructions = "Use conventional commit subjects."
 
 [ai.agent]
@@ -118,24 +114,23 @@ repository state through ordinary Git commands.
 
 API keys can be entered through the masked setup wizard or read from environment
 variables. They are never stored in the configuration file. This mode sends the
-bounded staged text diff to the chosen provider.
+bounded diff to the chosen provider.
 
 ```toml
 [ai]
 enabled = true
 mode = "api"
-emoji = false
 max_diff_bytes = 32000
 
 [ai.api]
-provider = "openai" # openai, anthropic, gemini, openrouter, or compatible
+provider = "openai" # OpenAI, Anthropic, Gemini, OpenRouter, or Other in the UI
 model = "your-model"
 # api_key_env = "OPENAI_API_KEY"
 ```
 
 Default key variables are `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-`GEMINI_API_KEY`, and `OPENROUTER_API_KEY`. An OpenAI-compatible service can
-use a complete chat-completions endpoint and an optional key variable:
+`GEMINI_API_KEY`, and `OPENROUTER_API_KEY`. Choose Other for an OpenAI-compatible
+service; it can use a complete chat-completions endpoint and an optional key variable:
 
 ```toml
 [ai.api]

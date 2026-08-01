@@ -65,8 +65,9 @@ user has switched views.
 Commit-message generation uses that same background-task boundary and inserts
 only an editable draft. The `ai` adapter supports deterministic local rules,
 built-in agent adapters that request non-mutating operation, trusted custom
-commands, and direct HTTPS APIs. All modes inspect only the staged index; direct
-API input is byte-bounded, credentials come from the OS credential store or an
+commands, and direct HTTPS APIs. All modes prefer the staged index and use a
+read-only working-tree fallback when it is empty; direct API input is
+byte-bounded, credentials come from the OS credential store or an
 environment fallback, and failures preserve the user's current draft.
 
 The AI setup wizard persists only non-secret settings in the TOML document and

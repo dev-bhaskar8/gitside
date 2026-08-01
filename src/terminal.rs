@@ -86,6 +86,7 @@ pub async fn run(app: &mut App) -> Result<()> {
                     Event::Resize(_, _) => EventOutcome::Continue,
                     Event::Paste(value) if app.focus == crate::app::Focus::Commit => {
                         app.commit_message.push_str(&value);
+                        app.commit_scroll = 0;
                         EventOutcome::Continue
                     }
                     _ => EventOutcome::Continue,

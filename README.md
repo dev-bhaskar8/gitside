@@ -112,7 +112,7 @@ gitside /path/to/repository
 - **GitHub when you need it.** Publish a repository, browse pull requests and issues, check out PRs, and inspect checks through the authenticated `gh` CLI.
 - **Your terminal, your colors.** Gitside inherits the terminal background instead of painting an opaque theme over it.
 - **Responsive and non-blocking.** Network work runs in the background and filesystem notifications keep repository state fresh.
-- **Optional commit drafts.** Configure offline rules, an existing Codex/Claude Code/OpenCode login, or a direct API inside the clickable AI panel. API keys stay in the OS keychain, and emoji remains independently optional.
+- **Optional commit drafts.** Configure offline rules, an existing Codex/Claude Code/OpenCode or other command, or a direct API inside the clickable AI panel. API keys stay in the OS keychain.
 
 ## Essential controls
 

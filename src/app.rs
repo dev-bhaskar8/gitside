@@ -59,7 +59,6 @@ pub enum UiAction {
     GenerateCommitMessage,
     ToggleAiEnabled,
     SelectAiMode(AiMode),
-    ToggleAiEmoji,
     OpenAiSetup(AiMode),
     AiSetupChoose(usize),
     AiSetupNext,
@@ -119,6 +118,7 @@ pub enum Overlay {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiSetupStep {
     Provider,
+    Command,
     Model,
     ApiKey,
     Endpoint,
@@ -132,6 +132,7 @@ pub struct AiSetupDraft {
     pub step: AiSetupStep,
     pub agent_provider: AgentProvider,
     pub api_provider: ApiProvider,
+    pub command: String,
     pub model: String,
     api_key: Zeroizing<String>,
     pub endpoint: String,
@@ -146,6 +147,7 @@ impl std::fmt::Debug for AiSetupDraft {
             .field("step", &self.step)
             .field("agent_provider", &self.agent_provider)
             .field("api_provider", &self.api_provider)
+            .field("command", &self.command)
             .field("model", &self.model)
             .field("api_key", &"[REDACTED]")
             .field("endpoint", &self.endpoint)
@@ -167,12 +169,9 @@ impl AiSetupDraft {
         Self {
             mode,
             step: AiSetupStep::Provider,
-            agent_provider: if settings.agent.provider == AgentProvider::Custom {
-                AgentProvider::Codex
-            } else {
-                settings.agent.provider
-            },
+            agent_provider: settings.agent.provider,
             api_provider: settings.api.provider,
+            command: settings.agent.command.clone().unwrap_or_default(),
             model: match mode {
                 AiMode::Agent => settings.agent.model.clone().unwrap_or_default(),
                 AiMode::Api => settings.api.model.clone().unwrap_or_default(),
@@ -266,6 +265,8 @@ pub struct App {
     pub selected_github: usize,
     pub github_show_issues: bool,
     pub commit_message: String,
+    pub commit_scroll: u16,
+    pub commit_max_scroll: u16,
     pub preview: Option<Preview>,
     pub overlay: Option<Overlay>,
     pub output: Vec<String>,
@@ -275,6 +276,7 @@ pub struct App {
     pub hits: Vec<HitRegion>,
     last_click: Option<(u16, u16, Instant)>,
     background_task: Option<JoinHandle<BackgroundResult>>,
+    pub ai_generation_state: AiGenerationState,
     last_search: Option<String>,
     commit_history_index: Option<usize>,
     commit_history_draft: String,
@@ -316,6 +318,13 @@ enum BackgroundResult {
     AiCredentialRemoved {
         result: Result<CredentialStatus>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiGenerationState {
+    Idle,
+    Queued,
+    Generating(Instant),
 }
 
 struct RepoSnapshot {
@@ -383,6 +392,8 @@ impl App {
             selected_github: 0,
             github_show_issues: false,
             commit_message: String::new(),
+            commit_scroll: 0,
+            commit_max_scroll: 0,
             preview: None,
             overlay: None,
             output: Vec::new(),
@@ -392,6 +403,7 @@ impl App {
             hits: Vec::new(),
             last_click: None,
             background_task: None,
+            ai_generation_state: AiGenerationState::Idle,
             last_search: None,
             commit_history_index: None,
             commit_history_draft: String::new(),
@@ -578,16 +590,22 @@ impl App {
             },
             Ok(BackgroundResult::CommitMessage { repo_index, result }) => match result {
                 Ok(message) if repo_index == self.active_repo => {
+                    self.ai_generation_state = AiGenerationState::Idle;
                     self.commit_message = message;
+                    self.commit_scroll = 0;
                     self.commit_history_index = None;
                     self.focus = Focus::Commit;
                     self.status_line = "Generated editable commit message".into();
                 }
                 Ok(_) => {
+                    self.ai_generation_state = AiGenerationState::Idle;
                     self.status_line =
                         "Generated message discarded because the repository changed".into();
                 }
-                Err(error) => self.report_error(error),
+                Err(error) => {
+                    self.ai_generation_state = AiGenerationState::Idle;
+                    self.report_error(error);
+                }
             },
             Ok(BackgroundResult::AiSetup { settings, result }) => match result {
                 Ok(status) => {
@@ -605,11 +623,34 @@ impl App {
             Ok(BackgroundResult::AiCredentialRemoved { result }) => match result {
                 Ok(status) => {
                     self.ai_credential_status = status;
-                    self.status_line = "Removed the stored API key".into();
+                    self.status_line = match &self.ai_credential_status {
+                        CredentialStatus::Missing => "Removed the stored API key".into(),
+                        CredentialStatus::Environment(name) => {
+                            format!("Stored key removed; still using {name}")
+                        }
+                        CredentialStatus::Stored => {
+                            "Session key removed, but an OS keychain key remains".into()
+                        }
+                        CredentialStatus::Unavailable(reason) => {
+                            format!("Session key removed; keychain unavailable · {reason}")
+                        }
+                        CredentialStatus::Unknown | CredentialStatus::SessionOnly => {
+                            "Removed the stored API key".into()
+                        }
+                    };
                 }
                 Err(error) => self.report_error(error),
             },
-            Err(error) => self.report_error(anyhow::anyhow!("background Git task failed: {error}")),
+            Err(error) => {
+                if matches!(self.ai_generation_state, AiGenerationState::Generating(_)) {
+                    self.ai_generation_state = AiGenerationState::Idle;
+                }
+                self.report_error(anyhow::anyhow!("background Git task failed: {error}"));
+            }
+        }
+        if self.ai_generation_state == AiGenerationState::Queued && self.background_task.is_none() {
+            self.ai_generation_state = AiGenerationState::Idle;
+            self.queue_commit_message_generation();
         }
         true
     }
@@ -638,9 +679,26 @@ impl App {
                 KeyCode::Esc => self.focus = Focus::Changes,
                 KeyCode::Backspace => {
                     self.commit_message.pop();
+                    self.commit_scroll = 0;
                     self.commit_history_index = None;
                 }
-                KeyCode::Enter => self.commit_message.push('\n'),
+                KeyCode::Enter => {
+                    self.commit_message.push('\n');
+                    self.commit_scroll = 0;
+                }
+                KeyCode::PageUp => {
+                    self.commit_scroll = self
+                        .commit_scroll
+                        .saturating_add(3)
+                        .min(self.commit_max_scroll)
+                }
+                KeyCode::PageDown => self.commit_scroll = self.commit_scroll.saturating_sub(3),
+                KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.commit_scroll = self.commit_max_scroll
+                }
+                KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.commit_scroll = 0
+                }
                 KeyCode::Up => self.recall_commit_message(-1),
                 KeyCode::Down => self.recall_commit_message(1),
                 KeyCode::Char(character)
@@ -649,6 +707,7 @@ impl App {
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
                     self.commit_message.push(character);
+                    self.commit_scroll = 0;
                     self.commit_history_index = None;
                 }
                 KeyCode::Tab => self.next_focus(false).await,
@@ -699,7 +758,6 @@ impl App {
             KeyCode::Char('1') if self.focus == Focus::Ai => self.select_ai_mode(AiMode::Local),
             KeyCode::Char('2') if self.focus == Focus::Ai => self.select_ai_mode(AiMode::Agent),
             KeyCode::Char('3') if self.focus == Focus::Ai => self.select_ai_mode(AiMode::Api),
-            KeyCode::Char('x') if self.focus == Focus::Ai => self.toggle_ai_emoji(),
             KeyCode::Char('a') => self.run_stage_all().await,
             KeyCode::Char('u') => self.run_unstage_all().await,
             KeyCode::Char('f') => self.run_remote("Fetching", RemoteAction::Fetch),
@@ -806,6 +864,16 @@ impl App {
             KeyCode::BackTab => self.next_focus(true).await,
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
+            KeyCode::PageUp if self.focus == Focus::Preview => {
+                if let Some(preview) = &mut self.preview {
+                    preview.scroll = preview.scroll.saturating_sub(10);
+                }
+            }
+            KeyCode::PageDown if self.focus == Focus::Preview => {
+                if let Some(preview) = &mut self.preview {
+                    preview.scroll = preview.scroll.saturating_add(10);
+                }
+            }
             KeyCode::PageUp => self.move_selection(-10),
             KeyCode::PageDown => self.move_selection(10),
             KeyCode::Home => self.set_selection(0),
@@ -984,11 +1052,22 @@ impl App {
         match event.kind {
             MouseEventKind::ScrollUp => {
                 self.focus_panel_at(event.column, event.row);
+                if self.focus == Focus::Commit {
+                    self.commit_scroll = self
+                        .commit_scroll
+                        .saturating_add(3)
+                        .min(self.commit_max_scroll);
+                    return EventOutcome::Continue;
+                }
                 self.move_selection(-3);
                 return EventOutcome::Continue;
             }
             MouseEventKind::ScrollDown => {
                 self.focus_panel_at(event.column, event.row);
+                if self.focus == Focus::Commit {
+                    self.commit_scroll = self.commit_scroll.saturating_sub(3);
+                    return EventOutcome::Continue;
+                }
                 self.move_selection(3);
                 return EventOutcome::Continue;
             }
@@ -1098,7 +1177,6 @@ impl App {
             UiAction::GenerateCommitMessage => self.queue_commit_message_generation(),
             UiAction::ToggleAiEnabled => self.toggle_ai_enabled(),
             UiAction::SelectAiMode(mode) => self.select_ai_mode(mode),
-            UiAction::ToggleAiEmoji => self.toggle_ai_emoji(),
             UiAction::OpenAiSetup(mode) => self.open_ai_setup(mode),
             UiAction::AiSetupChoose(index) => self.choose_ai_setup_provider(index),
             UiAction::AiSetupNext => self.advance_ai_setup().await,
@@ -1219,7 +1297,23 @@ impl App {
             return;
         };
         match draft.step {
-            AiSetupStep::Provider => draft.step = AiSetupStep::Model,
+            AiSetupStep::Provider => {
+                draft.step = if draft.mode == AiMode::Agent
+                    && draft.agent_provider == AgentProvider::Custom
+                {
+                    AiSetupStep::Command
+                } else {
+                    AiSetupStep::Model
+                };
+            }
+            AiSetupStep::Command => {
+                if draft.command.trim().is_empty() {
+                    self.status_line = "A custom agent command is required".into();
+                    self.overlay = Some(Overlay::AiSetup(draft));
+                    return;
+                }
+                draft.step = AiSetupStep::Instructions;
+            }
             AiSetupStep::Model => {
                 if draft.mode == AiMode::Api && draft.model.trim().is_empty() {
                     self.status_line = "An API model is required".into();
@@ -1267,9 +1361,14 @@ impl App {
                 self.overlay = None;
                 return;
             }
-            AiSetupStep::Model => AiSetupStep::Provider,
+            AiSetupStep::Command | AiSetupStep::Model => AiSetupStep::Provider,
             AiSetupStep::ApiKey => AiSetupStep::Model,
             AiSetupStep::Endpoint => AiSetupStep::ApiKey,
+            AiSetupStep::Instructions
+                if draft.mode == AiMode::Agent && draft.agent_provider == AgentProvider::Custom =>
+            {
+                AiSetupStep::Command
+            }
             AiSetupStep::Instructions if draft.mode == AiMode::Agent => AiSetupStep::Model,
             AiSetupStep::Instructions if draft.api_provider == ApiProvider::Compatible => {
                 AiSetupStep::Endpoint
@@ -1545,6 +1644,7 @@ impl App {
             (Some(0), false) => {
                 self.commit_history_index = None;
                 self.commit_message = self.commit_history_draft.clone();
+                self.commit_scroll = 0;
                 return;
             }
             (Some(index), true) => (index + 1).min(self.active().history.len() - 1),
@@ -1552,6 +1652,7 @@ impl App {
         };
         self.commit_history_index = Some(next);
         self.commit_message = self.active().history[next].subject.clone();
+        self.commit_scroll = 0;
     }
 
     fn open_diagnostics(&mut self) {
@@ -1654,6 +1755,7 @@ impl App {
         let result = repo.commit(&self.commit_message, options).await;
         if result.is_ok() {
             self.commit_message.clear();
+            self.commit_scroll = 0;
             self.focus = Focus::Changes;
         }
         let success = match (options.amend, options.signoff) {
@@ -1666,6 +1768,10 @@ impl App {
     }
 
     fn queue_commit_message_generation(&mut self) {
+        if matches!(self.ai_generation_state, AiGenerationState::Generating(_)) {
+            self.status_line = "Commit-message generation is already running…".into();
+            return;
+        }
         if !self.settings.ai.enabled {
             if self.settings.ai.mode == AiMode::Local {
                 self.settings.ai.enabled = true;
@@ -1698,11 +1804,12 @@ impl App {
             return;
         }
         if self.background_task.is_some() {
-            self.status_line = "Another Git operation is still running".into();
+            self.ai_generation_state = AiGenerationState::Queued;
+            self.status_line = "Generate queued until the current operation finishes…".into();
             return;
         }
-        if self.active().status.staged.is_empty() {
-            self.status_line = "Stage at least one change before generating a message".into();
+        if self.active().status.staged.is_empty() && self.active().status.unstaged.is_empty() {
+            self.status_line = "Make at least one change before generating a message".into();
             return;
         }
         let repo_index = self.active_repo;
@@ -1711,6 +1818,7 @@ impl App {
         let settings = self.settings.ai.clone();
         let credentials = self.credentials.clone();
         self.busy = true;
+        self.ai_generation_state = AiGenerationState::Generating(Instant::now());
         self.status_line = format!("Generating with {}…", ai::mode_label(&settings));
         self.background_task = Some(tokio::spawn(async move {
             let credential = if settings.mode == AiMode::Api {
@@ -1758,19 +1866,6 @@ impl App {
         self.persist_ai_settings(&status);
     }
 
-    fn toggle_ai_emoji(&mut self) {
-        self.settings.ai.emoji = !self.settings.ai.emoji;
-        let status = format!(
-            "Commit-message emoji {}",
-            if self.settings.ai.emoji {
-                "enabled"
-            } else {
-                "disabled"
-            }
-        );
-        self.persist_ai_settings(&status);
-    }
-
     fn persist_ai_settings(&mut self, success: &str) {
         if self.settings.config_path.is_none() {
             self.status_line = success.into();
@@ -1797,7 +1892,12 @@ impl App {
         match draft.mode {
             AiMode::Agent => {
                 settings.ai.agent.provider = draft.agent_provider;
-                settings.ai.agent.model = nonempty_owned(draft.model);
+                if draft.agent_provider == AgentProvider::Custom {
+                    settings.ai.agent.command = nonempty_owned(draft.command);
+                    settings.ai.agent.model = None;
+                } else {
+                    settings.ai.agent.model = nonempty_owned(draft.model);
+                }
             }
             AiMode::Api => {
                 settings.ai.api.provider = draft.api_provider;
@@ -2834,7 +2934,7 @@ enum RemoteAction {
 
 fn provider_count(mode: AiMode) -> usize {
     match mode {
-        AiMode::Agent => 3,
+        AiMode::Agent => 4,
         AiMode::Api => 5,
         AiMode::Local => 1,
     }
@@ -2846,7 +2946,7 @@ fn setup_provider_index(draft: &AiSetupDraft) -> usize {
             AgentProvider::Codex => 0,
             AgentProvider::Claude => 1,
             AgentProvider::Opencode => 2,
-            AgentProvider::Custom => 0,
+            AgentProvider::Custom => 3,
         },
         AiMode::Api => match draft.api_provider {
             ApiProvider::Openai => 0,
@@ -2865,6 +2965,7 @@ fn set_setup_provider(draft: &mut AiSetupDraft, index: usize) {
             let provider = match index {
                 1 => AgentProvider::Claude,
                 2 => AgentProvider::Opencode,
+                3 => AgentProvider::Custom,
                 _ => AgentProvider::Codex,
             };
             if draft.agent_provider != provider {
@@ -2892,6 +2993,7 @@ fn set_setup_provider(draft: &mut AiSetupDraft, index: usize) {
 
 fn ai_setup_input_mut(draft: &mut AiSetupDraft) -> &mut String {
     match draft.step {
+        AiSetupStep::Command => &mut draft.command,
         AiSetupStep::Model => &mut draft.model,
         AiSetupStep::ApiKey => &mut draft.api_key,
         AiSetupStep::Endpoint => &mut draft.endpoint,
@@ -3271,7 +3373,6 @@ mod tests {
         let cli = Cli::try_parse_from(["gitside", directory.path().to_str().unwrap()]).unwrap();
         let mut settings = Settings::default();
         settings.ai.enabled = true;
-        settings.ai.emoji = true;
         let mut app = App::new(cli, settings).await.unwrap();
 
         app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL))
@@ -3286,7 +3387,7 @@ mod tests {
         }
         assert!(app.poll_background().await);
 
-        assert_eq!(app.commit_message, "🤖 Add feature.rs");
+        assert_eq!(app.commit_message, "Add feature.rs");
         assert_eq!(app.focus, Focus::Commit);
         assert_eq!(app.status_line, "Generated editable commit message");
         let count = Command::new("git")
@@ -3302,12 +3403,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generation_requires_staged_changes_and_preserves_the_draft() {
+    async fn generation_requires_changes_and_preserves_the_draft() {
         let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut settings = Settings::default();
         settings.ai.enabled = true;
         let mut app = App::new(cli, settings).await.unwrap();
         app.active_mut().status.staged.clear();
+        app.active_mut().status.unstaged.clear();
         app.commit_message = "Keep my draft".into();
 
         app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT))
@@ -3316,7 +3418,7 @@ mod tests {
         assert_eq!(app.commit_message, "Keep my draft");
         assert_eq!(
             app.status_line,
-            "Stage at least one change before generating a message"
+            "Make at least one change before generating a message"
         );
         assert!(app.background_task.is_none());
     }
@@ -3369,12 +3471,8 @@ mod tests {
             .await;
         app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE))
             .await;
-        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
-            .await;
-
         assert!(app.settings.ai.enabled);
         assert_eq!(app.settings.ai.mode, AiMode::Agent);
-        assert!(app.settings.ai.emoji);
     }
 
     #[tokio::test]
@@ -3422,6 +3520,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_setup_wizard_supports_an_other_command() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut settings = Settings {
+            config_path: Some(path.clone()),
+            ..Settings::default()
+        };
+        settings.ai.mode = AiMode::Agent;
+        let mut app = App::new(cli, settings).await.unwrap();
+        app.focus = Focus::Ai;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        for character in "/usr/local/bin/my-agent".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+        assert!(app.poll_background().await);
+        assert_eq!(app.settings.ai.agent.provider, AgentProvider::Custom);
+        assert_eq!(
+            app.settings.ai.agent.command.as_deref(),
+            Some("/usr/local/bin/my-agent")
+        );
+        let saved = fs::read_to_string(path).unwrap();
+        assert!(saved.contains("provider = \"custom\""));
+        assert!(saved.contains("command = \"/usr/local/bin/my-agent\""));
+    }
+
+    #[tokio::test]
     async fn remote_actions_are_queued_without_blocking_input() {
         let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
@@ -3432,6 +3578,59 @@ mod tests {
         assert!(app.background_task.is_some());
         assert_eq!(app.status_line, "Fetching…");
         app.background_task.take().unwrap().abort();
+    }
+
+    #[tokio::test]
+    async fn generation_waits_for_the_active_background_operation() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(directory.path())
+                .status()
+                .await
+                .unwrap()
+                .success()
+        );
+        fs::write(directory.path().join("feature.rs"), "pub fn feature() {}\n").unwrap();
+        let cli = Cli::try_parse_from(["gitside", directory.path().to_str().unwrap()]).unwrap();
+        let mut settings = Settings::default();
+        settings.ai.enabled = true;
+        let mut app = App::new(cli, settings).await.unwrap();
+        app.busy = true;
+        app.background_task = Some(tokio::spawn(async {
+            BackgroundResult::History {
+                repo_index: 0,
+                requested_limit: 50,
+                result: Ok(Vec::new()),
+            }
+        }));
+
+        app.queue_commit_message_generation();
+        assert_eq!(app.ai_generation_state, AiGenerationState::Queued);
+        assert!(app.status_line.contains("queued"));
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+        assert!(app.poll_background().await);
+        assert!(matches!(
+            app.ai_generation_state,
+            AiGenerationState::Generating(_)
+        ));
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+        assert!(app.poll_background().await);
+        assert_eq!(app.ai_generation_state, AiGenerationState::Idle);
+        assert_eq!(app.commit_message, "Add feature.rs");
     }
 
     #[tokio::test]

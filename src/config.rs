@@ -118,7 +118,8 @@ pub struct EditorSettings {
 pub struct AiSettings {
     pub enabled: bool,
     pub mode: AiMode,
-    pub emoji: bool,
+    #[serde(rename = "emoji", skip_serializing)]
+    pub(crate) legacy_emoji: Option<bool>,
     pub instructions: String,
     pub max_diff_bytes: usize,
     pub max_files: usize,
@@ -149,7 +150,7 @@ impl Default for AiSettings {
         Self {
             enabled: false,
             mode: AiMode::Local,
-            emoji: false,
+            legacy_emoji: None,
             instructions: String::new(),
             max_diff_bytes: 32_000,
             max_files: 3,
@@ -328,7 +329,7 @@ api_key_env = "OPENROUTER_API_KEY"
         assert_eq!(settings.editor.command.as_deref(), Some("code"));
         assert!(settings.ai.enabled);
         assert_eq!(settings.ai.mode, AiMode::Agent);
-        assert!(settings.ai.emoji);
+        assert_eq!(settings.ai.legacy_emoji, Some(true));
         assert_eq!(settings.ai.agent.provider, AgentProvider::Claude);
         assert_eq!(settings.ai.api.provider, ApiProvider::Openrouter);
     }
@@ -339,7 +340,7 @@ api_key_env = "OPENROUTER_API_KEY"
         let path = directory.path().join("config.toml");
         fs::write(
             &path,
-            "# keep this comment\nmouse = false\n\n[ai]\nenabled = false\nmode = \"local\"\n",
+            "# keep this comment\nmouse = false\n\n[ai]\nenabled = false\nmode = \"local\"\nemoji = true\n",
         )
         .unwrap();
         let mut settings = Settings::load(Some(&path)).unwrap();
@@ -354,6 +355,7 @@ api_key_env = "OPENROUTER_API_KEY"
         assert!(saved.contains("# keep this comment"));
         assert!(saved.contains("mouse = false"));
         assert!(saved.contains("model = \"test-model\""));
+        assert!(!saved.contains("emoji"));
         assert!(!saved.to_ascii_lowercase().contains("api_key ="));
         let loaded = Settings::load(Some(&path)).unwrap();
         assert!(loaded.ai.enabled);
