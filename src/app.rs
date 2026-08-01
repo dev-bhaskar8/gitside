@@ -2570,6 +2570,7 @@ mod tests {
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.active_mut().github_state = GitHubConnectionState::NoRemote;
         app.active_mut().remotes.clear();
+        app.active_mut().status.branch.head = Some("main".into());
         app.active_mut().status.branch.upstream = None;
 
         app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE))
