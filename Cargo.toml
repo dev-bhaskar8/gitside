@@ -2,6 +2,7 @@
 name = "gitside"
 version = "0.1.0"
 edition = "2024"
+authors = ["dev-bhaskar8 <vaas.ygg@gmail.com>"]
 description = "A VS Code-inspired source control panel for the terminal"
 license = "MIT"
 rust-version = "1.85"
@@ -11,6 +12,21 @@ homepage = "https://dev-bhaskar8.github.io/gitside/"
 documentation = "https://dev-bhaskar8.github.io/gitside/docs/"
 keywords = ["git", "terminal", "tui", "source-control", "tmux"]
 categories = ["command-line-utilities", "development-tools"]
+publish = ["crates-io"]
+include = [
+    "src/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+]
+
+[package.metadata.wix]
+upgrade-guid = "ACD41B7D-CEDB-44F6-9C02-255AB8E92FB6"
+path-guid = "F62DD601-1924-42A6-8CA7-E40959C52B22"
+license = false
+eula = false
 
 [[bin]]
 name = "gitside"
@@ -39,3 +55,8 @@ tempfile = "3.16"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

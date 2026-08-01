@@ -1,0 +1,21 @@
+# Maintainer: dev-bhaskar8 <vaas.ygg@gmail.com>
+pkgname=gitside-bin
+pkgver=__VERSION__
+pkgrel=1
+pkgdesc='VS Code-inspired source control panel for the terminal'
+arch=('x86_64' 'aarch64')
+url='https://dev-bhaskar8.github.io/gitside/'
+license=('MIT')
+depends=('git')
+provides=('gitside')
+conflicts=('gitside')
+source_x86_64=("gitside-${pkgver}-x86_64.tar.xz::https://github.com/dev-bhaskar8/gitside/releases/download/v${pkgver}/gitside-x86_64-unknown-linux-gnu.tar.xz")
+source_aarch64=("gitside-${pkgver}-aarch64.tar.xz::https://github.com/dev-bhaskar8/gitside/releases/download/v${pkgver}/gitside-aarch64-unknown-linux-gnu.tar.xz")
+sha256sums_x86_64=('__X64_LINUX_SHA256__')
+sha256sums_aarch64=('__ARM64_LINUX_SHA256__')
+
+package() {
+  install -Dm755 gitside "$pkgdir/usr/bin/gitside"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

@@ -29,14 +29,27 @@
 
 ## Install
 
-Gitside currently installs from source. You need Rust 1.85+ and Git 2.30+.
+Prebuilt packages are published for macOS, Linux, and Windows with each stable
+release. Git 2.30+ is required at runtime.
 
 ```sh
-git clone https://github.com/dev-bhaskar8/gitside.git
-cd gitside
-cargo install --locked --path .
-gitside
+# macOS or Linux
+brew install dev-bhaskar8/tap/gitside
+
+# Any platform with Rust 1.85+
+cargo install gitside --locked
 ```
+
+```powershell
+# Windows
+winget install DevBhaskar8.Gitside
+```
+
+You can also use the signed [release installers](https://github.com/dev-bhaskar8/gitside/releases),
+Scoop, Chocolatey, npm, AUR, Nix, Snap, `.deb`, or `.rpm`. The registry commands
+become active with the first stable release; see the
+[installation matrix](docs/distribution.md#installation-matrix) for every command
+and its publication status.
 
 Pass a repository path from anywhere:
 
@@ -83,6 +96,7 @@ or pushes a remote repository automatically.
 - [Platform support](docs/platforms.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Architecture](docs/architecture.md)
+- [Packages and releases](docs/distribution.md)
 
 ## Support Gitside
 
