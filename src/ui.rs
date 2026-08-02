@@ -2772,7 +2772,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_staged_tab_stop_remains_visibly_focused_in_compact_layout() {
+    async fn empty_staged_selection_state_remains_visibly_focused() {
         let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.active_mut().status.staged.clear();
@@ -2812,7 +2812,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(output.contains("Stashes (0)"));
+        assert!(output.contains(&format!("Stashes ({})", app.active().stashes.len())));
         assert!(output.contains("A apply"));
         assert!(output.contains("P pop"));
         assert!(output.contains("X drop"));

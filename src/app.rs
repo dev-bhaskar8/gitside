@@ -1642,27 +1642,20 @@ impl App {
 
     fn search_text(&self, index: usize) -> String {
         match self.focus {
-            Focus::Changes if !self.active().status.conflicts.is_empty() => self
-                .active()
-                .status
-                .conflicts
-                .get(index)
-                .map(|change| change.path.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            Focus::Changes => self
-                .active()
-                .status
-                .unstaged
-                .get(index)
-                .map(|change| change.path.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            Focus::Staged => self
-                .active()
-                .status
-                .staged
-                .get(index)
-                .map(|change| change.path.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            Focus::Changes | Focus::Staged => {
+                let status = &self.active().status;
+                let working = if status.conflicts.is_empty() {
+                    &status.unstaged
+                } else {
+                    &status.conflicts
+                };
+                status
+                    .staged
+                    .get(index)
+                    .or_else(|| working.get(index.saturating_sub(status.staged.len())))
+                    .map(|change| change.path.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            }
             Focus::Graph => self
                 .active()
                 .history
@@ -2892,10 +2885,9 @@ impl App {
     }
 
     async fn next_focus(&mut self, backwards: bool) {
-        const ORDER: [Focus; 9] = [
+        const ORDER: [Focus; 8] = [
             Focus::Commit,
             Focus::Changes,
-            Focus::Staged,
             Focus::Graph,
             Focus::Branches,
             Focus::Stashes,
@@ -2903,9 +2895,14 @@ impl App {
             Focus::GitHub,
             Focus::Ai,
         ];
+        let current_focus = if self.focus == Focus::Staged {
+            Focus::Changes
+        } else {
+            self.focus
+        };
         let current = ORDER
             .iter()
-            .position(|value| *value == self.focus)
+            .position(|value| *value == current_focus)
             .unwrap_or(0);
         let next = if backwards {
             current.checked_sub(1).unwrap_or(ORDER.len() - 1)
@@ -2958,6 +2955,12 @@ impl App {
     fn current_selection(&self) -> usize {
         match self.focus {
             Focus::Staged => self.selected_staged,
+            Focus::Changes => self
+                .active()
+                .status
+                .staged
+                .len()
+                .saturating_add(self.selected_change),
             Focus::Graph => self.selected_commit,
             Focus::Branches => self.selected_branch,
             Focus::Stashes => self.selected_stash,
@@ -2970,10 +2973,15 @@ impl App {
 
     fn current_len(&self) -> usize {
         match self.focus {
-            Focus::Changes if !self.active().status.conflicts.is_empty() => {
-                self.active().status.conflicts.len()
+            Focus::Changes | Focus::Staged => {
+                let status = &self.active().status;
+                status.staged.len()
+                    + if status.conflicts.is_empty() {
+                        status.unstaged.len()
+                    } else {
+                        status.conflicts.len()
+                    }
             }
-            Focus::Staged => self.active().status.staged.len(),
             Focus::Graph => self.active().history.len(),
             Focus::Branches => self.active().branches.len(),
             Focus::Stashes => self.active().stashes.len(),
@@ -2988,7 +2996,16 @@ impl App {
     fn set_selection(&mut self, value: usize) {
         let clamped = value.min(self.current_len().saturating_sub(1));
         match self.focus {
-            Focus::Staged => self.selected_staged = clamped,
+            Focus::Changes | Focus::Staged => {
+                let staged_len = self.active().status.staged.len();
+                if clamped < staged_len {
+                    self.focus = Focus::Staged;
+                    self.selected_staged = clamped;
+                } else {
+                    self.focus = Focus::Changes;
+                    self.selected_change = clamped.saturating_sub(staged_len);
+                }
+            }
             Focus::Graph => self.selected_commit = clamped,
             Focus::Branches => self.selected_branch = clamped,
             Focus::Stashes => self.selected_stash = clamped,
@@ -3855,6 +3872,60 @@ mod tests {
         assert_eq!(app.focus, Focus::Ai);
         app.next_focus(false).await;
         assert_eq!(app.focus, Focus::Commit);
+    }
+
+    #[tokio::test]
+    async fn combined_changes_has_one_tab_stop() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+
+        app.focus = Focus::Changes;
+        app.next_focus(false).await;
+        assert_eq!(app.focus, Focus::Graph);
+
+        app.focus = Focus::Staged;
+        app.next_focus(false).await;
+        assert_eq!(app.focus, Focus::Graph);
+
+        app.focus = Focus::Staged;
+        app.next_focus(true).await;
+        assert_eq!(app.focus, Focus::Commit);
+    }
+
+    #[tokio::test]
+    async fn arrows_cross_the_staged_and_unstaged_boundary() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.active_mut().status.staged = vec![crate::model::Change {
+            path: "staged.rs".into(),
+            original_path: None,
+            kind: crate::model::ChangeKind::Modified,
+            staged: true,
+        }];
+        app.active_mut().status.unstaged = vec![crate::model::Change {
+            path: "working.rs".into(),
+            original_path: None,
+            kind: crate::model::ChangeKind::Modified,
+            staged: false,
+        }];
+        app.focus = Focus::Staged;
+        app.selected_staged = 0;
+
+        app.move_selection(1);
+        assert_eq!(app.focus, Focus::Changes);
+        assert_eq!(app.selected_change, 0);
+        assert_eq!(
+            app.selected_change().unwrap().path,
+            PathBuf::from("working.rs")
+        );
+
+        app.move_selection(-1);
+        assert_eq!(app.focus, Focus::Staged);
+        assert_eq!(app.selected_staged, 0);
+        assert_eq!(
+            app.selected_change().unwrap().path,
+            PathBuf::from("staged.rs")
+        );
     }
 
     #[tokio::test]
