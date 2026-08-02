@@ -551,13 +551,9 @@ fn render_combined_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     };
     let has_conflicts = !app.active().status.conflicts.is_empty();
     let focused = matches!(app.focus, Focus::Changes | Focus::Staged);
-    let separator = usize::from(!staged.is_empty() && !working.is_empty());
     let selected = match app.focus {
         Focus::Staged => app.selected_staged,
-        Focus::Changes => staged
-            .len()
-            .saturating_add(separator)
-            .saturating_add(app.selected_change),
+        Focus::Changes => staged.len().saturating_add(app.selected_change),
         _ => 0,
     };
     let total = staged.len().saturating_add(working.len());
@@ -571,30 +567,24 @@ fn render_combined_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         format!(" Changes ({total} · S{} U{}) ", staged.len(), working.len())
     };
     let visible = area.height.saturating_sub(2) as usize;
-    let mut rows = staged
+    let rows = staged
         .iter()
         .enumerate()
-        .map(|(index, change)| Some((true, index, change)))
+        .map(|(index, change)| (true, index, change))
+        .chain(
+            working
+                .iter()
+                .enumerate()
+                .map(|(index, change)| (false, index, change)),
+        )
         .collect::<Vec<_>>();
-    if separator == 1 {
-        rows.push(None);
-    }
-    rows.extend(
-        working
-            .iter()
-            .enumerate()
-            .map(|(index, change)| Some((false, index, change))),
-    );
     let offset = viewport_start(selected, rows.len(), visible);
     let items = rows
         .iter()
         .enumerate()
         .skip(offset)
         .take(visible)
-        .map(|(row_index, row)| {
-            let Some((is_staged, _, change)) = row else {
-                return ListItem::new("");
-            };
+        .map(|(row_index, (is_staged, _, change))| {
             let selected_row = focused && selected == row_index;
             let scope = if *is_staged {
                 "S"
@@ -634,10 +624,7 @@ fn render_combined_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Focus::Changes
         }),
     });
-    for (row, item) in rows.iter().skip(offset).take(visible).enumerate() {
-        let Some((is_staged, index, _)) = item else {
-            continue;
-        };
+    for (row, (is_staged, index, _)) in rows.iter().skip(offset).take(visible).enumerate() {
         app.hits.push(HitRegion {
             rect: Rect::new(
                 area.x + 1,
@@ -3279,7 +3266,7 @@ mod tests {
             })
             .unwrap()
             .rect;
-        assert_eq!(unstaged_hit.y, staged_hit.y + 2);
+        assert_eq!(unstaged_hit.y, staged_hit.y + 1);
 
         app.change_activity = Some(crate::app::ChangeActivity {
             path: "working.rs".into(),
@@ -3306,6 +3293,7 @@ mod tests {
         let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.focus = Focus::Changes;
+        app.active_mut().status.staged.clear();
         app.active_mut().status.conflicts = vec![Change {
             path: "conflict.txt".into(),
             original_path: None,
