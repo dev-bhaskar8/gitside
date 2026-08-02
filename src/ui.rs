@@ -551,9 +551,13 @@ fn render_combined_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     };
     let has_conflicts = !app.active().status.conflicts.is_empty();
     let focused = matches!(app.focus, Focus::Changes | Focus::Staged);
+    let separator = usize::from(!staged.is_empty() && !working.is_empty());
     let selected = match app.focus {
         Focus::Staged => app.selected_staged,
-        Focus::Changes => staged.len().saturating_add(app.selected_change),
+        Focus::Changes => staged
+            .len()
+            .saturating_add(separator)
+            .saturating_add(app.selected_change),
         _ => 0,
     };
     let total = staged.len().saturating_add(working.len());
@@ -567,24 +571,30 @@ fn render_combined_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         format!(" Changes ({total} · S{} U{}) ", staged.len(), working.len())
     };
     let visible = area.height.saturating_sub(2) as usize;
-    let offset = viewport_start(selected, total, visible);
-    let rows = staged
+    let mut rows = staged
         .iter()
         .enumerate()
-        .map(|(index, change)| (true, index, change))
-        .chain(
-            working
-                .iter()
-                .enumerate()
-                .map(|(index, change)| (false, index, change)),
-        )
+        .map(|(index, change)| Some((true, index, change)))
         .collect::<Vec<_>>();
+    if separator == 1 {
+        rows.push(None);
+    }
+    rows.extend(
+        working
+            .iter()
+            .enumerate()
+            .map(|(index, change)| Some((false, index, change))),
+    );
+    let offset = viewport_start(selected, rows.len(), visible);
     let items = rows
         .iter()
         .enumerate()
         .skip(offset)
         .take(visible)
-        .map(|(row_index, (is_staged, _, change))| {
+        .map(|(row_index, row)| {
+            let Some((is_staged, _, change)) = row else {
+                return ListItem::new("");
+            };
             let selected_row = focused && selected == row_index;
             let scope = if *is_staged {
                 "S"
@@ -593,10 +603,16 @@ fn render_combined_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             } else {
                 "U"
             };
+            let activity = app
+                .change_activity
+                .as_ref()
+                .filter(|activity| activity.path == change.path && activity.staging != *is_staged)
+                .map(|activity| ai_spinner(activity.started));
             ListItem::new(scoped_change_line(
                 change,
                 area.width.saturating_sub(4),
                 scope,
+                activity,
             ))
             .style(if selected_row {
                 selection_style()
@@ -618,7 +634,10 @@ fn render_combined_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Focus::Changes
         }),
     });
-    for (row, (is_staged, index, _)) in rows.iter().skip(offset).take(visible).enumerate() {
+    for (row, item) in rows.iter().skip(offset).take(visible).enumerate() {
+        let Some((is_staged, index, _)) = item else {
+            continue;
+        };
         app.hits.push(HitRegion {
             rect: Rect::new(
                 area.x + 1,
@@ -1327,8 +1346,7 @@ fn contextual_footer_hint(
             Focus::Commit => " F1 Help · Ctrl+G Generate",
             Focus::Changes if has_conflicts => " ? Help · O/I/B Resolve",
             Focus::Changes if has_operation => " ? Help · C Continue",
-            Focus::Changes => " ? Help · Space Stage",
-            Focus::Staged => " ? Help · Space Unstage",
+            Focus::Changes | Focus::Staged => " ? Help · Space Stage/unstage",
             Focus::Graph => " ? Help · Enter View",
             Focus::Branches => " ? Help · Enter Switch",
             Focus::Stashes => " ? Help · A Apply",
@@ -1342,8 +1360,7 @@ fn contextual_footer_hint(
         Focus::Commit => " F1 Help · Ctrl+G Generate · Ctrl+Enter Commit",
         Focus::Changes if has_conflicts => " ? Help · O Current · I Incoming · B Both",
         Focus::Changes if has_operation => " ? Help · C Continue · S Skip · A Abort",
-        Focus::Changes => " ? Help · Space Stage · e Diff · E Lines",
-        Focus::Staged => " ? Help · Space Unstage · e Diff · E Lines",
+        Focus::Changes | Focus::Staged => " ? Help · Space Stage/unstage · e Diff · E Lines",
         Focus::Graph => " ? Help · Enter View · y Pick · v Revert",
         Focus::Branches => " ? Help · Enter Switch · n New · x Delete",
         Focus::Stashes => " ? Help · Enter View · A Apply · P Pop",
@@ -1912,13 +1929,9 @@ fn help_text(
             "Git operation — current panel",
             "  C / S / A      Continue/skip/abort operation\n  Enter          Preview selected change",
         ),
-        Focus::Changes => (
+        Focus::Changes | Focus::Staged => (
             "Changes — current panel",
-            "  j/k or arrows  Move\n  Space          Stage file\n  Enter          Preview diff\n  a              Stage all\n  d              Discard\n  e              External old/new difftool\n  E              Interactive line staging\n  o              Open working file",
-        ),
-        Focus::Staged => (
-            "Staged — current panel",
-            "  j/k or arrows  Move\n  Space          Unstage file\n  Enter          Preview diff\n  u              Unstage all\n  e              External old/new difftool\n  E              Interactive line unstaging\n  o              Open working file",
+            "  j/k or arrows  Move across staged/unstaged\n  Space          Stage/unstage selected file\n  Enter          Preview diff\n  a / u          Stage/unstage all\n  d              Discard unstaged file\n  e              External old/new difftool\n  E              Interactive line staging\n  o              Open working file",
         ),
         Focus::Graph => (
             "Graph — current panel",
@@ -1959,7 +1972,12 @@ fn help_text(
     )
 }
 
-fn scoped_change_line(change: &Change, width: u16, scope: &'static str) -> Line<'static> {
+fn scoped_change_line(
+    change: &Change,
+    width: u16,
+    scope: &'static str,
+    activity: Option<char>,
+) -> Line<'static> {
     let color = match change.kind {
         ChangeKind::Added | ChangeKind::Untracked => GREEN,
         ChangeKind::Deleted => RED,
@@ -1977,10 +1995,14 @@ fn scoped_change_line(change: &Change, width: u16, scope: &'static str) -> Line<
             Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
         ));
     }
+    let badge = activity.map_or_else(
+        || change.kind.badge().to_owned(),
+        |spinner| spinner.to_string(),
+    );
     spans.extend([
         Span::styled(
-            format!("{} ", change.kind.badge()),
-            Style::default().fg(color),
+            format!("{badge} "),
+            Style::default().fg(if activity.is_some() { BLUE } else { color }),
         ),
         Span::raw(display),
     ]);
@@ -3229,20 +3251,54 @@ mod tests {
         assert!(output.contains("S A staged.rs"));
         assert!(output.contains("U M working.rs"));
         assert!(!output.contains("Staged Changes"));
-        assert!(app.hits.iter().any(|hit| matches!(
-            hit.action,
-            UiAction::SelectChange {
-                staged: true,
-                index: 0
-            }
-        )));
-        assert!(app.hits.iter().any(|hit| matches!(
-            hit.action,
-            UiAction::SelectChange {
-                staged: false,
-                index: 0
-            }
-        )));
+        let staged_hit = app
+            .hits
+            .iter()
+            .find(|hit| {
+                matches!(
+                    hit.action,
+                    UiAction::SelectChange {
+                        staged: true,
+                        index: 0
+                    }
+                )
+            })
+            .unwrap()
+            .rect;
+        let unstaged_hit = app
+            .hits
+            .iter()
+            .find(|hit| {
+                matches!(
+                    hit.action,
+                    UiAction::SelectChange {
+                        staged: false,
+                        index: 0
+                    }
+                )
+            })
+            .unwrap()
+            .rect;
+        assert_eq!(unstaged_hit.y, staged_hit.y + 2);
+
+        app.change_activity = Some(crate::app::ChangeActivity {
+            path: "working.rs".into(),
+            staging: true,
+            started: std::time::Instant::now(),
+        });
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+                .iter()
+                .any(|spinner| output.contains(&format!("U {spinner}")))
+        );
     }
 
     #[tokio::test]
@@ -3420,7 +3476,7 @@ mod tests {
     fn footer_hints_are_contextual_and_unicode_truncation_is_safe() {
         assert_eq!(
             contextual_footer_hint(Focus::Changes, 40, false, false),
-            " ? Help · Space Stage"
+            " ? Help · Space Stage/unstage"
         );
         assert_eq!(
             contextual_footer_hint(Focus::Graph, 80, false, false),

@@ -291,6 +291,7 @@ pub struct App {
     background_task: Option<JoinHandle<BackgroundResult>>,
     pub ai_generation_state: AiGenerationState,
     pub button_activity: Option<(ButtonActivity, Instant)>,
+    pub change_activity: Option<ChangeActivity>,
     last_search: Option<String>,
     commit_history_index: Option<usize>,
     commit_history_draft: String,
@@ -306,6 +307,12 @@ enum BackgroundResult {
     Commit {
         repo_index: usize,
         success: &'static str,
+        result: Result<()>,
+    },
+    StageChange {
+        repo_index: usize,
+        path: PathBuf,
+        was_staged: bool,
         result: Result<()>,
     },
     History {
@@ -355,6 +362,13 @@ pub enum ButtonActivity {
     PublishGitHub,
     RemoveAiCredential,
     Commit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeActivity {
+    pub path: PathBuf,
+    pub staging: bool,
+    pub started: Instant,
 }
 
 struct RepoSnapshot {
@@ -436,6 +450,7 @@ impl App {
             background_task: None,
             ai_generation_state: AiGenerationState::Idle,
             button_activity: None,
+            change_activity: None,
             last_search: None,
             commit_history_index: None,
             commit_history_draft: String::new(),
@@ -546,6 +561,7 @@ impl App {
         };
         self.busy = false;
         self.button_activity = None;
+        self.change_activity = None;
         match task.await {
             Ok(BackgroundResult::Remote {
                 repo_index,
@@ -571,6 +587,42 @@ impl App {
                     self.focus = Focus::Changes;
                     self.refresh_repo(repo_index, false).await;
                     self.status_line = success.into();
+                }
+                Err(error) => self.report_error(error),
+            },
+            Ok(BackgroundResult::StageChange {
+                repo_index,
+                path,
+                was_staged,
+                result,
+            }) => match result {
+                Ok(()) => {
+                    self.refresh_repo(repo_index, false).await;
+                    if repo_index == self.active_repo {
+                        if was_staged {
+                            self.focus = Focus::Changes;
+                            let changes = if self.active().status.conflicts.is_empty() {
+                                &self.active().status.unstaged
+                            } else {
+                                &self.active().status.conflicts
+                            };
+                            if let Some(index) = changes.iter().position(|item| item.path == path) {
+                                self.selected_change = index;
+                            }
+                        } else {
+                            self.focus = Focus::Staged;
+                            if let Some(index) = self
+                                .active()
+                                .status
+                                .staged
+                                .iter()
+                                .position(|item| item.path == path)
+                            {
+                                self.selected_staged = index;
+                            }
+                        }
+                    }
+                    self.status_line = if was_staged { "Unstaged" } else { "Staged" }.into();
                 }
                 Err(error) => self.report_error(error),
             },
@@ -1757,17 +1809,42 @@ impl App {
             self.toggle_preview_hunk().await;
             return;
         }
+        if self.background_task.is_some() {
+            self.status_line = "Another Git operation is still running".into();
+            return;
+        }
         let Some(change) = self.selected_change().cloned() else {
             return;
         };
+        let repo_index = self.active_repo;
         let repo = self.active().repo.clone();
-        let result = if change.staged {
-            repo.unstage(&change.path).await
+        let path = change.path;
+        let was_staged = change.staged;
+        self.busy = true;
+        self.status_line = if was_staged {
+            "Unstaging…"
         } else {
-            repo.stage(&change.path).await
-        };
-        self.finish_action(result, if change.staged { "Unstaged" } else { "Staged" })
-            .await;
+            "Staging…"
+        }
+        .into();
+        self.change_activity = Some(ChangeActivity {
+            path: path.clone(),
+            staging: !was_staged,
+            started: Instant::now(),
+        });
+        self.background_task = Some(tokio::spawn(async move {
+            let result = if was_staged {
+                repo.unstage(&path).await
+            } else {
+                repo.stage(&path).await
+            };
+            BackgroundResult::StageChange {
+                repo_index,
+                path,
+                was_staged,
+                result,
+            }
+        }));
     }
 
     fn conflicts_focused(&self) -> bool {
@@ -3925,6 +4002,84 @@ mod tests {
         assert_eq!(
             app.selected_change().unwrap().path,
             PathBuf::from("staged.rs")
+        );
+    }
+
+    #[tokio::test]
+    async fn space_stages_and_unstages_in_the_background() {
+        let directory = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "Gitside Test"],
+            vec!["config", "user.email", "gitside@example.invalid"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(directory.path())
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            );
+        }
+        let file = directory.path().join("change.rs");
+        fs::write(&file, "before\n").unwrap();
+        for args in [vec!["add", "change.rs"], vec!["commit", "-qm", "Initial"]] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(directory.path())
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            );
+        }
+        fs::write(&file, "after\n").unwrap();
+        let cli = Cli::try_parse_from(["gitside", directory.path().to_str().unwrap()]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Changes;
+
+        app.toggle_stage().await;
+        assert!(app.busy);
+        assert!(matches!(
+            app.change_activity,
+            Some(ChangeActivity { staging: true, .. })
+        ));
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+        assert!(app.poll_background().await);
+        assert!(app.change_activity.is_none());
+        assert_eq!(app.focus, Focus::Staged);
+        assert_eq!(
+            app.selected_change().unwrap().path,
+            PathBuf::from("change.rs")
+        );
+
+        app.toggle_stage().await;
+        assert!(matches!(
+            app.change_activity,
+            Some(ChangeActivity { staging: false, .. })
+        ));
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+        assert!(app.poll_background().await);
+        assert!(app.change_activity.is_none());
+        assert_eq!(app.focus, Focus::Changes);
+        assert_eq!(
+            app.selected_change().unwrap().path,
+            PathBuf::from("change.rs")
         );
     }
 
