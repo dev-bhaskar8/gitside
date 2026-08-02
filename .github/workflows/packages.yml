@@ -13,6 +13,18 @@ on:
         description: Optional source ref for a targeted package retry
         required: false
         type: string
+      target:
+        description: Registry target for a targeted retry
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - chocolatey
+          - scoop
+          - aur
+          - winget
+          - snap
 
 permissions:
   contents: write
@@ -43,7 +55,11 @@ jobs:
         run: |
           set -euo pipefail
           package_version=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name == "gitside") | .version')
-          test "$RELEASE_TAG" = "v$package_version"
+          if test -n "${{ inputs.source_ref }}"; then
+            echo "Using ${{ inputs.source_ref }} to rebuild manifests for $RELEASE_TAG"
+          else
+            test "$RELEASE_TAG" = "v$package_version"
+          fi
       - name: Download canonical release assets
         shell: bash
         run: |
@@ -89,6 +105,7 @@ jobs:
   scoop:
     name: Publish Scoop bucket
     needs: package
+    if: ${{ inputs.target == '' || inputs.target == 'all' || inputs.target == 'scoop' }}
     runs-on: ubuntu-24.04
     environment: registry
     steps:
@@ -114,7 +131,7 @@ jobs:
   chocolatey:
     name: Publish Chocolatey package
     needs: package
-    if: ${{ vars.ENABLE_CHOCOLATEY == 'true' }}
+    if: ${{ (inputs.target == '' || inputs.target == 'all' || inputs.target == 'chocolatey') && vars.ENABLE_CHOCOLATEY == 'true' }}
     runs-on: windows-2025
     environment: registry
     env:
@@ -138,7 +155,7 @@ jobs:
   aur:
     name: Publish AUR package
     needs: package
-    if: ${{ vars.ENABLE_AUR == 'true' }}
+    if: ${{ (inputs.target == '' || inputs.target == 'all' || inputs.target == 'aur') && vars.ENABLE_AUR == 'true' }}
     runs-on: ubuntu-24.04
     environment: registry
     steps:
@@ -170,6 +187,7 @@ jobs:
   winget:
     name: Submit WinGet manifests
     needs: package
+    if: ${{ inputs.target == '' || inputs.target == 'all' || inputs.target == 'winget' }}
     runs-on: ubuntu-24.04
     environment: registry
     env:
@@ -215,7 +233,7 @@ jobs:
   snap:
     name: Publish Snap (${{ matrix.arch }})
     needs: package
-    if: ${{ vars.ENABLE_SNAP == 'true' }}
+    if: ${{ (inputs.target == '' || inputs.target == 'all' || inputs.target == 'snap') && vars.ENABLE_SNAP == 'true' }}
     environment: registry
     strategy:
       fail-fast: false
