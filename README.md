@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="site/assets/gitside-showcase.png" alt="Gitside shown full-screen, in a narrow pane, and in a real Ghostty and tmux workflow" width="100%" />
+  <img src="site/assets/gitside-showcase-1600.webp" alt="Gitside shown full-screen, in a narrow pane, and in a real Ghostty and tmux workflow" width="100%" />
 </p>
 
 <p align="center"><sub>Real Gitside sessions: narrow pane, wide terminal, and a live Ghostty/tmux workflow.</sub></p>
