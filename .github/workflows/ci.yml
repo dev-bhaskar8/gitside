@@ -45,7 +45,7 @@ jobs:
           tar -xzf actionlint_1.7.12_linux_amd64.tar.gz actionlint
           sudo install -m755 actionlint /usr/local/bin/actionlint
           sudo apt-get update
-          sudo apt-get install --yes shellcheck
+          sudo apt-get install --yes ripgrep shellcheck
           curl --proto '=https' --tlsv1.2 -LsSf \
             https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh
       - name: Validate scripts and package templates
