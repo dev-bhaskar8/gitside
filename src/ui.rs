@@ -597,7 +597,9 @@ fn render_combined_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 .change_activity
                 .as_ref()
                 .filter(|activity| {
-                    activity.paths.contains(&change.path) && activity.staging != *is_staged
+                    activity.repo_index == app.active_repo_index()
+                        && activity.paths.contains(&change.path)
+                        && activity.staging != *is_staged
                 })
                 .map(|activity| ai_spinner(activity.started));
             ListItem::new(scoped_change_line(
@@ -2056,16 +2058,29 @@ fn centered_sized_rect(width: u16, height: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
     use ratatui::{Terminal, backend::TestBackend};
 
     use crate::{
-        config::{AiMode, Cli, Settings},
+        config::{AiMode, Settings},
         model::Branch,
     };
+
+    fn test_commits(count: usize) -> Vec<crate::model::Commit> {
+        (0..count)
+            .map(|index| crate::model::Commit {
+                oid: format!("{index:040x}"),
+                parents: Vec::new(),
+                decorations: Vec::new(),
+                subject: format!("Commit {index}"),
+                author: "Gitside Test".into(),
+                relative_date: "now".into(),
+                pushed: false,
+            })
+            .collect()
+    }
 
     #[test]
     fn middle_truncation_preserves_ends() {
@@ -2078,8 +2093,7 @@ mod tests {
 
     #[tokio::test]
     async fn clicking_empty_change_panel_space_moves_focus_from_commit() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Commit;
         let mut terminal = Terminal::new(TestBackend::new(50, 40)).unwrap();
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
@@ -2121,8 +2135,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_panel_positions_the_ai_generator_without_overlap() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.settings.ai.enabled = true;
         for width in [14, 24, 50, 74] {
             let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
@@ -2151,8 +2164,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_button_animates_during_background_commit() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.button_activity = Some((ButtonActivity::Commit, std::time::Instant::now()));
         let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
         terminal
@@ -2176,8 +2188,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_editor_keeps_its_cursor_visible_and_scrolls_long_drafts() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Commit;
         app.commit_message = (1..=10)
             .map(|line| format!("Commit message line {line}"))
@@ -2226,11 +2237,10 @@ mod tests {
 
     #[tokio::test]
     async fn ai_panel_explains_the_selected_mode_in_a_narrow_pane() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut settings = Settings::default();
         settings.ai.enabled = true;
         settings.ai.mode = AiMode::Agent;
-        let mut app = App::new(cli, settings).await.unwrap();
+        let mut app = App::isolated_test(settings).await;
         app.focus = Focus::Ai;
         let mut terminal = Terminal::new(TestBackend::new(32, 20)).unwrap();
         terminal
@@ -2281,8 +2291,7 @@ mod tests {
 
     #[tokio::test]
     async fn ai_setup_lists_other_providers_with_click_targets() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Ai;
         app.settings.ai.mode = AiMode::Agent;
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
@@ -2335,8 +2344,7 @@ mod tests {
 
     #[tokio::test]
     async fn ai_setup_shows_muted_examples_only_for_empty_fields() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Ai;
         app.settings.ai.mode = AiMode::Agent;
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
@@ -2395,8 +2403,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_generate_button_shows_queued_and_animated_states() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Commit;
         app.settings.ai.enabled = true;
         let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
@@ -2438,8 +2445,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_key_is_only_shown_for_removable_credentials() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Ai;
         app.settings.ai.mode = AiMode::Api;
         let mut terminal = Terminal::new(TestBackend::new(32, 30)).unwrap();
@@ -2464,8 +2470,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_setup_masks_secrets_and_exposes_clickable_navigation() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Ai;
         app.settings.ai.mode = AiMode::Api;
 
@@ -2510,10 +2515,9 @@ mod tests {
 
     #[tokio::test]
     async fn all_ai_panel_controls_remain_clickable_at_supported_narrow_widths() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut settings = Settings::default();
         settings.ai.enabled = true;
-        let mut app = App::new(cli, settings).await.unwrap();
+        let mut app = App::isolated_test(settings).await;
         app.focus = Focus::Ai;
 
         for width in [14, 20, 24, 32, 50] {
@@ -2579,8 +2583,7 @@ mod tests {
 
     #[tokio::test]
     async fn wide_ai_controls_remain_compact_and_show_shortcuts() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Ai;
         let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
         terminal
@@ -2645,8 +2648,7 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_ai_toggle_is_hollow_and_enabled_toggle_is_filled() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Ai;
 
         for (width, expected) in [(80, "[ e AI off ]"), (32, "[e]")] {
@@ -2688,8 +2690,7 @@ mod tests {
 
     #[tokio::test]
     async fn active_ai_mode_is_hollow_in_wide_and_compact_layouts() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Ai;
 
         for (mode, wide_label, compact_label) in [
@@ -2728,8 +2729,7 @@ mod tests {
 
     #[tokio::test]
     async fn github_states_are_accurate_and_publish_is_contextual_and_clickable() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::GitHub;
         let mut terminal = Terminal::new(TestBackend::new(50, 30)).unwrap();
 
@@ -2784,8 +2784,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_staged_selection_state_remains_visibly_focused() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.active_mut().status.staged.clear();
         app.focus = Focus::Staged;
         let mut terminal = Terminal::new(TestBackend::new(50, 40)).unwrap();
@@ -2810,8 +2809,7 @@ mod tests {
 
     #[tokio::test]
     async fn narrow_stash_panel_wraps_actions_inside_the_border() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Stashes;
         let mut terminal = Terminal::new(TestBackend::new(24, 40)).unwrap();
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
@@ -2846,8 +2844,7 @@ mod tests {
 
     #[tokio::test]
     async fn outlined_remote_buttons_fit_supported_widths() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.active_mut().status.branch.upstream = Some("origin/main".into());
 
         for width in [14, 20, 24, 34, 50, 74, 100] {
@@ -2906,8 +2903,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_button_animates_without_changing_its_hit_target() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.active_mut().status.branch.upstream = Some("origin/main".into());
         let mut terminal = Terminal::new(TestBackend::new(80, 3)).unwrap();
 
@@ -2950,8 +2946,7 @@ mod tests {
 
     #[tokio::test]
     async fn gitside_wordmark_uses_the_accent_color() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         let mut terminal = Terminal::new(TestBackend::new(80, 3)).unwrap();
         terminal
             .draw(|frame| render_header(frame, &mut app, Rect::new(0, 0, 80, 3)))
@@ -2965,8 +2960,7 @@ mod tests {
 
     #[tokio::test]
     async fn long_header_never_hides_ahead_or_behind_counts() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.active_mut().status.branch.head =
             Some("feature/a-very-long-branch-name-that-needs-space".into());
         app.active_mut().status.branch.ahead = 9;
@@ -2997,8 +2991,7 @@ mod tests {
 
     #[tokio::test]
     async fn existing_push_control_adapts_to_publish_and_sync_states() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         let mut terminal = Terminal::new(TestBackend::new(50, 20)).unwrap();
 
         app.active_mut().status.branch.upstream = None;
@@ -3046,8 +3039,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_overlay_stays_compact_in_a_tall_narrow_pane() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.overlay = Some(Overlay::Search {
             value: String::new(),
         });
@@ -3071,8 +3063,7 @@ mod tests {
 
     #[tokio::test]
     async fn help_starts_with_context_and_scrolls_to_complete_reference() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Branches;
         app.overlay = Some(Overlay::Help {
             scroll: 0,
@@ -3176,8 +3167,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_editor_opens_contextual_help_without_stealing_punctuation() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Commit;
 
         app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT))
@@ -3211,8 +3201,7 @@ mod tests {
 
     #[tokio::test]
     async fn changes_panel_combines_and_labels_staged_and_unstaged_rows() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Changes;
         app.active_mut().status.staged = vec![Change {
             path: "staged.rs".into(),
@@ -3280,6 +3269,7 @@ mod tests {
         assert_eq!(unstaged_hit.y, staged_hit.y + 1);
 
         app.change_activity = Some(crate::app::ChangeActivity {
+            repo_index: app.active_repo_index(),
             paths: vec!["working.rs".into(), "second.rs".into()],
             staging: true,
             started: std::time::Instant::now(),
@@ -3301,12 +3291,23 @@ mod tests {
                 .symbol();
             assert!(spinner_frames.contains(&badge));
         }
+
+        app.change_activity.as_mut().unwrap().repo_index += 1;
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(output.contains("U M working.rs"));
+        assert!(output.contains("U M second.rs"));
     }
 
     #[tokio::test]
     async fn conflicts_replace_changes_with_contextual_resolution_help() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Changes;
         app.active_mut().status.staged.clear();
         app.active_mut().status.conflicts = vec![Change {
@@ -3357,10 +3358,10 @@ mod tests {
 
     #[tokio::test]
     async fn graph_and_branch_viewports_scroll_and_preserve_absolute_click_targets() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         let mut terminal = Terminal::new(TestBackend::new(50, 20)).unwrap();
 
+        app.active_mut().history = test_commits(20);
         app.focus = Focus::Graph;
         app.selected_commit = app.active().history.len() - 1;
         let selected_commit = app.selected_commit;
@@ -3390,8 +3391,8 @@ mod tests {
 
     #[tokio::test]
     async fn graph_and_branch_markers_distinguish_published_items() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
+        app.active_mut().history = test_commits(2);
         app.active_mut().history[0].pushed = false;
         app.active_mut().history[1].pushed = true;
         let local_oid = app.active().history[0].oid[..7].to_owned();
@@ -3440,8 +3441,8 @@ mod tests {
 
     #[tokio::test]
     async fn mouse_wheel_focuses_the_panel_under_the_pointer() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
+        app.active_mut().history = test_commits(10);
         app.focus = Focus::Changes;
         let mut terminal = Terminal::new(TestBackend::new(50, 40)).unwrap();
         terminal.draw(|frame| render(frame, &mut app)).unwrap();

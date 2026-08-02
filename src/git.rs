@@ -329,16 +329,16 @@ impl GitRepo {
     }
 
     pub async fn stage(&self, path: &Path) -> Result<()> {
-        self.command(
-            [OsStr::new("add"), OsStr::new("--"), path.as_os_str()],
-            None,
-        )
-        .await?;
-        Ok(())
+        self.stage_paths(&[path.to_path_buf()]).await
     }
 
-    pub async fn stage_all(&self) -> Result<()> {
-        self.command(["add", "--all"], None).await?;
+    pub async fn stage_paths(&self, paths: &[PathBuf]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec![OsString::from("add"), OsString::from("--")];
+        args.extend(paths.iter().map(|path| path.as_os_str().to_owned()));
+        self.command(args, None).await?;
         Ok(())
     }
 
@@ -384,8 +384,10 @@ impl GitRepo {
         Ok(())
     }
 
-    pub async fn unstage_all(&self) -> Result<()> {
-        self.command(["reset", "-q"], None).await?;
+    pub async fn unstage_paths(&self, paths: &[PathBuf]) -> Result<()> {
+        for path in paths {
+            self.unstage(path).await?;
+        }
         Ok(())
     }
 
@@ -1115,6 +1117,27 @@ worktree /repo-feature\0HEAD def456\0branch refs/heads/feature\0locked reason\0\
         assert_eq!(repo.status().await.unwrap().unstaged.len(), 1);
         repo.drop_stash(&stashes[0].reference).await.unwrap();
         assert!(repo.stashes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn bulk_staging_only_adds_the_requested_snapshot_paths() {
+        let (directory, repo) = repository().await;
+        fs::write(directory.path().join("known.txt"), "known\n").unwrap();
+        fs::write(directory.path().join("late.txt"), "late\n").unwrap();
+
+        repo.stage_paths(&[PathBuf::from("known.txt")])
+            .await
+            .unwrap();
+        let status = repo.status().await.unwrap();
+
+        assert_eq!(status.staged.len(), 1);
+        assert_eq!(status.staged[0].path, PathBuf::from("known.txt"));
+        assert!(
+            status
+                .unstaged
+                .iter()
+                .any(|change| change.path == Path::new("late.txt"))
+        );
     }
 
     #[tokio::test]

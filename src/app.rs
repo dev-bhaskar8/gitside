@@ -296,6 +296,8 @@ pub struct App {
     commit_history_index: Option<usize>,
     commit_history_draft: String,
     credentials: CredentialStore,
+    #[cfg(test)]
+    _test_directory: Option<tempfile::TempDir>,
 }
 
 enum BackgroundResult {
@@ -315,6 +317,7 @@ enum BackgroundResult {
         staging: bool,
         bulk: bool,
         result: Result<()>,
+        snapshot: Box<Result<RepoSnapshot>>,
     },
     History {
         repo_index: usize,
@@ -367,6 +370,7 @@ pub enum ButtonActivity {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeActivity {
+    pub repo_index: usize,
     pub paths: Vec<PathBuf>,
     pub staging: bool,
     pub started: Instant,
@@ -456,11 +460,37 @@ impl App {
             commit_history_index: None,
             commit_history_draft: String::new(),
             credentials: CredentialStore::default(),
+            #[cfg(test)]
+            _test_directory: None,
         })
+    }
+
+    #[cfg(test)]
+    pub async fn isolated_test(settings: Settings) -> Self {
+        use clap::Parser;
+
+        let directory = tempfile::tempdir().expect("create isolated test repository");
+        let status = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(directory.path())
+            .status()
+            .await
+            .expect("start git init");
+        assert!(status.success(), "initialize isolated test repository");
+        let cli = Cli::try_parse_from(["gitside", directory.path().to_str().unwrap()]).unwrap();
+        let mut app = Self::new(cli, settings)
+            .await
+            .expect("create app for isolated test repository");
+        app._test_directory = Some(directory);
+        app
     }
 
     pub fn active(&self) -> &RepoView {
         &self.repos[self.active_repo]
+    }
+
+    pub fn active_repo_index(&self) -> usize {
+        self.active_repo
     }
 
     #[cfg(test)]
@@ -597,9 +627,15 @@ impl App {
                 staging,
                 bulk,
                 result,
-            }) => match result {
-                Ok(()) => {
-                    self.refresh_repo(repo_index, false).await;
+                snapshot,
+            }) => match (result, *snapshot) {
+                (Ok(()), Ok(snapshot)) => {
+                    let history_limit = self
+                        .repos
+                        .get(repo_index)
+                        .map(|view| view.history_limit)
+                        .unwrap_or(self.settings.graph_page_size);
+                    self.apply_snapshot(repo_index, history_limit, snapshot);
                     if repo_index == self.active_repo {
                         if staging {
                             self.focus = Focus::Staged;
@@ -634,7 +670,21 @@ impl App {
                     }
                     .into();
                 }
-                Err(error) => self.report_error(error),
+                (Ok(()), Err(error)) => {
+                    self.report_error(error.context("Git action succeeded, but refresh failed"));
+                }
+                (Err(error), Ok(snapshot)) => {
+                    let history_limit = self
+                        .repos
+                        .get(repo_index)
+                        .map(|view| view.history_limit)
+                        .unwrap_or(self.settings.graph_page_size);
+                    self.apply_snapshot(repo_index, history_limit, snapshot);
+                    self.report_error(error);
+                }
+                (Err(error), Err(refresh_error)) => self.report_error(error.context(format!(
+                    "Git action failed; repository refresh also failed: {refresh_error:#}"
+                ))),
             },
             Ok(BackgroundResult::History {
                 repo_index,
@@ -1826,34 +1876,40 @@ impl App {
         let Some(change) = self.selected_change().cloned() else {
             return;
         };
+        self.queue_change_operation(vec![change.path], !change.staged, false);
+    }
+
+    fn queue_change_operation(&mut self, paths: Vec<PathBuf>, staging: bool, bulk: bool) {
         let repo_index = self.active_repo;
         let repo = self.active().repo.clone();
-        let path = change.path;
-        let was_staged = change.staged;
+        let history_limit = self.active().history_limit;
         self.busy = true;
-        self.status_line = if was_staged {
-            "Unstaging…"
-        } else {
-            "Staging…"
+        self.status_line = match (staging, bulk) {
+            (true, true) => "Staging all changes…",
+            (false, true) => "Unstaging all changes…",
+            (true, false) => "Staging…",
+            (false, false) => "Unstaging…",
         }
         .into();
         self.change_activity = Some(ChangeActivity {
-            paths: vec![path.clone()],
-            staging: !was_staged,
+            repo_index,
+            paths: paths.clone(),
+            staging,
             started: Instant::now(),
         });
         self.background_task = Some(tokio::spawn(async move {
-            let result = if was_staged {
-                repo.unstage(&path).await
+            let result = if staging {
+                repo.stage_paths(&paths).await
             } else {
-                repo.stage(&path).await
+                repo.unstage_paths(&paths).await
             };
             BackgroundResult::StageChanges {
                 repo_index,
-                paths: vec![path],
-                staging: !was_staged,
-                bulk: false,
+                paths,
+                staging,
+                bulk,
                 result,
+                snapshot: Box::new(load_repo_snapshot(repo, history_limit).await),
             }
         }));
     }
@@ -2028,36 +2084,29 @@ impl App {
             self.status_line = "Another Git operation is still running".into();
             return;
         }
-        let paths = self
-            .active()
-            .status
+        let status = &self.active().status;
+        let paths = status
             .unstaged
             .iter()
-            .chain(self.active().status.conflicts.iter())
+            .filter(|change| {
+                !matches!(change.kind, crate::model::ChangeKind::Conflicted)
+                    && !status
+                        .conflicts
+                        .iter()
+                        .any(|conflict| conflict.path == change.path)
+            })
             .map(|change| change.path.clone())
             .collect::<Vec<_>>();
         if paths.is_empty() {
-            self.status_line = "No unstaged changes".into();
+            self.status_line = if status.conflicts.is_empty() {
+                "No unstaged changes"
+            } else {
+                "Resolve conflicts individually before staging them"
+            }
+            .into();
             return;
         }
-        let repo_index = self.active_repo;
-        let repo = self.active().repo.clone();
-        self.busy = true;
-        self.status_line = "Staging all changes…".into();
-        self.change_activity = Some(ChangeActivity {
-            paths: paths.clone(),
-            staging: true,
-            started: Instant::now(),
-        });
-        self.background_task = Some(tokio::spawn(async move {
-            BackgroundResult::StageChanges {
-                repo_index,
-                paths,
-                staging: true,
-                bulk: true,
-                result: repo.stage_all().await,
-            }
-        }));
+        self.queue_change_operation(paths, true, true);
     }
 
     async fn run_unstage_all(&mut self) {
@@ -2076,24 +2125,7 @@ impl App {
             self.status_line = "No staged changes".into();
             return;
         }
-        let repo_index = self.active_repo;
-        let repo = self.active().repo.clone();
-        self.busy = true;
-        self.status_line = "Unstaging all changes…".into();
-        self.change_activity = Some(ChangeActivity {
-            paths: paths.clone(),
-            staging: false,
-            started: Instant::now(),
-        });
-        self.background_task = Some(tokio::spawn(async move {
-            BackgroundResult::StageChanges {
-                repo_index,
-                paths,
-                staging: false,
-                bulk: true,
-                result: repo.unstage_all().await,
-            }
-        }));
+        self.queue_change_operation(paths, false, true);
     }
 
     async fn commit(&mut self, options: CommitOptions) {
@@ -3693,12 +3725,11 @@ mod tests {
 
     #[tokio::test]
     async fn github_publish_flow_is_contextual_editable_and_always_confirmed() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let settings = Settings {
             confirm_destructive: false,
             ..Settings::default()
         };
-        let mut app = App::new(cli, settings).await.unwrap();
+        let mut app = App::isolated_test(settings).await;
         app.focus = Focus::GitHub;
         app.active_mut().github_state = GitHubConnectionState::NoRemote;
         app.active_mut().remotes.clear();
@@ -3757,8 +3788,7 @@ mod tests {
 
     #[tokio::test]
     async fn publish_shortcut_creates_a_github_remote_when_none_exists() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.active_mut().github_state = GitHubConnectionState::NoRemote;
         app.active_mut().remotes.clear();
         app.active_mut().status.branch.head = Some("main".into());
@@ -3779,8 +3809,16 @@ mod tests {
 
     #[tokio::test]
     async fn commit_message_history_restores_the_users_draft() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
+        app.active_mut().history = vec![Commit {
+            oid: "a".repeat(40),
+            parents: Vec::new(),
+            decorations: Vec::new(),
+            subject: "Previous message".into(),
+            author: "Gitside Test".into(),
+            relative_date: "now".into(),
+            pushed: false,
+        }];
         app.commit_message = "draft message".into();
 
         app.recall_commit_message(-1);
@@ -3792,8 +3830,7 @@ mod tests {
 
     #[tokio::test]
     async fn control_u_and_control_backspace_clear_the_commit_message() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Commit;
         app.commit_message = "A long generated draft".into();
         app.commit_scroll = 4;
@@ -3821,8 +3858,7 @@ mod tests {
 
     #[tokio::test]
     async fn arrows_edit_at_the_cursor_in_every_text_input() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
 
         app.focus = Focus::Commit;
         for character in ['a', '💙', 'b'] {
@@ -3890,8 +3926,7 @@ mod tests {
 
     #[tokio::test]
     async fn control_c_quits_from_normal_commit_and_overlay_contexts() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         let control_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
 
         assert_eq!(app.handle_key(control_c).await, EventOutcome::Quit);
@@ -3966,10 +4001,9 @@ mod tests {
 
     #[tokio::test]
     async fn generation_requires_changes_and_preserves_the_draft() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut settings = Settings::default();
         settings.ai.enabled = true;
-        let mut app = App::new(cli, settings).await.unwrap();
+        let mut app = App::isolated_test(settings).await;
         app.active_mut().status.staged.clear();
         app.active_mut().status.unstaged.clear();
         app.commit_message = "Keep my draft".into();
@@ -3987,8 +4021,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_generation_preserves_the_existing_draft() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.commit_message = "Keep my draft".into();
         app.busy = true;
         app.background_task = Some(tokio::spawn(async {
@@ -4013,8 +4046,7 @@ mod tests {
 
     #[tokio::test]
     async fn tab_order_always_exposes_the_ai_panel() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::GitHub;
 
         app.next_focus(false).await;
@@ -4025,8 +4057,7 @@ mod tests {
 
     #[tokio::test]
     async fn combined_changes_has_one_tab_stop() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
 
         app.focus = Focus::Changes;
         app.next_focus(false).await;
@@ -4043,8 +4074,7 @@ mod tests {
 
     #[tokio::test]
     async fn arrows_cross_the_staged_and_unstaged_boundary() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.active_mut().status.staged = vec![crate::model::Change {
             path: "staged.rs".into(),
             original_path: None,
@@ -4196,9 +4226,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stage_all_never_marks_conflicts_resolved() {
+        let mut app = App::isolated_test(Settings::default()).await;
+        let conflict = crate::model::Change {
+            path: "conflict.txt".into(),
+            original_path: None,
+            kind: crate::model::ChangeKind::Conflicted,
+            staged: false,
+        };
+        app.active_mut().status.unstaged = vec![conflict.clone()];
+        app.active_mut().status.conflicts = vec![conflict];
+
+        app.run_stage_all().await;
+
+        assert!(app.background_task.is_none());
+        assert!(app.change_activity.is_none());
+        assert_eq!(
+            app.status_line,
+            "Resolve conflicts individually before staging them"
+        );
+    }
+
+    #[tokio::test]
     async fn ai_panel_controls_work_without_editing_configuration() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Ai;
 
         app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
@@ -4213,13 +4264,12 @@ mod tests {
     async fn agent_setup_wizard_saves_global_settings_after_confirmation() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.toml");
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut settings = Settings {
             config_path: Some(path.clone()),
             ..Settings::default()
         };
         settings.ai.mode = AiMode::Agent;
-        let mut app = App::new(cli, settings).await.unwrap();
+        let mut app = App::isolated_test(settings).await;
         app.focus = Focus::Ai;
 
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
@@ -4257,13 +4307,12 @@ mod tests {
     async fn agent_setup_wizard_supports_an_other_command() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.toml");
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut settings = Settings {
             config_path: Some(path.clone()),
             ..Settings::default()
         };
         settings.ai.mode = AiMode::Agent;
-        let mut app = App::new(cli, settings).await.unwrap();
+        let mut app = App::isolated_test(settings).await;
         app.focus = Focus::Ai;
 
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
@@ -4303,8 +4352,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_actions_are_queued_without_blocking_input() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
 
         app.run_remote("Fetching", RemoteAction::Fetch);
 
@@ -4373,8 +4421,7 @@ mod tests {
 
     #[tokio::test]
     async fn manual_refresh_is_queued_and_applied_without_blocking_input() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
 
         app.queue_refresh(true);
 
@@ -4400,7 +4447,44 @@ mod tests {
 
     #[tokio::test]
     async fn graph_boundary_queues_and_applies_another_history_page() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "Gitside Test"],
+            vec!["config", "user.email", "gitside@example.invalid"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(directory.path())
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            );
+        }
+        for index in 0..5 {
+            fs::write(directory.path().join("history.txt"), format!("{index}\n")).unwrap();
+            assert!(
+                Command::new("git")
+                    .args(["add", "history.txt"])
+                    .current_dir(directory.path())
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            );
+            assert!(
+                Command::new("git")
+                    .args(["commit", "-qm", &format!("Commit {index}")])
+                    .current_dir(directory.path())
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            );
+        }
+        let cli = Cli::try_parse_from(["gitside", directory.path().to_str().unwrap()]).unwrap();
         let settings = Settings {
             graph_page_size: 2,
             ..Settings::default()
@@ -4480,8 +4564,7 @@ mod tests {
 
     #[tokio::test]
     async fn slash_search_targets_only_the_focused_view_and_repeats() {
-        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
-        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Changes;
         app.active_mut().status.conflicts.clear();
         app.active_mut().status.unstaged = ["alpha.rs", "beta.rs", "alpha-test.rs"]
