@@ -33,7 +33,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          # A manual retry can rebuild package metadata from a corrective fix
+          # on main while still attaching it to the selected stable release.
+          # Release events keep using the immutable tag.
+          ref: ${{ inputs.source_ref || github.event.release.tag_name || inputs.tag }}
           persist-credentials: false
       - name: Validate release version
         shell: bash

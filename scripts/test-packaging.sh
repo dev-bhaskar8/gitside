@@ -35,6 +35,11 @@ jq -e '.version == "0.1.2" and .bin == "gitside.exe"' "$output/scoop/gitside.jso
 ruby -e 'require "yaml"; ARGV.each { |path| Psych.parse_file(path) }' \
   "$output"/winget/d/DevBhaskar8/Gitside/0.1.2/*.yaml
 test -s "$output/chocolatey/gitside.nuspec"
+rg -q '<packageSourceUrl>https://github.com/dev-bhaskar8/gitside/tree/main/packaging/chocolatey</packageSourceUrl>' \
+  "$output/chocolatey/gitside.nuspec"
+rg -q '<iconUrl>https://raw.githubusercontent.com/dev-bhaskar8/gitside/main/site/assets/gitside-mark.svg</iconUrl>' \
+  "$output/chocolatey/gitside.nuspec"
+! rg -q 'Get-OSArchitectureWidth -eq 32' "$output/chocolatey/tools/chocolateyinstall.ps1"
 test -s "$output/aur/PKGBUILD"
 test -s "$output/aur/.SRCINFO"
 
