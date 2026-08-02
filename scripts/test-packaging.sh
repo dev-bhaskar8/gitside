@@ -39,7 +39,10 @@ rg -q '<packageSourceUrl>https://github.com/dev-bhaskar8/gitside/tree/main/packa
   "$output/chocolatey/gitside.nuspec"
 rg -q '<iconUrl>https://raw.githubusercontent.com/dev-bhaskar8/gitside/main/site/assets/gitside-mark.svg</iconUrl>' \
   "$output/chocolatey/gitside.nuspec"
-! rg -q 'Get-OSArchitectureWidth -eq 32' "$output/chocolatey/tools/chocolateyinstall.ps1"
+if rg -q 'Get-OSArchitectureWidth -eq 32' "$output/chocolatey/tools/chocolateyinstall.ps1"; then
+  echo 'Chocolatey installer must not reject a 64-bit OS based on host process width' >&2
+  exit 1
+fi
 rg -q '\$nativeArchitecture = \$env:PROCESSOR_ARCHITEW6432' "$output/chocolatey/tools/chocolateyinstall.ps1"
 test -s "$output/aur/PKGBUILD"
 test -s "$output/aur/.SRCINFO"
@@ -58,6 +61,7 @@ cp LICENSE README.md "$aur_src/gitside-x86_64-unknown-linux-gnu/"
   # This test double preserves the source/destination contract so the archive
   # layout is exercised on every CI platform.
   # shellcheck disable=SC2329
+  # shellcheck disable=SC2317
   install() {
     while [ "$#" -gt 2 ]; do
       shift
