@@ -1,0 +1,162 @@
+name: Platform smoke tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to test
+        required: true
+        default: v0.1.2
+        type: string
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-smoke-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: true
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+
+jobs:
+  runtime:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Intel
+            runner: macos-15-intel
+            archive: tar
+            asset: gitside-x86_64-apple-darwin.tar.xz
+          - name: macOS ARM64
+            runner: macos-15
+            archive: tar
+            asset: gitside-aarch64-apple-darwin.tar.xz
+          - name: Linux x86_64
+            runner: ubuntu-24.04
+            archive: tar
+            asset: gitside-x86_64-unknown-linux-gnu.tar.xz
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            archive: tar
+            asset: gitside-aarch64-unknown-linux-gnu.tar.xz
+          - name: Windows x86_64
+            runner: windows-2025
+            archive: zip
+            asset: gitside-x86_64-pc-windows-msvc.zip
+          - name: Windows ARM64
+            runner: windows-11-arm
+            archive: zip
+            asset: gitside-aarch64-pc-windows-msvc.zip
+    runs-on: ${{ matrix.runner }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ASSET: ${{ matrix.asset }}
+
+    steps:
+      - name: Download and execute Unix release
+        if: matrix.archive == 'tar'
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset_dir="$RUNNER_TEMP/gitside"
+          mkdir -p "$asset_dir"
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$ASSET" \
+            --pattern "$ASSET.sha256" \
+            --dir "$asset_dir"
+
+          cd "$asset_dir"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum --check "$ASSET.sha256"
+          else
+            shasum -a 256 --check "$ASSET.sha256"
+          fi
+          tar -xJf "$ASSET"
+          binary="$(find "$asset_dir" -type f -name gitside -print -quit)"
+          test -n "$binary"
+          chmod +x "$binary"
+
+          expected="gitside ${RELEASE_TAG#v}"
+          actual="$($binary --version)"
+          printf 'Reported version: %s\n' "$actual"
+          test "$actual" = "$expected"
+
+      - name: Download and execute Windows release
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assetDir = Join-Path $env:RUNNER_TEMP 'gitside'
+          New-Item -ItemType Directory -Force -Path $assetDir | Out-Null
+          gh release download $env:RELEASE_TAG `
+            --repo $env:GITHUB_REPOSITORY `
+            --pattern $env:ASSET `
+            --pattern "$($env:ASSET).sha256" `
+            --dir $assetDir
+
+          $archive = Join-Path $assetDir $env:ASSET
+          $checksumFile = "$archive.sha256"
+          $expectedHash = (Get-Content $checksumFile -Raw).Trim().Split()[0].ToLowerInvariant()
+          $actualHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            throw "Checksum mismatch for $env:ASSET"
+          }
+
+          Expand-Archive -LiteralPath $archive -DestinationPath $assetDir -Force
+          $binary = Get-ChildItem -Path $assetDir -Recurse -Filter gitside.exe | Select-Object -First 1
+          if ($null -eq $binary) {
+            throw 'gitside.exe was not found in the release archive'
+          }
+
+          $expected = "gitside $($env:RELEASE_TAG -replace '^v', '')"
+          $actual = (& $binary.FullName --version | Out-String).Trim()
+          Write-Host "Reported version: $actual"
+          if ($actual -ne $expected) {
+            throw "Expected '$expected', got '$actual'"
+          }
+
+  archive-layout:
+    name: Verify every release archive
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Download all native archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset_dir="$RUNNER_TEMP/gitside-archives"
+          mkdir -p "$asset_dir"
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'gitside-*.tar.xz' \
+            --pattern 'gitside-*.tar.xz.sha256' \
+            --pattern 'gitside-*.zip' \
+            --pattern 'gitside-*.zip.sha256' \
+            --dir "$asset_dir"
+
+          cd "$asset_dir"
+          for archive in gitside-*.tar.xz gitside-*.zip; do
+            test -f "$archive"
+            if [[ -f "$archive.sha256" ]]; then
+              sha256sum --check "$archive.sha256"
+            else
+              echo "Missing checksum for $archive" >&2
+              exit 1
+            fi
+
+            case "$archive" in
+              *.tar.xz)
+                tar -tJf "$archive" | grep -Eq '(^|/)gitside$'
+                ;;
+              *.zip)
+                unzip -Z1 "$archive" | grep -Eq '(^|/)gitside\.exe$'
+                ;;
+            esac
+          done
