@@ -1787,11 +1787,10 @@ impl App {
     }
 
     fn choose_ai_setup_provider(&mut self, index: usize) {
-        if let Some(Overlay::AiSetup(draft)) = &mut self.overlay
-            && draft.step == AiSetupStep::Provider
-            && index < provider_count(draft.mode)
-        {
-            set_setup_provider(draft, index);
+        if let Some(Overlay::AiSetup(draft)) = &mut self.overlay {
+            if draft.step == AiSetupStep::Provider && index < provider_count(draft.mode) {
+                set_setup_provider(draft, index);
+            }
         }
     }
 
