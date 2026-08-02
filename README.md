@@ -113,6 +113,14 @@ gitside /path/to/repository
 - **Responsive and non-blocking.** Network work runs in the background and filesystem notifications keep repository state fresh.
 - **Optional commit drafts.** Configure offline rules, an existing Codex/Claude Code/OpenCode or other command, or a direct API inside the clickable AI panel. API keys stay in the OS keychain.
 
+### AI commit drafts (optional)
+
+Press `Y` to open the AI panel, choose Local, Agent, or API, then configure it
+without editing TOML. `Ctrl+G` or the Generate button creates an editable,
+Git-focused draft from staged changes (or the current working tree when nothing
+is staged). Gitside never stages, commits, pushes, or changes branches during
+generation. See the [AI configuration guide](docs/configuration.md#commit-message-generation).
+
 ## Essential controls
 
 | Key | Action | Key | Action |
