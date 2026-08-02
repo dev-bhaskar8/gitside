@@ -6,7 +6,7 @@ SBOM, and attaches GitHub OIDC provenance before any registry publication runs.
 
 ## Installation matrix
 
-The commands below become usable after `v0.1.1` is published and the named
+The commands below become usable after `v0.1.2` is published and the named
 registry has accepted the package.
 
 | Channel | Command | Platforms |
@@ -73,7 +73,7 @@ For example, after configuring Chocolatey:
 
 ```sh
 gh variable set ENABLE_CHOCOLATEY --body true
-gh workflow run packages.yml --ref v0.1.1 -f tag=v0.1.1
+gh workflow run packages.yml --ref v0.1.2 -f tag=v0.1.2
 ```
 
 The manual run safely reuses the existing release. Scoop is idempotent and the

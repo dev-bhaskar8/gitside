@@ -1,6 +1,6 @@
 [package]
 name = "gitside"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 authors = ["dev-bhaskar8 <vaas.ygg@gmail.com>"]
 description = "A VS Code-inspired source control panel for the terminal"
@@ -34,7 +34,6 @@ dirs = "6.0"
 futures = "0.3"
 notify = "8.2"
 ratatui = "0.29"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 secrecy = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -47,12 +46,15 @@ unicode-width = "0.2"
 zeroize = "1.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 keyring = { version = "3.6", default-features = false, features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 keyring = { version = "3.6", default-features = false, features = ["linux-native-sync-persistent", "crypto-rust"] }
 
 [profile.release]
