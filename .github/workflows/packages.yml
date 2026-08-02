@@ -224,6 +224,10 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
           persist-credentials: false
+      - name: Ensure Snap DBus build dependency
+        run: |
+          grep -qxF '      - libdbus-1-dev' snap/snapcraft.yaml || \
+            sed -i '/      - pkg-config/a\      - libdbus-1-dev' snap/snapcraft.yaml
       - name: Build snap
         id: build
         uses: snapcore/action-build@b391f430cb2650fd359ed4d2cfe88b2c481800e0

@@ -28,3 +28,4 @@ parts:
     rust-channel: '1.85'
     build-packages:
       - pkg-config
+      - libdbus-1-dev
