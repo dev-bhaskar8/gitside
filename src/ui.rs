@@ -59,23 +59,20 @@ fn render_outlined_button(
     if rect.width < 3 || rect.height < 1 || rect.is_empty() {
         return;
     }
-    let content_width = rect.width.saturating_sub(2) as usize;
-    let label = truncate_to_width(label, content_width);
-    let left = content_width.saturating_sub(display_width(&label)) / 2;
-    let right = content_width.saturating_sub(display_width(&label) + left);
-    let text = format!("│{}{}{}│", " ".repeat(left), label, " ".repeat(right));
-    let accent = if selected {
-        Style::default()
-            .fg(BLUE)
-            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-    } else {
-        Style::default().fg(BLUE).add_modifier(Modifier::UNDERLINED)
-    };
+    let label = truncate_to_width(label, rect.width as usize);
+    let left = (rect.width as usize).saturating_sub(display_width(&label)) / 2;
+    let right = (rect.width as usize).saturating_sub(display_width(&label) + left);
+    let text = format!("{}{}{}", " ".repeat(left), label, " ".repeat(right));
+    let mut accent = Style::default()
+        .fg(BLUE)
+        .add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    if selected {
+        accent = accent.add_modifier(Modifier::UNDERLINED);
+    }
     frame.render_widget(
         Paragraph::new(text)
             .alignment(Alignment::Center)
-            .style(accent)
-            .block(Block::default().style(Style::default().bg(PANEL))),
+            .style(accent),
         rect,
     );
     app.hits.push(HitRegion { rect, action });
@@ -853,12 +850,9 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             area,
         );
         if publish && area.width > 8 && area.height > 4 {
-            let label = if area.width >= 19 {
-                "Enter Publish"
-            } else {
-                "Publish"
-            };
-            let width = outlined_button_width(label, true).min(area.width.saturating_sub(4));
+            let full = area.width >= 19;
+            let label = if full { "Enter Publish" } else { "p" };
+            let width = outlined_button_width(label, full).min(area.width.saturating_sub(4));
             let button = Rect::new(area.x + 2, area.bottom().saturating_sub(2), width, 1);
             render_outlined_button(frame, app, button, label, UiAction::PublishGitHub, false);
         }
@@ -998,7 +992,10 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     if inner.is_empty() {
         return;
     }
-    let enabled_label = if settings.enabled {
+    let full_controls = inner.width >= 45;
+    let enabled_label = if !full_controls {
+        "e"
+    } else if settings.enabled {
         "e AI on"
     } else {
         "e AI off"
@@ -1006,17 +1003,17 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let top_controls = [
         (enabled_label, UiAction::ToggleAiEnabled, settings.enabled),
         (
-            "1 Local",
+            if full_controls { "1 Local" } else { "1" },
             UiAction::SelectAiMode(AiMode::Local),
             settings.mode == AiMode::Local,
         ),
         (
-            "2 Agent",
+            if full_controls { "2 Agent" } else { "2" },
             UiAction::SelectAiMode(AiMode::Agent),
             settings.mode == AiMode::Agent,
         ),
         (
-            "3 API",
+            if full_controls { "3 API" } else { "3" },
             UiAction::SelectAiMode(AiMode::Api),
             settings.mode == AiMode::Api,
         ),
@@ -1024,7 +1021,7 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let mut body_y = inner.y;
     let mut x = inner.x;
     for (label, action, selected) in top_controls {
-        let width = outlined_button_width(label, true);
+        let width = outlined_button_width(label, full_controls);
         if x > inner.x && x.saturating_add(width) > inner.right() {
             x = inner.x;
             body_y = body_y.saturating_add(1);
@@ -1048,8 +1045,8 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 | crate::credentials::CredentialStatus::SessionOnly
         );
     let footer_y = inner.bottom().saturating_sub(1);
-    let configure_label = "Configure";
-    let configure_width = outlined_button_width(configure_label, true);
+    let configure_label = if full_controls { "Configure" } else { "c" };
+    let configure_width = outlined_button_width(configure_label, full_controls);
     render_outlined_button(
         frame,
         app,
@@ -1059,8 +1056,8 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         false,
     );
     if removable_key {
-        let remove_label = "Remove key";
-        let remove_width = outlined_button_width(remove_label, true);
+        let remove_label = if full_controls { "Remove key" } else { "k" };
+        let remove_width = outlined_button_width(remove_label, full_controls);
         let x = inner.x.saturating_add(configure_width + 1);
         if x.saturating_add(remove_width) <= inner.right() {
             render_outlined_button(
@@ -1604,16 +1601,19 @@ fn render_ai_setup_overlay(
 
     if inner.height >= 2 {
         let y = inner.bottom().saturating_sub(1);
-        let back_label = "Back";
-        let back_width = outlined_button_width(back_label, true).min(inner.width);
+        let full = inner.width >= 20;
+        let back_label = if full { "Back" } else { "←" };
+        let back_width = outlined_button_width(back_label, full).min(inner.width);
         let back = Rect::new(inner.x, y, back_width, 1);
         render_outlined_button(frame, app, back, back_label, UiAction::AiSetupBack, false);
-        let label = if draft.step == crate::app::AiSetupStep::Review {
+        let label = if !full {
+            "→"
+        } else if draft.step == crate::app::AiSetupStep::Review {
             "Save"
         } else {
             "Next"
         };
-        let width = outlined_button_width(label, true).min(inner.width);
+        let width = outlined_button_width(label, full).min(inner.width);
         let next = Rect::new(inner.right().saturating_sub(width), y, width, 1);
         render_outlined_button(
             frame,
@@ -2424,11 +2424,12 @@ mod tests {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect::<String>();
-            for label in ["e AI on", "1 Local", "2 Agent", "3 API", "Configure"] {
-                assert!(
-                    output.contains(label),
-                    "{label} was shortened at width {width}"
-                );
+            if width >= 45 {
+                for label in ["e AI on", "1 Local", "2 Agent", "3 API", "Configure"] {
+                    assert!(output.contains(label), "missing {label} at width {width}");
+                }
+            } else {
+                assert!(controls.iter().all(|control| control.rect.width == 3));
             }
             assert!(!output.contains("Generate"));
         }
@@ -2465,8 +2466,9 @@ mod tests {
                 .buffer()
                 .cell((button.rect.x, button.rect.y))
                 .unwrap();
-            assert_eq!(corner.symbol(), "│");
+            assert_eq!(corner.symbol(), " ");
             assert_eq!(corner.bg, Color::Reset);
+            assert!(corner.modifier.contains(Modifier::REVERSED));
         }
         let configure = app
             .hits
@@ -2635,8 +2637,9 @@ mod tests {
                     .buffer()
                     .cell((button.rect.x, button.rect.y))
                     .unwrap();
-                assert_eq!(top_left.symbol(), "│", "width {width}");
+                assert_eq!(top_left.symbol(), " ", "width {width}");
                 assert_eq!(top_left.bg, Color::Reset, "width {width}");
+                assert!(top_left.modifier.contains(Modifier::REVERSED));
             }
             for (index, button) in buttons.iter().enumerate() {
                 for other in buttons.iter().skip(index + 1) {
@@ -2660,10 +2663,7 @@ mod tests {
                 assert!(output.contains("p Push"), "width {width}");
                 assert!(output.contains("r ↻"), "width {width}");
             } else {
-                assert!(output.contains("│f│"), "width {width}");
-                assert!(output.contains("│l│"), "width {width}");
-                assert!(output.contains("│p│"), "width {width}");
-                assert!(output.contains("│r│"), "width {width}");
+                assert!(buttons.iter().all(|button| button.rect.width == 3));
             }
         }
     }
