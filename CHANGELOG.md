@@ -5,6 +5,18 @@ Versioning and use matching `vMAJOR.MINOR.PATCH` Git tags.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-02
+
+### Added
+
+- Optional Local, Agent, and API commit-message drafts with secure credential setup.
+- Responsive staged/unstaged changes, conflict visibility, and contextual help.
+
+### Improved
+
+- Git operations run in the background while the terminal remains interactive.
+- Terminal keyboard protocols, paste handling, previews, scrolling, and release packaging.
+
 ## [0.1.0] - 2026-08-01
 
 ### Added
@@ -16,5 +28,6 @@ Versioning and use matching `vMAJOR.MINOR.PATCH` Git tags.
   Git, editor, and GitHub CLI integration.
 - Automated multi-platform releases and package-manager distribution.
 
-[Unreleased]: https://github.com/dev-bhaskar8/gitside/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/dev-bhaskar8/gitside/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/dev-bhaskar8/gitside/releases/tag/v0.1.1
 [0.1.0]: https://github.com/dev-bhaskar8/gitside/releases/tag/v0.1.0

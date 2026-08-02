@@ -20,8 +20,8 @@ printf '%s\n' "$artifacts" | while IFS= read -r artifact; do
   index=$((index + 1))
 done
 
-RELEASE_DATE=2026-08-01 scripts/render-package-manifests.sh v0.1.0 "$assets" "$output"
-if scripts/render-package-manifests.sh v0.1.0-rc.1 "$assets" "$output/prerelease" >/dev/null 2>&1; then
+RELEASE_DATE=2026-08-02 scripts/render-package-manifests.sh v0.1.1 "$assets" "$output"
+if scripts/render-package-manifests.sh v0.1.1-rc.1 "$assets" "$output/prerelease" >/dev/null 2>&1; then
   echo 'prerelease tag unexpectedly passed the stable-only gate' >&2
   exit 1
 fi
@@ -31,9 +31,9 @@ if rg -n '__[A-Z0-9_]+__' "$output"; then
   exit 1
 fi
 
-jq -e '.version == "0.1.0" and .bin == "gitside.exe"' "$output/scoop/gitside.json" >/dev/null
+jq -e '.version == "0.1.1" and .bin == "gitside.exe"' "$output/scoop/gitside.json" >/dev/null
 ruby -e 'require "yaml"; ARGV.each { |path| Psych.parse_file(path) }' \
-  "$output"/winget/d/DevBhaskar8/Gitside/0.1.0/*.yaml
+  "$output"/winget/d/DevBhaskar8/Gitside/0.1.1/*.yaml
 test -s "$output/chocolatey/gitside.nuspec"
 test -s "$output/aur/PKGBUILD"
 test -s "$output/aur/.SRCINFO"
