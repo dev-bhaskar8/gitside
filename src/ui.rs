@@ -464,7 +464,6 @@ fn render_compact_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     // collapse to the focused view when vertical space is genuinely scarce.
     if area.height < 20 {
         match app.focus {
-            Focus::Staged => render_changes(frame, app, area, true),
             Focus::Graph => render_graph(frame, app, area),
             Focus::Branches => render_branches(frame, app, area),
             Focus::Stashes => render_stashes(frame, app, area),
@@ -472,7 +471,7 @@ fn render_compact_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Focus::GitHub => render_github(frame, app, area),
             Focus::Ai => render_ai(frame, app, area),
             Focus::Preview => render_preview(frame, app, area),
-            _ => render_changes(frame, app, area, false),
+            _ => render_combined_changes(frame, app, area),
         }
         return;
     }
@@ -480,11 +479,7 @@ fn render_compact_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(44), Constraint::Percentage(56)])
         .split(area);
-    if app.focus == Focus::Staged {
-        render_changes(frame, app, sections[0], true);
-    } else {
-        render_changes(frame, app, sections[0], false);
-    }
+    render_combined_changes(frame, app, sections[0]);
     match app.focus {
         Focus::Branches => render_branches(frame, app, sections[1]),
         Focus::Stashes => render_stashes(frame, app, sections[1]),
@@ -505,12 +500,7 @@ fn render_wide_body(frame: &mut Frame<'_>, app: &mut App, area: Rect, three: boo
                 Constraint::Percentage(38),
             ])
             .split(area);
-        let changes = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
-            .split(columns[0]);
-        render_changes(frame, app, changes[0], false);
-        render_changes(frame, app, changes[1], true);
+        render_combined_changes(frame, app, columns[0]);
         render_graph(frame, app, columns[1]);
         if app.preview.is_some() {
             render_preview(frame, app, columns[2]);
@@ -534,7 +524,7 @@ fn render_wide_body(frame: &mut Frame<'_>, app: &mut App, area: Rect, three: boo
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
             .split(columns[0]);
-        render_changes(frame, app, left[0], app.focus == Focus::Staged);
+        render_combined_changes(frame, app, left[0]);
         render_graph(frame, app, left[1]);
         if app.preview.is_some() {
             render_preview(frame, app, columns[1]);
@@ -552,48 +542,67 @@ fn render_wide_body(frame: &mut Frame<'_>, app: &mut App, area: Rect, three: boo
     }
 }
 
-fn render_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect, staged: bool) {
-    let changes = if staged {
-        app.active().status.staged.clone()
-    } else if !app.active().status.conflicts.is_empty() {
-        app.active().status.conflicts.clone()
-    } else {
+fn render_combined_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let staged = app.active().status.staged.clone();
+    let working = if app.active().status.conflicts.is_empty() {
         app.active().status.unstaged.clone()
-    };
-    let focused = app.focus
-        == if staged {
-            Focus::Staged
-        } else {
-            Focus::Changes
-        };
-    let selected = if staged {
-        app.selected_staged
     } else {
-        app.selected_change
+        app.active().status.conflicts.clone()
     };
-    let title = if staged {
-        format!(" Staged Changes ({}) ", changes.len())
-    } else if !app.active().status.conflicts.is_empty() {
-        format!(" Merge Changes ({}) ", changes.len())
+    let has_conflicts = !app.active().status.conflicts.is_empty();
+    let focused = matches!(app.focus, Focus::Changes | Focus::Staged);
+    let selected = match app.focus {
+        Focus::Staged => app.selected_staged,
+        Focus::Changes => staged.len().saturating_add(app.selected_change),
+        _ => 0,
+    };
+    let total = staged.len().saturating_add(working.len());
+    let title = if has_conflicts {
+        format!(
+            " Merge Changes ({total} · S{} C{}) ",
+            staged.len(),
+            working.len()
+        )
     } else {
-        format!(" Changes ({}) ", changes.len())
+        format!(" Changes ({total} · S{} U{}) ", staged.len(), working.len())
     };
     let visible = area.height.saturating_sub(2) as usize;
-    let offset = viewport_start(selected, changes.len(), visible);
-    let items = changes
+    let offset = viewport_start(selected, total, visible);
+    let rows = staged
+        .iter()
+        .enumerate()
+        .map(|(index, change)| (true, index, change))
+        .chain(
+            working
+                .iter()
+                .enumerate()
+                .map(|(index, change)| (false, index, change)),
+        )
+        .collect::<Vec<_>>();
+    let items = rows
         .iter()
         .enumerate()
         .skip(offset)
         .take(visible)
-        .map(|(index, change)| {
-            let selected_row = focused && selected == index;
-            ListItem::new(change_line(change, area.width.saturating_sub(4))).style(
-                if selected_row {
-                    selection_style()
-                } else {
-                    Style::default().fg(TEXT)
-                },
-            )
+        .map(|(row_index, (is_staged, _, change))| {
+            let selected_row = focused && selected == row_index;
+            let scope = if *is_staged {
+                "S"
+            } else if has_conflicts {
+                "C"
+            } else {
+                "U"
+            };
+            ListItem::new(scoped_change_line(
+                change,
+                area.width.saturating_sub(4),
+                scope,
+            ))
+            .style(if selected_row {
+                selection_style()
+            } else {
+                Style::default().fg(TEXT)
+            })
         })
         .collect::<Vec<_>>();
     let block = Block::default()
@@ -603,13 +612,13 @@ fn render_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect, staged: bool
     frame.render_widget(List::new(items).block(block), area);
     app.hits.push(HitRegion {
         rect: area,
-        action: UiAction::Focus(if staged {
+        action: UiAction::Focus(if app.focus == Focus::Staged {
             Focus::Staged
         } else {
             Focus::Changes
         }),
     });
-    for (row, index) in (offset..changes.len()).take(visible).enumerate() {
+    for (row, (is_staged, index, _)) in rows.iter().skip(offset).take(visible).enumerate() {
         app.hits.push(HitRegion {
             rect: Rect::new(
                 area.x + 1,
@@ -617,16 +626,19 @@ fn render_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect, staged: bool
                 area.width.saturating_sub(2),
                 1,
             ),
-            action: UiAction::SelectChange { staged, index },
+            action: UiAction::SelectChange {
+                staged: *is_staged,
+                index: *index,
+            },
         });
     }
     if area.width >= 28 {
-        let action = if staged {
-            UiAction::UnstageAll
+        let staged_focus = app.focus == Focus::Staged || (working.is_empty() && !staged.is_empty());
+        let (label, action) = if staged_focus {
+            (" − All ", UiAction::UnstageAll)
         } else {
-            UiAction::StageAll
+            (" + All ", UiAction::StageAll)
         };
-        let label = if staged { " − All " } else { " + All " };
         let rect = Rect::new(area.right().saturating_sub(8), area.y, 7, 1);
         frame.render_widget(Paragraph::new(label).style(Style::default().fg(BLUE)), rect);
         app.hits.push(HitRegion { rect, action });
@@ -1947,7 +1959,7 @@ fn help_text(
     )
 }
 
-fn change_line(change: &Change, width: u16) -> Line<'static> {
+fn scoped_change_line(change: &Change, width: u16, scope: &'static str) -> Line<'static> {
     let color = match change.kind {
         ChangeKind::Added | ChangeKind::Untracked => GREEN,
         ChangeKind::Deleted => RED,
@@ -1955,15 +1967,24 @@ fn change_line(change: &Change, width: u16) -> Line<'static> {
         _ => TEXT,
     };
     let path = change.path.to_string_lossy();
-    let max = width.saturating_sub(4) as usize;
+    let scope_width = if scope.is_empty() { 0 } else { 2 };
+    let max = width.saturating_sub(4 + scope_width) as usize;
     let display = truncate_middle(&path, max);
-    Line::from(vec![
+    let mut spans = Vec::with_capacity(3);
+    if !scope.is_empty() {
+        spans.push(Span::styled(
+            format!("{scope} "),
+            Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans.extend([
         Span::styled(
             format!("{} ", change.kind.badge()),
             Style::default().fg(color),
         ),
         Span::raw(display),
-    ])
+    ]);
+    Line::from(spans)
 }
 
 fn truncate_middle(value: &str, max: usize) -> String {
@@ -3178,6 +3199,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn changes_panel_combines_and_labels_staged_and_unstaged_rows() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Changes;
+        app.active_mut().status.staged = vec![Change {
+            path: "staged.rs".into(),
+            original_path: None,
+            kind: ChangeKind::Added,
+            staged: true,
+        }];
+        app.active_mut().status.unstaged = vec![Change {
+            path: "working.rs".into(),
+            original_path: None,
+            kind: ChangeKind::Modified,
+            staged: false,
+        }];
+        let mut terminal = Terminal::new(TestBackend::new(70, 30)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(output.contains("Changes (2 · S1 U1)"));
+        assert!(output.contains("S A staged.rs"));
+        assert!(output.contains("U M working.rs"));
+        assert!(!output.contains("Staged Changes"));
+        assert!(app.hits.iter().any(|hit| matches!(
+            hit.action,
+            UiAction::SelectChange {
+                staged: true,
+                index: 0
+            }
+        )));
+        assert!(app.hits.iter().any(|hit| matches!(
+            hit.action,
+            UiAction::SelectChange {
+                staged: false,
+                index: 0
+            }
+        )));
+    }
+
+    #[tokio::test]
     async fn conflicts_replace_changes_with_contextual_resolution_help() {
         let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
@@ -3198,7 +3266,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(output.contains("Merge Changes (1)"));
+        assert!(output.contains("Merge Changes (1 · S0 C1)"));
         assert!(output.contains("O Current"));
 
         app.overlay = Some(Overlay::Help {
