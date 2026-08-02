@@ -153,10 +153,12 @@ jobs:
 
             case "$archive" in
               *.tar.xz)
-                tar -tJf "$archive" | grep -Eq '(^|/)gitside$'
+                tar_listing="$(tar -tJf "$archive")"
+                grep -Eq '(^|/)gitside$' <<<"$tar_listing"
                 ;;
               *.zip)
-                unzip -Z1 "$archive" | grep -Eq '(^|/)gitside\.exe$'
+                zip_listing="$(unzip -Z1 "$archive")"
+                grep -Eq '(^|/)gitside\.exe$' <<<"$zip_listing"
                 ;;
             esac
           done
