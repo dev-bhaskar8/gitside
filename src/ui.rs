@@ -953,79 +953,48 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     if inner.is_empty() {
         return;
     }
-    let enabled_label = if settings.enabled { "AI on" } else { "AI off" };
+    let enabled_label = if settings.enabled {
+        "e AI on"
+    } else {
+        "e AI off"
+    };
     let top_controls = [
         (enabled_label, UiAction::ToggleAiEnabled, settings.enabled),
         (
-            "Local",
+            "1 Local",
             UiAction::SelectAiMode(AiMode::Local),
             settings.mode == AiMode::Local,
         ),
         (
-            "Agent",
+            "2 Agent",
             UiAction::SelectAiMode(AiMode::Agent),
             settings.mode == AiMode::Agent,
         ),
         (
-            "API",
+            "3 API",
             UiAction::SelectAiMode(AiMode::Api),
             settings.mode == AiMode::Api,
         ),
     ];
-    let wide = inner.width >= 48;
     let mut body_y = inner.y;
-    if wide {
-        let gaps = 3;
-        let available = inner.width.saturating_sub(gaps);
-        let base = available / top_controls.len() as u16;
-        let mut remainder = available % top_controls.len() as u16;
-        let mut x = inner.x;
-        for (index, (label, action, selected)) in top_controls.into_iter().enumerate() {
-            let extra = u16::from(remainder > 0);
-            remainder = remainder.saturating_sub(extra);
-            let width = base + extra;
-            render_ai_button(
-                frame,
-                app,
-                Rect::new(x, inner.y, width, 1),
-                label,
-                action,
-                selected,
-            );
-            x = x.saturating_add(width + u16::from(index < 3));
+    let mut x = inner.x;
+    for (label, action, selected) in top_controls {
+        let width = (display_width(label) + 2) as u16;
+        if x > inner.x && x.saturating_add(width) > inner.right() {
+            x = inner.x;
+            body_y = body_y.saturating_add(1);
         }
-        body_y = body_y.saturating_add(2);
-    } else {
-        let (toggle_label, toggle_action, toggle_selected) = &top_controls[0];
-        let toggle_width = (display_width(toggle_label) + 2) as u16;
         render_ai_button(
             frame,
             app,
-            Rect::new(inner.x, body_y, toggle_width.min(inner.width), 1),
-            toggle_label,
-            toggle_action.clone(),
-            *toggle_selected,
+            Rect::new(x, body_y, width.min(inner.right().saturating_sub(x)), 1),
+            label,
+            action,
+            selected,
         );
-        body_y = body_y.saturating_add(1);
-        let mut x = inner.x;
-        for (label, action, selected) in top_controls.into_iter().skip(1) {
-            let width = (display_width(label) + 2) as u16;
-            if x > inner.x && x.saturating_add(width) > inner.right() {
-                x = inner.x;
-                body_y = body_y.saturating_add(1);
-            }
-            render_ai_button(
-                frame,
-                app,
-                Rect::new(x, body_y, width.min(inner.right().saturating_sub(x)), 1),
-                label,
-                action,
-                selected,
-            );
-            x = x.saturating_add(width + 1);
-        }
-        body_y = body_y.saturating_add(2);
+        x = x.saturating_add(width + 1);
     }
+    body_y = body_y.saturating_add(2);
 
     let removable_key = settings.mode == AiMode::Api
         && matches!(
@@ -1034,59 +1003,29 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 | crate::credentials::CredentialStatus::SessionOnly
         );
     let footer_y = inner.bottom().saturating_sub(1);
-    if wide {
-        let gap = u16::from(removable_key);
-        let configure_width = if removable_key {
-            inner.width.saturating_sub(gap) / 2
-        } else {
-            inner.width
-        };
-        render_ai_button(
-            frame,
-            app,
-            Rect::new(inner.x, footer_y, configure_width, 1),
-            "Configure",
-            UiAction::OpenAiSetup(settings.mode),
-            false,
-        );
-        if removable_key {
+    let configure_label = "Configure";
+    let configure_width = (display_width(configure_label) + 2) as u16;
+    render_ai_button(
+        frame,
+        app,
+        Rect::new(inner.x, footer_y, configure_width.min(inner.width), 1),
+        configure_label,
+        UiAction::OpenAiSetup(settings.mode),
+        false,
+    );
+    if removable_key {
+        let remove_label = "Remove key";
+        let remove_width = (display_width(remove_label) + 2) as u16;
+        let x = inner.x.saturating_add(configure_width + 1);
+        if x.saturating_add(remove_width) <= inner.right() {
             render_ai_button(
                 frame,
                 app,
-                Rect::new(
-                    inner.x + configure_width + gap,
-                    footer_y,
-                    inner.width.saturating_sub(configure_width + gap),
-                    1,
-                ),
-                "Remove key",
+                Rect::new(x, footer_y, remove_width, 1),
+                remove_label,
                 UiAction::RemoveAiCredential,
                 false,
             );
-        }
-    } else {
-        let configure_width = (display_width("Configure") + 2) as u16;
-        render_ai_button(
-            frame,
-            app,
-            Rect::new(inner.x, footer_y, configure_width.min(inner.width), 1),
-            "Configure",
-            UiAction::OpenAiSetup(settings.mode),
-            false,
-        );
-        if removable_key {
-            let remove_width = (display_width("Remove key") + 2) as u16;
-            let x = inner.x.saturating_add(configure_width + 1);
-            if x.saturating_add(remove_width) <= inner.right() {
-                render_ai_button(
-                    frame,
-                    app,
-                    Rect::new(x, footer_y, remove_width, 1),
-                    "Remove key",
-                    UiAction::RemoveAiCredential,
-                    false,
-                );
-            }
         }
     }
 
@@ -1842,7 +1781,7 @@ fn help_text(
     let (context_title, context) = match focus {
         Focus::Commit => (
             "Commit — current panel",
-            "  Type                 Edit message\n  Ctrl+U               Clear message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  F1                   Help\n  Esc                  Leave message\n  Tab                  Next panel",
+            "  Type                 Edit message\n  Ctrl+U/Backspace     Clear message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  F1                   Help\n  Esc                  Leave message\n  Tab                  Next panel",
         ),
         Focus::Changes if has_conflicts => (
             "Merge Changes — current panel",
@@ -1895,7 +1834,7 @@ fn help_text(
     };
 
     format!(
-        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  /              Search focused view\n  N              Next search match\n  ? / F1         Open/close help\n  q / Ctrl+C     Quit\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External old/new difftool\n  E              Interactive line staging\n\nRepository\n  c                    Commit message\n  Ctrl+U               Clear commit message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  Ctrl+G               Generate commit message\n  U                    Undo last commit\n  f / l / p            Fetch/pull/push\n  L                    Pull with rebase\n  P / T                Push to/pull from target\n  F                    Force push with lease\n  D                    Git diagnostics\n  s / z                Create/list stashes\n  W                    Worktree list\n  Y                    AI panel\n  r                    Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGit operations\n  C / S / A      Continue/skip/abort\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, ?, or F1 to close."
+        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  /              Search focused view\n  N              Next search match\n  ? / F1         Open/close help\n  q / Ctrl+C     Quit\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External old/new difftool\n  E              Interactive line staging\n\nRepository\n  c                    Commit message\n  Ctrl+U/Backspace     Clear commit message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  Ctrl+G               Generate commit message\n  U                    Undo last commit\n  f / l / p            Fetch/pull/push\n  L                    Pull with rebase\n  P / T                Push to/pull from target\n  F                    Force push with lease\n  D                    Git diagnostics\n  s / z                Create/list stashes\n  W                    Worktree list\n  Y                    AI panel\n  r                    Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGit operations\n  C / S / A      Continue/skip/abort\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, ?, or F1 to close."
     )
 }
 
@@ -2460,7 +2399,7 @@ mod tests {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect::<String>();
-            for label in ["AI on", "Local", "Agent", "API", "Configure"] {
+            for label in ["e AI on", "1 Local", "2 Agent", "3 API", "Configure"] {
                 assert!(
                     output.contains(label),
                     "{label} was shortened at width {width}"
@@ -2471,7 +2410,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wide_ai_controls_expand_across_the_panel() {
+    async fn wide_ai_controls_remain_compact_and_show_shortcuts() {
         let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
         let mut app = App::new(cli, Settings::default()).await.unwrap();
         app.focus = Focus::Ai;
@@ -2492,14 +2431,32 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(top.len(), 4);
         assert_eq!(top.first().unwrap().rect.x, 1);
-        assert_eq!(top.last().unwrap().rect.right(), 79);
+        assert_eq!(top.first().unwrap().rect.width, 10);
+        assert_eq!(top.last().unwrap().rect.right(), 39);
         let configure = app
             .hits
             .iter()
             .find(|hit| matches!(hit.action, UiAction::OpenAiSetup(_)))
             .unwrap()
             .rect;
-        assert_eq!(configure, Rect::new(1, 18, 78, 1));
+        assert_eq!(configure, Rect::new(1, 18, 11, 1));
+
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        for control in [
+            "[e AI off]",
+            "[1 Local]",
+            "[2 Agent]",
+            "[3 API]",
+            "[Configure]",
+        ] {
+            assert!(output.contains(control), "missing compact {control}");
+        }
     }
 
     #[tokio::test]
