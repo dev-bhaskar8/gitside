@@ -15,7 +15,7 @@ registry has accepted the package.
 | Cargo | `cargo install gitside --locked` | Rust-supported systems |
 | WinGet | `winget install DevBhaskar8.Gitside` | Windows x64, ARM64 |
 | Scoop | `scoop bucket add gitside https://github.com/dev-bhaskar8/scoop-bucket && scoop install gitside` | Windows x64, ARM64 |
-| Chocolatey | `choco install gitside` | Windows x64, ARM64 |
+| Chocolatey | `choco install gitside` | Windows x64, ARM64 (pending first-version review) |
 | npm | `npm install --global gitside` | macOS, Linux, Windows |
 | AUR | `paru -S gitside-bin` | Arch Linux x64, ARM64 |
 | Nix | `nix run github:dev-bhaskar8/gitside` | macOS, Linux |
@@ -60,7 +60,7 @@ secrets to the `registry` GitHub environment:
 - `SCOOP_BUCKET_TOKEN`
 - `WINGET_TOKEN`
 
-Chocolatey, AUR, and Snap are disabled until their credentials exist. Add the
+Chocolatey, AUR, and Snap require protected registry credentials. Add the
 appropriate secret and enable its repository Actions variable:
 
 | Publisher | Environment secret | Repository variable |
@@ -73,11 +73,18 @@ For example, after configuring Chocolatey:
 
 ```sh
 gh variable set ENABLE_CHOCOLATEY --body true
-gh workflow run packages.yml --ref v0.1.2 -f tag=v0.1.2
+gh workflow run packages.yml --ref main -f tag=v0.1.2 -f source_ref=main -f target=all
 ```
 
 The manual run safely reuses the existing release. Scoop is idempotent and the
 WinGet publisher reuses an existing submission pull request.
+
+When a package's first version is still in Chocolatey moderation, publish that
+same version again after fixing it instead of trying to push a newer version:
+
+```sh
+gh workflow run packages.yml --ref main -f tag=v0.1.0 -f source_ref=main -f target=chocolatey
+```
 
 Then:
 
