@@ -596,7 +596,9 @@ fn render_combined_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             let activity = app
                 .change_activity
                 .as_ref()
-                .filter(|activity| activity.path == change.path && activity.staging != *is_staged)
+                .filter(|activity| {
+                    activity.paths.contains(&change.path) && activity.staging != *is_staged
+                })
                 .map(|activity| ai_spinner(activity.started));
             ListItem::new(scoped_change_line(
                 change,
@@ -3218,12 +3220,20 @@ mod tests {
             kind: ChangeKind::Added,
             staged: true,
         }];
-        app.active_mut().status.unstaged = vec![Change {
-            path: "working.rs".into(),
-            original_path: None,
-            kind: ChangeKind::Modified,
-            staged: false,
-        }];
+        app.active_mut().status.unstaged = vec![
+            Change {
+                path: "working.rs".into(),
+                original_path: None,
+                kind: ChangeKind::Modified,
+                staged: false,
+            },
+            Change {
+                path: "second.rs".into(),
+                original_path: None,
+                kind: ChangeKind::Modified,
+                staged: false,
+            },
+        ];
         let mut terminal = Terminal::new(TestBackend::new(70, 30)).unwrap();
 
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
@@ -3234,9 +3244,10 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(output.contains("Changes (2 · S1 U1)"));
+        assert!(output.contains("Changes (3 · S1 U2)"));
         assert!(output.contains("S A staged.rs"));
         assert!(output.contains("U M working.rs"));
+        assert!(output.contains("U M second.rs"));
         assert!(!output.contains("Staged Changes"));
         let staged_hit = app
             .hits
@@ -3269,23 +3280,27 @@ mod tests {
         assert_eq!(unstaged_hit.y, staged_hit.y + 1);
 
         app.change_activity = Some(crate::app::ChangeActivity {
-            path: "working.rs".into(),
+            paths: vec!["working.rs".into(), "second.rs".into()],
             staging: true,
             started: std::time::Instant::now(),
         });
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
-        let output = terminal
-            .backend()
-            .buffer()
-            .content()
+        let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let unstaged_hits = app
+            .hits
             .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(
-            ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-                .iter()
-                .any(|spinner| output.contains(&format!("U {spinner}")))
-        );
+            .filter(|hit| matches!(hit.action, UiAction::SelectChange { staged: false, .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(unstaged_hits.len(), 2);
+        for hit in unstaged_hits {
+            let badge = terminal
+                .backend()
+                .buffer()
+                .cell((hit.rect.x + 2, hit.rect.y))
+                .unwrap()
+                .symbol();
+            assert!(spinner_frames.contains(&badge));
+        }
     }
 
     #[tokio::test]

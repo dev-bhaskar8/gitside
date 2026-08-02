@@ -309,10 +309,11 @@ enum BackgroundResult {
         success: &'static str,
         result: Result<()>,
     },
-    StageChange {
+    StageChanges {
         repo_index: usize,
-        path: PathBuf,
-        was_staged: bool,
+        paths: Vec<PathBuf>,
+        staging: bool,
+        bulk: bool,
         result: Result<()>,
     },
     History {
@@ -366,7 +367,7 @@ pub enum ButtonActivity {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeActivity {
-    pub path: PathBuf,
+    pub paths: Vec<PathBuf>,
     pub staging: bool,
     pub started: Instant,
 }
@@ -590,39 +591,48 @@ impl App {
                 }
                 Err(error) => self.report_error(error),
             },
-            Ok(BackgroundResult::StageChange {
+            Ok(BackgroundResult::StageChanges {
                 repo_index,
-                path,
-                was_staged,
+                paths,
+                staging,
+                bulk,
                 result,
             }) => match result {
                 Ok(()) => {
                     self.refresh_repo(repo_index, false).await;
                     if repo_index == self.active_repo {
-                        if was_staged {
-                            self.focus = Focus::Changes;
-                            let changes = if self.active().status.conflicts.is_empty() {
-                                &self.active().status.unstaged
-                            } else {
-                                &self.active().status.conflicts
-                            };
-                            if let Some(index) = changes.iter().position(|item| item.path == path) {
-                                self.selected_change = index;
-                            }
-                        } else {
+                        if staging {
                             self.focus = Focus::Staged;
                             if let Some(index) = self
                                 .active()
                                 .status
                                 .staged
                                 .iter()
-                                .position(|item| item.path == path)
+                                .position(|item| paths.contains(&item.path))
                             {
                                 self.selected_staged = index;
                             }
+                        } else {
+                            self.focus = Focus::Changes;
+                            let changes = if self.active().status.conflicts.is_empty() {
+                                &self.active().status.unstaged
+                            } else {
+                                &self.active().status.conflicts
+                            };
+                            if let Some(index) =
+                                changes.iter().position(|item| paths.contains(&item.path))
+                            {
+                                self.selected_change = index;
+                            }
                         }
                     }
-                    self.status_line = if was_staged { "Unstaged" } else { "Staged" }.into();
+                    self.status_line = match (staging, bulk) {
+                        (true, true) => "Staged all changes",
+                        (false, true) => "Unstaged all changes",
+                        (true, false) => "Staged",
+                        (false, false) => "Unstaged",
+                    }
+                    .into();
                 }
                 Err(error) => self.report_error(error),
             },
@@ -1828,7 +1838,7 @@ impl App {
         }
         .into();
         self.change_activity = Some(ChangeActivity {
-            path: path.clone(),
+            paths: vec![path.clone()],
             staging: !was_staged,
             started: Instant::now(),
         });
@@ -1838,10 +1848,11 @@ impl App {
             } else {
                 repo.stage(&path).await
             };
-            BackgroundResult::StageChange {
+            BackgroundResult::StageChanges {
                 repo_index,
-                path,
-                was_staged,
+                paths: vec![path],
+                staging: !was_staged,
+                bulk: false,
                 result,
             }
         }));
@@ -2013,15 +2024,76 @@ impl App {
     }
 
     async fn run_stage_all(&mut self) {
+        if self.background_task.is_some() {
+            self.status_line = "Another Git operation is still running".into();
+            return;
+        }
+        let paths = self
+            .active()
+            .status
+            .unstaged
+            .iter()
+            .chain(self.active().status.conflicts.iter())
+            .map(|change| change.path.clone())
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            self.status_line = "No unstaged changes".into();
+            return;
+        }
+        let repo_index = self.active_repo;
         let repo = self.active().repo.clone();
-        let result = repo.stage_all().await;
-        self.finish_action(result, "Staged all changes").await;
+        self.busy = true;
+        self.status_line = "Staging all changes…".into();
+        self.change_activity = Some(ChangeActivity {
+            paths: paths.clone(),
+            staging: true,
+            started: Instant::now(),
+        });
+        self.background_task = Some(tokio::spawn(async move {
+            BackgroundResult::StageChanges {
+                repo_index,
+                paths,
+                staging: true,
+                bulk: true,
+                result: repo.stage_all().await,
+            }
+        }));
     }
 
     async fn run_unstage_all(&mut self) {
+        if self.background_task.is_some() {
+            self.status_line = "Another Git operation is still running".into();
+            return;
+        }
+        let paths = self
+            .active()
+            .status
+            .staged
+            .iter()
+            .map(|change| change.path.clone())
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            self.status_line = "No staged changes".into();
+            return;
+        }
+        let repo_index = self.active_repo;
         let repo = self.active().repo.clone();
-        let result = repo.unstage_all().await;
-        self.finish_action(result, "Unstaged all changes").await;
+        self.busy = true;
+        self.status_line = "Unstaging all changes…".into();
+        self.change_activity = Some(ChangeActivity {
+            paths: paths.clone(),
+            staging: false,
+            started: Instant::now(),
+        });
+        self.background_task = Some(tokio::spawn(async move {
+            BackgroundResult::StageChanges {
+                repo_index,
+                paths,
+                staging: false,
+                bulk: true,
+                result: repo.unstage_all().await,
+            }
+        }));
     }
 
     async fn commit(&mut self, options: CommitOptions) {
@@ -4081,6 +4153,46 @@ mod tests {
             app.selected_change().unwrap().path,
             PathBuf::from("change.rs")
         );
+
+        app.run_stage_all().await;
+        assert!(matches!(
+            &app.change_activity,
+            Some(ChangeActivity {
+                paths,
+                staging: true,
+                ..
+            }) if paths == &[PathBuf::from("change.rs")]
+        ));
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+        assert!(app.poll_background().await);
+        assert_eq!(app.status_line, "Staged all changes");
+        assert_eq!(app.focus, Focus::Staged);
+
+        app.run_unstage_all().await;
+        assert!(matches!(
+            &app.change_activity,
+            Some(ChangeActivity {
+                paths,
+                staging: false,
+                ..
+            }) if paths == &[PathBuf::from("change.rs")]
+        ));
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+        assert!(app.poll_background().await);
+        assert_eq!(app.status_line, "Unstaged all changes");
+        assert_eq!(app.focus, Focus::Changes);
     }
 
     #[tokio::test]
