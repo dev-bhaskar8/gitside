@@ -95,9 +95,10 @@ provider = "codex" # codex, claude, opencode, or custom
 ```
 
 For a custom generator, set `provider = "custom"` and `command` to a trusted
-executable. It runs with your user permissions, receives the generation prompt
-on standard input, and must print only the proposed commit message to standard
-output.
+command line. It runs with your user permissions, receives the generation
+prompt on standard input, and must print only the proposed commit message to
+standard output. For example, Codex can be used with
+`codex exec --sandbox read-only -`.
 
 ```toml
 [ai.agent]

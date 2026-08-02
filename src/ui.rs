@@ -44,6 +44,42 @@ fn selection_style() -> Style {
     Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
 }
 
+fn outlined_button_width(label: &str, padded: bool) -> u16 {
+    display_width(label) as u16 + if padded { 4 } else { 2 }
+}
+
+fn render_outlined_button(
+    frame: &mut Frame<'_>,
+    app: &mut App,
+    rect: Rect,
+    label: &str,
+    action: UiAction,
+    selected: bool,
+) {
+    if rect.width < 3 || rect.height < 3 || rect.is_empty() {
+        return;
+    }
+    let label = truncate_to_width(label, rect.width.saturating_sub(2) as usize);
+    let accent = if selected {
+        Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(BLUE)
+    };
+    frame.render_widget(
+        Paragraph::new(label)
+            .alignment(Alignment::Center)
+            .style(accent)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(accent)
+                    .style(Style::default().bg(PANEL)),
+            ),
+        rect,
+    );
+    app.hits.push(HitRegion { rect, action });
+}
+
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
     frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
@@ -77,8 +113,8 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     }
 }
 
-fn header_height(_width: u16) -> u16 {
-    3
+fn header_height(width: u16) -> u16 {
+    if width < 75 { 4 } else { 3 }
 }
 
 fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -119,7 +155,7 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     ];
     let expanded_width = expanded
         .iter()
-        .map(|label| display_width(label) as u16 + 2)
+        .map(|label| outlined_button_width(label, true))
         .sum::<u16>()
         + 3;
     let full_labels = area.width >= expanded_width;
@@ -139,23 +175,18 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         UiAction::Push,
         UiAction::Refresh,
     ];
+    let padded = full_labels;
     let gap = u16::from(area.width >= 15);
     let widths = labels
         .each_ref()
-        .map(|label| display_width(label) as u16 + 2);
+        .map(|label| outlined_button_width(label, padded));
     let total_width = widths.iter().sum::<u16>() + gap * 3;
     let mut left = area.right().saturating_sub(total_width);
     let button_y = if thin_toolbar { area.y + 1 } else { area.y };
     for (index, ((label, action), width)) in labels.into_iter().zip(actions).zip(widths).enumerate()
     {
-        let rect = Rect::new(left, button_y, width, 1);
-        frame.render_widget(
-            Paragraph::new(format!("[{label}]"))
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(BLUE).bg(PANEL)),
-            rect,
-        );
-        app.hits.push(HitRegion { rect, action });
+        let rect = Rect::new(left, button_y, width, 3);
+        render_outlined_button(frame, app, rect, &label, action, false);
         left = rect.right() + u16::from(index < 3) * gap;
     }
 }
@@ -796,26 +827,15 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             ),
             area,
         );
-        if publish && area.width > 8 && area.height > 4 {
+        if publish && area.width > 8 && area.height > 6 {
             let label = if area.width >= 19 {
-                "[Enter Publish]"
+                "Enter Publish"
             } else {
-                "[Publish]"
+                "Publish"
             };
-            let button = Rect::new(
-                area.x + 2,
-                area.bottom().saturating_sub(2),
-                label.len() as u16,
-                1,
-            );
-            frame.render_widget(
-                Paragraph::new(label).style(Style::default().fg(BLUE)),
-                button,
-            );
-            app.hits.push(HitRegion {
-                rect: button,
-                action: UiAction::PublishGitHub,
-            });
+            let width = outlined_button_width(label, true).min(area.width.saturating_sub(4));
+            let button = Rect::new(area.x + 2, area.bottom().saturating_sub(4), width, 3);
+            render_outlined_button(frame, app, button, label, UiAction::PublishGitHub, false);
         }
         return;
     }
@@ -979,22 +999,22 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let mut body_y = inner.y;
     let mut x = inner.x;
     for (label, action, selected) in top_controls {
-        let width = (display_width(label) + 2) as u16;
+        let width = outlined_button_width(label, true);
         if x > inner.x && x.saturating_add(width) > inner.right() {
             x = inner.x;
-            body_y = body_y.saturating_add(1);
+            body_y = body_y.saturating_add(3);
         }
-        render_ai_button(
+        render_outlined_button(
             frame,
             app,
-            Rect::new(x, body_y, width.min(inner.right().saturating_sub(x)), 1),
+            Rect::new(x, body_y, width.min(inner.right().saturating_sub(x)), 3),
             label,
             action,
             selected,
         );
         x = x.saturating_add(width + 1);
     }
-    body_y = body_y.saturating_add(2);
+    body_y = body_y.saturating_add(4);
 
     let removable_key = settings.mode == AiMode::Api
         && matches!(
@@ -1002,26 +1022,26 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             crate::credentials::CredentialStatus::Stored
                 | crate::credentials::CredentialStatus::SessionOnly
         );
-    let footer_y = inner.bottom().saturating_sub(1);
+    let footer_y = inner.bottom().saturating_sub(3);
     let configure_label = "Configure";
-    let configure_width = (display_width(configure_label) + 2) as u16;
-    render_ai_button(
+    let configure_width = outlined_button_width(configure_label, true);
+    render_outlined_button(
         frame,
         app,
-        Rect::new(inner.x, footer_y, configure_width.min(inner.width), 1),
+        Rect::new(inner.x, footer_y, configure_width.min(inner.width), 3),
         configure_label,
         UiAction::OpenAiSetup(settings.mode),
         false,
     );
     if removable_key {
         let remove_label = "Remove key";
-        let remove_width = (display_width(remove_label) + 2) as u16;
+        let remove_width = outlined_button_width(remove_label, true);
         let x = inner.x.saturating_add(configure_width + 1);
         if x.saturating_add(remove_width) <= inner.right() {
-            render_ai_button(
+            render_outlined_button(
                 frame,
                 app,
-                Rect::new(x, footer_y, remove_width, 1),
+                Rect::new(x, footer_y, remove_width, 3),
                 remove_label,
                 UiAction::RemoveAiCredential,
                 false,
@@ -1035,33 +1055,6 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Rect::new(inner.x, body_y, inner.width, footer_y - body_y),
         );
     }
-}
-
-fn render_ai_button(
-    frame: &mut Frame<'_>,
-    app: &mut App,
-    rect: Rect,
-    label: &str,
-    action: UiAction,
-    selected: bool,
-) {
-    if rect.width < 2 || rect.is_empty() {
-        return;
-    }
-    let content_width = rect.width.saturating_sub(2) as usize;
-    let label = truncate_to_width(label, content_width);
-    let left = content_width.saturating_sub(display_width(&label)) / 2;
-    let right = content_width.saturating_sub(display_width(&label) + left);
-    let text = format!("[{}{}{}]", " ".repeat(left), label, " ".repeat(right));
-    frame.render_widget(
-        Paragraph::new(text).style(if selected {
-            Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(BLUE)
-        }),
-        rect,
-    );
-    app.hits.push(HitRegion { rect, action });
 }
 
 fn ai_panel_readiness(
@@ -1521,7 +1514,7 @@ fn render_ai_setup_overlay(
         inner.x,
         inner.y,
         inner.width,
-        inner.height.saturating_sub(1),
+        inner.height.saturating_sub(3),
     );
     let placeholder = ai_setup_placeholder(&draft)
         .map(|value| truncate_to_width(value, content_area.width.saturating_sub(1) as usize));
@@ -1576,40 +1569,38 @@ fn render_ai_setup_overlay(
         render_offset_scrollbar(frame, popup, scroll, max_scroll);
     }
 
-    if inner.height >= 2 {
-        let y = inner.bottom().saturating_sub(1);
-        let back = Rect::new(inner.x, y, 8.min(inner.width), 1);
-        frame.render_widget(
-            Paragraph::new("[Back]").style(Style::default().fg(BLUE)),
-            back,
-        );
-        app.hits.push(HitRegion {
-            rect: back,
-            action: UiAction::AiSetupBack,
-        });
+    if inner.height >= 3 {
+        let y = inner.bottom().saturating_sub(3);
+        let back_label = "Back";
+        let back_width = outlined_button_width(back_label, true).min(inner.width);
+        let back = Rect::new(inner.x, y, back_width, 3);
+        render_outlined_button(frame, app, back, back_label, UiAction::AiSetupBack, false);
         let label = if draft.step == crate::app::AiSetupStep::Review {
-            "[Save]"
+            "Save"
         } else {
-            "[Next]"
+            "Next"
         };
-        let width = label.len() as u16;
-        let next = Rect::new(inner.right().saturating_sub(width), y, width, 1);
-        frame.render_widget(Paragraph::new(label).style(Style::default().fg(BLUE)), next);
-        app.hits.push(HitRegion {
-            rect: next,
-            action: if draft.step == crate::app::AiSetupStep::Review {
+        let width = outlined_button_width(label, true).min(inner.width);
+        let next = Rect::new(inner.right().saturating_sub(width), y, width, 3);
+        render_outlined_button(
+            frame,
+            app,
+            next,
+            label,
+            if draft.step == crate::app::AiSetupStep::Review {
                 UiAction::AiSetupSave
             } else {
                 UiAction::AiSetupNext
             },
-        });
+            false,
+        );
     }
 }
 
 fn ai_setup_placeholder(draft: &crate::app::AiSetupDraft) -> Option<&'static str> {
     match draft.step {
         crate::app::AiSetupStep::Command if draft.command.trim().is_empty() => {
-            Some("/path/to/commit-message-generator")
+            Some("codex exec --sandbox read-only -")
         }
         crate::app::AiSetupStep::Model if draft.model.trim().is_empty() => Some(match draft.mode {
             AiMode::Agent => match draft.agent_provider {
@@ -2101,7 +2092,7 @@ mod tests {
             .find(|hit| matches!(hit.action, UiAction::OpenAiSetup(AiMode::Agent)))
             .expect("AI panel should expose clickable setup")
             .rect;
-        assert_eq!(configure.y, 18, "Configure should stay at the panel bottom");
+        assert_eq!(configure.y, 16, "Configure should stay at the panel bottom");
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: configure.x,
@@ -2187,14 +2178,14 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(output.contains("/path/to/commit-message-generator"));
+        assert!(output.contains("codex exec --sandbox read-only -"));
         assert!(
             terminal
                 .backend()
                 .buffer()
                 .content()
                 .iter()
-                .any(|cell| cell.symbol() == "/" && cell.modifier.contains(Modifier::DIM))
+                .any(|cell| cell.symbol() == "c" && cell.modifier.contains(Modifier::DIM))
         );
 
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
@@ -2388,7 +2379,7 @@ mod tests {
                 "Configure shared the mode row at width {width}"
             );
             assert_eq!(
-                configure_y, 28,
+                configure_y, 26,
                 "Configure left the bottom at width {width}"
             );
 
@@ -2431,15 +2422,25 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(top.len(), 4);
         assert_eq!(top.first().unwrap().rect.x, 1);
-        assert_eq!(top.first().unwrap().rect.width, 10);
-        assert_eq!(top.last().unwrap().rect.right(), 39);
+        assert_eq!(top.first().unwrap().rect.width, 12);
+        assert_eq!(top.last().unwrap().rect.right(), 47);
+        for button in &top {
+            assert_eq!(button.rect.height, 3);
+            let corner = terminal
+                .backend()
+                .buffer()
+                .cell((button.rect.x, button.rect.y))
+                .unwrap();
+            assert_eq!(corner.symbol(), "┌");
+            assert_eq!(corner.bg, Color::Reset);
+        }
         let configure = app
             .hits
             .iter()
             .find(|hit| matches!(hit.action, UiAction::OpenAiSetup(_)))
             .unwrap()
             .rect;
-        assert_eq!(configure, Rect::new(1, 18, 11, 1));
+        assert_eq!(configure, Rect::new(1, 16, 13, 3));
 
         let output = terminal
             .backend()
@@ -2448,13 +2449,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        for control in [
-            "[e AI off]",
-            "[1 Local]",
-            "[2 Agent]",
-            "[3 API]",
-            "[Configure]",
-        ] {
+        for control in ["e AI off", "1 Local", "2 Agent", "3 API", "Configure"] {
             assert!(output.contains(control), "missing compact {control}");
         }
     }
@@ -2599,14 +2594,14 @@ mod tests {
 
             assert_eq!(buttons.len(), 4, "width {width}");
             for button in &buttons {
-                assert_eq!(button.rect.height, 1, "width {width}");
+                assert_eq!(button.rect.height, 3, "width {width}");
                 assert!(button.rect.right() <= width, "width {width}");
                 let top_left = terminal
                     .backend()
                     .buffer()
                     .cell((button.rect.x, button.rect.y))
                     .unwrap();
-                assert_eq!(top_left.symbol(), "[", "width {width}");
+                assert_eq!(top_left.symbol(), "┌", "width {width}");
                 assert_eq!(top_left.bg, Color::Reset, "width {width}");
             }
             for (index, button) in buttons.iter().enumerate() {
@@ -2625,16 +2620,16 @@ mod tests {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect();
-            if width >= 34 {
-                assert!(output.contains("[f Fetch]"), "width {width}");
-                assert!(output.contains("[l Pull]"), "width {width}");
-                assert!(output.contains("[p Push]"), "width {width}");
-                assert!(output.contains("[r ↻]"), "width {width}");
+            if width >= 41 {
+                assert!(output.contains("f Fetch"), "width {width}");
+                assert!(output.contains("l Pull"), "width {width}");
+                assert!(output.contains("p Push"), "width {width}");
+                assert!(output.contains("r ↻"), "width {width}");
             } else {
-                assert!(output.contains("[f]"), "width {width}");
-                assert!(output.contains("[l]"), "width {width}");
-                assert!(output.contains("[p]"), "width {width}");
-                assert!(output.contains("[r]"), "width {width}");
+                assert!(output.contains("│f│"), "width {width}");
+                assert!(output.contains("│l│"), "width {width}");
+                assert!(output.contains("│p│"), "width {width}");
+                assert!(output.contains("│r│"), "width {width}");
             }
         }
     }
@@ -2655,7 +2650,7 @@ mod tests {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect::<String>()
-                .contains("[p Publish]")
+                .contains("p Publish")
         );
 
         let branch = &mut app.active_mut().status.branch;
@@ -2671,7 +2666,7 @@ mod tests {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect::<String>()
-                .contains("[p Sync]")
+                .contains("p Sync")
         );
 
         app.active_mut().status.branch.behind = 0;
@@ -2684,7 +2679,7 @@ mod tests {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect::<String>()
-                .contains("[p Push]")
+                .contains("p Push")
         );
     }
 

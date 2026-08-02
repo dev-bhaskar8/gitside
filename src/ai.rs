@@ -92,11 +92,13 @@ pub fn readiness(settings: &AiSettings) -> String {
     match settings.mode {
         AiMode::Local => "Ready · offline".into(),
         AiMode::Agent => {
-            let command = agent_program(settings);
-            if executable_available(&command) {
-                format!("Ready · {command} detected")
-            } else {
-                format!("Unavailable · {command} not found")
+            let command = agent_command_parts(settings);
+            match command {
+                Ok((program, _)) if executable_available(&program) => {
+                    format!("Ready · {program} detected")
+                }
+                Ok((program, _)) => format!("Unavailable · {program} not found"),
+                Err(error) => format!("Unavailable · {error}"),
             }
         }
         AiMode::Api => {
@@ -329,7 +331,7 @@ async fn generate_with_agent(
     context: &GenerationContext,
 ) -> Result<String> {
     let prompt = context.prompt(&settings.instructions);
-    let program = agent_program(settings);
+    let (program, configured_args) = agent_command_parts(settings)?;
     let mut command = Command::new(&program);
     command.current_dir(root).kill_on_drop(true);
     match settings.agent.provider {
@@ -370,7 +372,7 @@ async fn generate_with_agent(
             command.args(&settings.agent.args).arg(&prompt);
         }
         AgentProvider::Custom => {
-            command.args(&settings.agent.args);
+            command.args(configured_args).args(&settings.agent.args);
         }
     }
     command
@@ -539,6 +541,18 @@ fn agent_program(settings: &AiSettings) -> String {
             AgentProvider::Opencode => "opencode".into(),
             AgentProvider::Custom => "commit-message-generator".into(),
         })
+}
+
+fn agent_command_parts(settings: &AiSettings) -> Result<(String, Vec<String>)> {
+    let command = agent_program(settings);
+    if settings.agent.provider != AgentProvider::Custom {
+        return Ok((command, Vec::new()));
+    }
+    let parsed = shell_words::split(&command).context("invalid custom agent command")?;
+    let Some((program, args)) = parsed.split_first() else {
+        bail!("custom agent command is empty");
+    };
+    Ok((program.clone(), args.to_vec()))
 }
 
 fn executable_available(command: &str) -> bool {
@@ -843,7 +857,7 @@ mod tests {
         let script = directory.path().join("generator.sh");
         fs::write(
             &script,
-            "#!/bin/sh\ninput=$(cat)\nprintf 'Update AI adapter'\nprintf '%s' \"$input\" | grep -q 'src/ai.rs'\n",
+            "#!/bin/sh\n[ \"$1\" = '--commit-message' ] || exit 2\ninput=$(cat)\nprintf 'Update AI adapter'\nprintf '%s' \"$input\" | grep -q 'src/ai.rs'\n",
         )
         .unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
@@ -853,7 +867,7 @@ mod tests {
             ..AiSettings::default()
         };
         settings.agent.provider = AgentProvider::Custom;
-        settings.agent.command = Some(script.to_string_lossy().into_owned());
+        settings.agent.command = Some(format!("{} --commit-message", script.display()));
 
         assert_eq!(
             generate(&settings, &repo, &[], None).await.unwrap(),
