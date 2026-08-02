@@ -42,6 +42,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      SOURCE_REF: ${{ inputs.source_ref || '' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -55,8 +56,8 @@ jobs:
         run: |
           set -euo pipefail
           package_version=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name == "gitside") | .version')
-          if test -n "${{ inputs.source_ref }}"; then
-            echo "Using ${{ inputs.source_ref }} to rebuild manifests for $RELEASE_TAG"
+          if test -n "$SOURCE_REF"; then
+            echo "Using $SOURCE_REF to rebuild manifests for $RELEASE_TAG"
           else
             test "$RELEASE_TAG" = "v$package_version"
           fi
