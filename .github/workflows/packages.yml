@@ -230,7 +230,7 @@ jobs:
             sed -i '/      - pkg-config/a\      - libdbus-1-dev' snap/snapcraft.yaml
       - name: Build snap
         id: build
-        uses: snapcore/action-build@b391f430cb2650fd359ed4d2cfe88b2c481800e0
+        uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79
       - name: Publish stable snap
         uses: snapcore/action-publish@9334eecb267cfd97a0ce3c8654215d095927252f
         env:
