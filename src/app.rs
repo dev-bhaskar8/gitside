@@ -165,6 +165,18 @@ impl AiSetupDraft {
         "•".repeat(self.api_key.chars().count().min(48))
     }
 
+    pub fn secret_mask_with_cursor(&self, cursor: usize) -> String {
+        let cursor = clamp_text_cursor(&self.api_key, cursor);
+        let character = self.api_key[..cursor].chars().count().min(48);
+        let mut mask = self.secret_mask();
+        let byte = mask
+            .char_indices()
+            .nth(character)
+            .map_or(mask.len(), |(index, _)| index);
+        mask.insert(byte, '█');
+        mask
+    }
+
     fn from_settings(settings: &AiSettings, mode: AiMode) -> Self {
         Self {
             mode,
@@ -265,6 +277,7 @@ pub struct App {
     pub selected_github: usize,
     pub github_show_issues: bool,
     pub commit_message: String,
+    pub text_cursor: usize,
     pub commit_scroll: u16,
     pub commit_max_scroll: u16,
     pub preview: Option<Preview>,
@@ -392,6 +405,7 @@ impl App {
             selected_github: 0,
             github_show_issues: false,
             commit_message: String::new(),
+            text_cursor: 0,
             commit_scroll: 0,
             commit_max_scroll: 0,
             preview: None,
@@ -592,6 +606,7 @@ impl App {
                 Ok(message) if repo_index == self.active_repo => {
                     self.ai_generation_state = AiGenerationState::Idle;
                     self.commit_message = message;
+                    self.text_cursor = self.commit_message.len();
                     self.commit_scroll = 0;
                     self.commit_history_index = None;
                     self.focus = Focus::Commit;
@@ -684,12 +699,33 @@ impl App {
                     self.clear_commit_message();
                 }
                 KeyCode::Backspace => {
-                    self.commit_message.pop();
+                    backspace_at_text_cursor(&mut self.commit_message, &mut self.text_cursor);
+                    self.commit_scroll = 0;
+                    self.commit_history_index = None;
+                }
+                KeyCode::Delete => {
+                    delete_at_text_cursor(&mut self.commit_message, &mut self.text_cursor);
                     self.commit_scroll = 0;
                     self.commit_history_index = None;
                 }
                 KeyCode::Enter => {
-                    self.commit_message.push('\n');
+                    insert_at_text_cursor(&mut self.commit_message, &mut self.text_cursor, '\n');
+                    self.commit_scroll = 0;
+                }
+                KeyCode::Left => {
+                    move_text_cursor_left(&self.commit_message, &mut self.text_cursor);
+                    self.commit_scroll = 0;
+                }
+                KeyCode::Right => {
+                    move_text_cursor_right(&self.commit_message, &mut self.text_cursor);
+                    self.commit_scroll = 0;
+                }
+                KeyCode::Home if key.modifiers.is_empty() => {
+                    self.text_cursor = 0;
+                    self.commit_scroll = 0;
+                }
+                KeyCode::End if key.modifiers.is_empty() => {
+                    self.text_cursor = self.commit_message.len();
                     self.commit_scroll = 0;
                 }
                 KeyCode::PageUp => {
@@ -712,7 +748,11 @@ impl App {
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
-                    self.commit_message.push(character);
+                    insert_at_text_cursor(
+                        &mut self.commit_message,
+                        &mut self.text_cursor,
+                        character,
+                    );
                     self.commit_scroll = 0;
                     self.commit_history_index = None;
                 }
@@ -727,6 +767,7 @@ impl App {
             KeyCode::Char('q') => return EventOutcome::Quit,
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('/') => {
+                self.text_cursor = 0;
                 self.overlay = Some(Overlay::Search {
                     value: String::new(),
                 })
@@ -754,7 +795,10 @@ impl App {
             {
                 self.remove_ai_credential()
             }
-            KeyCode::Char('c') => self.focus = Focus::Commit,
+            KeyCode::Char('c') => {
+                self.focus = Focus::Commit;
+                self.text_cursor = self.commit_message.len();
+            }
             KeyCode::Char('g') => self.focus = Focus::Graph,
             KeyCode::Char('b') => self.focus = Focus::Branches,
             KeyCode::Char('h') => self.focus_github(),
@@ -779,19 +823,24 @@ impl App {
             KeyCode::Char('z') => self.focus = Focus::Stashes,
             KeyCode::Char('W') => self.focus = Focus::Worktrees,
             KeyCode::Char('w') if self.focus == Focus::Branches => {
-                if let Some(branch) = self.active().branches.get(self.selected_branch) {
+                if let Some(branch) = self
+                    .active()
+                    .branches
+                    .get(self.selected_branch)
+                    .map(|branch| branch.name.clone())
+                {
+                    self.text_cursor = 0;
                     self.overlay = Some(Overlay::Prompt {
                         title: "Add worktree".into(),
-                        label: format!("Path for branch {}", branch.name),
+                        label: format!("Path for branch {branch}"),
                         value: String::new(),
                         replace_on_type: false,
-                        action: PromptAction::AddWorktree {
-                            branch: branch.name.clone(),
-                        },
+                        action: PromptAction::AddWorktree { branch },
                     });
                 }
             }
             KeyCode::Char('n') if self.focus == Focus::Branches => {
+                self.text_cursor = 0;
                 self.overlay = Some(Overlay::Prompt {
                     title: "Create branch".into(),
                     label: "Branch name".into(),
@@ -809,15 +858,19 @@ impl App {
             KeyCode::Char('y') if self.focus == Focus::Graph => self.cherry_pick_selected().await,
             KeyCode::Char('v') if self.focus == Focus::Graph => self.revert_selected().await,
             KeyCode::Char('t') if self.focus == Focus::Graph => {
-                if let Some(commit) = self.active().history.get(self.selected_commit) {
+                if let Some(oid) = self
+                    .active()
+                    .history
+                    .get(self.selected_commit)
+                    .map(|commit| commit.oid.clone())
+                {
+                    self.text_cursor = 0;
                     self.overlay = Some(Overlay::Prompt {
                         title: "Create tag".into(),
                         label: "Tag name".into(),
                         value: String::new(),
                         replace_on_type: false,
-                        action: PromptAction::CreateTag {
-                            oid: commit.oid.clone(),
-                        },
+                        action: PromptAction::CreateTag { oid },
                     });
                 }
             }
@@ -939,10 +992,50 @@ impl App {
                     {
                         if *replace_on_type {
                             value.clear();
+                            self.text_cursor = 0;
                             *replace_on_type = false;
                         } else {
-                            value.pop();
+                            backspace_at_text_cursor(value, &mut self.text_cursor);
                         }
+                    }
+                }
+                KeyCode::Delete => {
+                    if let Some(Overlay::Prompt {
+                        value,
+                        replace_on_type,
+                        ..
+                    }) = &mut self.overlay
+                    {
+                        *replace_on_type = false;
+                        delete_at_text_cursor(value, &mut self.text_cursor);
+                    }
+                }
+                KeyCode::Left => {
+                    if let Some(Overlay::Prompt {
+                        value,
+                        replace_on_type,
+                        ..
+                    }) = &mut self.overlay
+                    {
+                        *replace_on_type = false;
+                        move_text_cursor_left(value, &mut self.text_cursor);
+                    }
+                }
+                KeyCode::Right => {
+                    if let Some(Overlay::Prompt {
+                        value,
+                        replace_on_type,
+                        ..
+                    }) = &mut self.overlay
+                    {
+                        *replace_on_type = false;
+                        move_text_cursor_right(value, &mut self.text_cursor);
+                    }
+                }
+                KeyCode::Home => self.text_cursor = 0,
+                KeyCode::End => {
+                    if let Some(Overlay::Prompt { value, .. }) = &self.overlay {
+                        self.text_cursor = value.len();
                     }
                 }
                 KeyCode::Enter => {
@@ -961,9 +1054,10 @@ impl App {
                     {
                         if *replace_on_type {
                             value.clear();
+                            self.text_cursor = 0;
                             *replace_on_type = false;
                         }
-                        value.push(character);
+                        insert_at_text_cursor(value, &mut self.text_cursor, character);
                     }
                 }
                 _ => {}
@@ -999,7 +1093,28 @@ impl App {
                 KeyCode::Esc => self.overlay = None,
                 KeyCode::Backspace => {
                     if let Some(Overlay::Search { value }) = &mut self.overlay {
-                        value.pop();
+                        backspace_at_text_cursor(value, &mut self.text_cursor);
+                    }
+                }
+                KeyCode::Delete => {
+                    if let Some(Overlay::Search { value }) = &mut self.overlay {
+                        delete_at_text_cursor(value, &mut self.text_cursor);
+                    }
+                }
+                KeyCode::Left => {
+                    if let Some(Overlay::Search { value }) = &mut self.overlay {
+                        move_text_cursor_left(value, &mut self.text_cursor);
+                    }
+                }
+                KeyCode::Right => {
+                    if let Some(Overlay::Search { value }) = &mut self.overlay {
+                        move_text_cursor_right(value, &mut self.text_cursor);
+                    }
+                }
+                KeyCode::Home => self.text_cursor = 0,
+                KeyCode::End => {
+                    if let Some(Overlay::Search { value }) = &self.overlay {
+                        self.text_cursor = value.len();
                     }
                 }
                 KeyCode::Enter => {
@@ -1015,7 +1130,7 @@ impl App {
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
                     if let Some(Overlay::Search { value }) = &mut self.overlay {
-                        value.push(character);
+                        insert_at_text_cursor(value, &mut self.text_cursor, character);
                     }
                 }
                 _ => {}
@@ -1130,6 +1245,9 @@ impl App {
         });
         if let Some(focus) = focus {
             self.focus = focus;
+            if focus == Focus::Commit {
+                self.text_cursor = self.commit_message.len();
+            }
             if focus == Focus::GitHub {
                 self.focus_github();
             }
@@ -1139,7 +1257,12 @@ impl App {
     async fn perform_ui_action(&mut self, action: UiAction) {
         match action {
             UiAction::Focus(Focus::GitHub) => self.focus_github(),
-            UiAction::Focus(focus) => self.focus = focus,
+            UiAction::Focus(focus) => {
+                self.focus = focus;
+                if focus == Focus::Commit {
+                    self.text_cursor = self.commit_message.len();
+                }
+            }
             UiAction::SelectChange { staged, index } => {
                 if staged {
                     self.focus = Focus::Staged;
@@ -1228,6 +1351,7 @@ impl App {
             self.persist_ai_settings("Smart Local enabled");
             return;
         }
+        self.text_cursor = 0;
         self.overlay = Some(Overlay::AiSetup(AiSetupDraft::from_settings(
             &self.settings.ai,
             mode,
@@ -1257,6 +1381,22 @@ impl App {
                 set_setup_provider(&mut draft, (current + 1) % count);
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
+            KeyCode::Left if draft.step != AiSetupStep::Review => {
+                move_text_cursor_left(ai_setup_input(&draft), &mut self.text_cursor);
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::Right if draft.step != AiSetupStep::Review => {
+                move_text_cursor_right(ai_setup_input(&draft), &mut self.text_cursor);
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::Home if draft.step != AiSetupStep::Provider => {
+                self.text_cursor = 0;
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::End if draft.step != AiSetupStep::Provider => {
+                self.text_cursor = ai_setup_input(&draft).len();
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
             KeyCode::Char(character @ '1'..='5') if draft.step == AiSetupStep::Provider => {
                 let index = character.to_digit(10).unwrap_or(1) as usize - 1;
                 if index < provider_count(draft.mode) {
@@ -1264,15 +1404,25 @@ impl App {
                 }
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
-            KeyCode::Backspace if draft.step != AiSetupStep::Provider => {
-                ai_setup_input_mut(&mut draft).pop();
+            KeyCode::Backspace
+                if draft.step != AiSetupStep::Provider && draft.step != AiSetupStep::Review =>
+            {
+                backspace_at_text_cursor(ai_setup_input_mut(&mut draft), &mut self.text_cursor);
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::Delete
+                if draft.step != AiSetupStep::Provider && draft.step != AiSetupStep::Review =>
+            {
+                delete_at_text_cursor(ai_setup_input_mut(&mut draft), &mut self.text_cursor);
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
             KeyCode::Char('a')
                 if draft.step != AiSetupStep::Provider
+                    && draft.step != AiSetupStep::Review
                     && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
                 ai_setup_input_mut(&mut draft).clear();
+                self.text_cursor = 0;
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
             KeyCode::Char(character)
@@ -1282,7 +1432,11 @@ impl App {
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                ai_setup_input_mut(&mut draft).push(character);
+                insert_at_text_cursor(
+                    ai_setup_input_mut(&mut draft),
+                    &mut self.text_cursor,
+                    character,
+                );
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
             _ => self.overlay = Some(Overlay::AiSetup(draft)),
@@ -1355,6 +1509,7 @@ impl App {
                 return;
             }
         }
+        self.text_cursor = ai_setup_input(&draft).len();
         self.overlay = Some(Overlay::AiSetup(draft));
     }
 
@@ -1382,6 +1537,7 @@ impl App {
             AiSetupStep::Instructions => AiSetupStep::ApiKey,
             AiSetupStep::Review => AiSetupStep::Instructions,
         };
+        self.text_cursor = ai_setup_input(&draft).len();
         self.overlay = Some(Overlay::AiSetup(draft));
     }
 
@@ -1650,6 +1806,7 @@ impl App {
             (Some(0), false) => {
                 self.commit_history_index = None;
                 self.commit_message = self.commit_history_draft.clone();
+                self.text_cursor = self.commit_message.len();
                 self.commit_scroll = 0;
                 return;
             }
@@ -1658,11 +1815,13 @@ impl App {
         };
         self.commit_history_index = Some(next);
         self.commit_message = self.active().history[next].subject.clone();
+        self.text_cursor = self.commit_message.len();
         self.commit_scroll = 0;
     }
 
     fn clear_commit_message(&mut self) {
         self.commit_message.clear();
+        self.text_cursor = 0;
         self.commit_scroll = 0;
         self.commit_history_index = None;
         self.commit_history_draft.clear();
@@ -1693,30 +1852,25 @@ impl App {
             .iter()
             .find(|remote| remote.name == "origin")
             .or_else(|| self.active().remotes.first())
-            .map(|remote| remote.name.as_str())
-            .unwrap_or("origin");
+            .map(|remote| remote.name.clone())
+            .unwrap_or_else(|| "origin".into());
         let branch = self
             .active()
             .status
             .branch
             .head
-            .as_deref()
-            .unwrap_or("main");
+            .clone()
+            .unwrap_or_else(|| "main".into());
+        self.text_cursor = 0;
         self.overlay = Some(Overlay::Prompt {
             title: if push { "Push to" } else { "Pull from" }.into(),
             label: format!("Remote and branch (default: {remote} {branch})"),
             value: String::new(),
             replace_on_type: false,
             action: if push {
-                PromptAction::PushTarget {
-                    remote: remote.into(),
-                    branch: branch.into(),
-                }
+                PromptAction::PushTarget { remote, branch }
             } else {
-                PromptAction::PullTarget {
-                    remote: remote.into(),
-                    branch: branch.into(),
-                }
+                PromptAction::PullTarget { remote, branch }
             },
         });
     }
@@ -2384,10 +2538,12 @@ impl App {
             self.load_github();
             return;
         }
+        let value = self.active().repo.name();
+        self.text_cursor = value.len();
         self.overlay = Some(Overlay::Prompt {
             title: "Publish to GitHub".into(),
             label: "Repository name".into(),
-            value: self.active().repo.name(),
+            value,
             action: PromptAction::PublishGitHubName,
             replace_on_type: true,
         });
@@ -2699,6 +2855,9 @@ impl App {
             (current + 1) % ORDER.len()
         };
         self.focus = ORDER[next];
+        if self.focus == Focus::Commit {
+            self.text_cursor = self.commit_message.len();
+        }
         if self.focus == Focus::GitHub {
             self.focus_github();
         }
@@ -3017,6 +3176,18 @@ fn ai_setup_input_mut(draft: &mut AiSetupDraft) -> &mut String {
     }
 }
 
+fn ai_setup_input(draft: &AiSetupDraft) -> &String {
+    match draft.step {
+        AiSetupStep::Command => &draft.command,
+        AiSetupStep::Model => &draft.model,
+        AiSetupStep::ApiKey => &draft.api_key,
+        AiSetupStep::Endpoint => &draft.endpoint,
+        AiSetupStep::Instructions | AiSetupStep::Provider | AiSetupStep::Review => {
+            &draft.instructions
+        }
+    }
+}
+
 fn valid_ai_endpoint(value: &str) -> bool {
     reqwest::Url::parse(value.trim()).is_ok_and(|url| {
         let sensitive_query = url.query_pairs().any(|(name, _)| {
@@ -3032,6 +3203,61 @@ fn valid_ai_endpoint(value: &str) -> bool {
 
 fn nonempty_owned(value: String) -> Option<String> {
     (!value.trim().is_empty()).then(|| value.trim().to_owned())
+}
+
+fn clamp_text_cursor(value: &str, cursor: usize) -> usize {
+    let mut cursor = cursor.min(value.len());
+    while cursor > 0 && !value.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    cursor
+}
+
+fn move_text_cursor_left(value: &str, cursor: &mut usize) {
+    let current = clamp_text_cursor(value, *cursor);
+    *cursor = value[..current]
+        .char_indices()
+        .next_back()
+        .map_or(0, |(index, _)| index);
+}
+
+fn move_text_cursor_right(value: &str, cursor: &mut usize) {
+    let current = clamp_text_cursor(value, *cursor);
+    *cursor = value[current..]
+        .char_indices()
+        .nth(1)
+        .map_or(value.len(), |(index, _)| current + index);
+}
+
+fn insert_at_text_cursor(value: &mut String, cursor: &mut usize, character: char) {
+    *cursor = clamp_text_cursor(value, *cursor);
+    value.insert(*cursor, character);
+    *cursor += character.len_utf8();
+}
+
+fn backspace_at_text_cursor(value: &mut String, cursor: &mut usize) {
+    let current = clamp_text_cursor(value, *cursor);
+    if current == 0 {
+        return;
+    }
+    let previous = value[..current]
+        .char_indices()
+        .next_back()
+        .map_or(0, |(index, _)| index);
+    value.drain(previous..current);
+    *cursor = previous;
+}
+
+fn delete_at_text_cursor(value: &mut String, cursor: &mut usize) {
+    let current = clamp_text_cursor(value, *cursor);
+    let next = value[current..]
+        .char_indices()
+        .nth(1)
+        .map_or(value.len(), |(index, _)| current + index);
+    if next > current {
+        value.drain(current..next);
+    }
+    *cursor = current;
 }
 
 fn commit_options_for_key(key: KeyEvent) -> Option<CommitOptions> {
@@ -3367,6 +3593,75 @@ mod tests {
         assert_eq!(app.commit_scroll, 0);
         assert_eq!(app.commit_history_index, None);
         assert_eq!(app.status_line, "Cleared commit message");
+    }
+
+    #[tokio::test]
+    async fn arrows_edit_at_the_cursor_in_every_text_input() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+
+        app.focus = Focus::Commit;
+        for character in ['a', '💙', 'b'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.commit_message, "aX");
+
+        app.overlay = Some(Overlay::Prompt {
+            title: "Edit".into(),
+            label: "Value".into(),
+            value: "ab".into(),
+            action: PromptAction::CreateBranch,
+            replace_on_type: false,
+        });
+        app.text_cursor = 2;
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE))
+            .await;
+        assert!(matches!(
+            &app.overlay,
+            Some(Overlay::Prompt { value, .. }) if value == "aXb"
+        ));
+
+        app.overlay = Some(Overlay::Search { value: "ab".into() });
+        app.text_cursor = 2;
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
+            .await;
+        assert!(matches!(
+            &app.overlay,
+            Some(Overlay::Search { value }) if value == "b"
+        ));
+
+        app.open_ai_setup(AiMode::Agent);
+        app.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        for character in "codex".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE))
+            .await;
+        assert!(matches!(
+            &app.overlay,
+            Some(Overlay::AiSetup(draft)) if draft.command == "codXex"
+        ));
     }
 
     #[tokio::test]

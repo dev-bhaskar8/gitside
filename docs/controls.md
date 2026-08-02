@@ -28,6 +28,9 @@ actions when terminal mouse events are enabled. In tmux, use `set -g mouse on`.
 | `E` | Interactive line staging |
 | `o` | Open working file in configured editor |
 | `c` | Focus commit message |
+| `Left` / `Right` in any text input | Move the editing cursor |
+| `Home` / `End` in any text input | Move to the start / end |
+| `Backspace` / `Delete` in any text input | Delete before / after the cursor |
 | `Ctrl+U` / `Ctrl+Backspace` in message | Clear the entire commit-message draft |
 | `Page Up` / `Page Down` in message | Scroll a long draft |
 | `Ctrl+Home` / `Ctrl+End` in message | Top / bottom of a long draft |

@@ -56,25 +56,26 @@ fn render_outlined_button(
     action: UiAction,
     selected: bool,
 ) {
-    if rect.width < 3 || rect.height < 3 || rect.is_empty() {
+    if rect.width < 3 || rect.height < 1 || rect.is_empty() {
         return;
     }
-    let label = truncate_to_width(label, rect.width.saturating_sub(2) as usize);
+    let content_width = rect.width.saturating_sub(2) as usize;
+    let label = truncate_to_width(label, content_width);
+    let left = content_width.saturating_sub(display_width(&label)) / 2;
+    let right = content_width.saturating_sub(display_width(&label) + left);
+    let text = format!("│{}{}{}│", " ".repeat(left), label, " ".repeat(right));
     let accent = if selected {
-        Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(BLUE)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     } else {
-        Style::default().fg(BLUE)
+        Style::default().fg(BLUE).add_modifier(Modifier::UNDERLINED)
     };
     frame.render_widget(
-        Paragraph::new(label)
+        Paragraph::new(text)
             .alignment(Alignment::Center)
             .style(accent)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(accent)
-                    .style(Style::default().bg(PANEL)),
-            ),
+            .block(Block::default().style(Style::default().bg(PANEL))),
         rect,
     );
     app.hits.push(HitRegion { rect, action });
@@ -113,8 +114,8 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     }
 }
 
-fn header_height(width: u16) -> u16 {
-    if width < 75 { 4 } else { 3 }
+fn header_height(_width: u16) -> u16 {
+    3
 }
 
 fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -185,7 +186,7 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let button_y = if thin_toolbar { area.y + 1 } else { area.y };
     for (index, ((label, action), width)) in labels.into_iter().zip(actions).zip(widths).enumerate()
     {
-        let rect = Rect::new(left, button_y, width, 3);
+        let rect = Rect::new(left, button_y, width, 1);
         render_outlined_button(frame, app, rect, &label, action, false);
         left = rect.right() + u16::from(index < 3) * gap;
     }
@@ -229,7 +230,23 @@ fn render_commit(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             let max_scroll = lines.len().saturating_sub(text_area.height as usize) as u16;
             app.commit_max_scroll = max_scroll;
             app.commit_scroll = app.commit_scroll.min(max_scroll);
-            let scroll = max_scroll.saturating_sub(app.commit_scroll);
+            let mut cursor = app.text_cursor.min(app.commit_message.len());
+            while cursor > 0 && !app.commit_message.is_char_boundary(cursor) {
+                cursor -= 1;
+            }
+            app.text_cursor = cursor;
+            let cursor_lines = wrap_editor_text(&app.commit_message[..cursor], text_area.width);
+            let cursor_line = cursor_lines.len().saturating_sub(1) as u16;
+            let cursor_x = display_width(cursor_lines.last().map(String::as_str).unwrap_or(""));
+            let mut scroll = max_scroll.saturating_sub(app.commit_scroll);
+            if focused && app.commit_scroll == 0 {
+                if cursor_line < scroll {
+                    scroll = cursor_line;
+                } else if cursor_line >= scroll.saturating_add(text_area.height) {
+                    scroll = cursor_line.saturating_sub(text_area.height.saturating_sub(1));
+                }
+                app.commit_scroll = max_scroll.saturating_sub(scroll);
+            }
             let visible = lines
                 .iter()
                 .skip(scroll as usize)
@@ -255,16 +272,14 @@ fn render_commit(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     );
                 }
             }
-            if focused && app.commit_scroll == 0 {
-                let cursor_line = lines.len().saturating_sub(1) as u16;
-                if cursor_line >= scroll && cursor_line < scroll.saturating_add(text_area.height) {
-                    let cursor_x = display_width(lines.last().map(String::as_str).unwrap_or(""));
-                    frame.set_cursor_position((
-                        text_area.x
-                            + cursor_x.min(text_area.width.saturating_sub(1) as usize) as u16,
-                        text_area.y + cursor_line - scroll,
-                    ));
-                }
+            if focused
+                && cursor_line >= scroll
+                && cursor_line < scroll.saturating_add(text_area.height)
+            {
+                frame.set_cursor_position((
+                    text_area.x + cursor_x.min(text_area.width.saturating_sub(1) as usize) as u16,
+                    text_area.y + cursor_line - scroll,
+                ));
             }
         }
     }
@@ -335,6 +350,16 @@ fn ai_spinner(started: std::time::Instant) -> char {
     let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let frame = (started.elapsed().as_millis() / 100) as usize % frames.len();
     frames[frame]
+}
+
+fn cursor_marked(value: &str, cursor: usize) -> String {
+    let mut cursor = cursor.min(value.len());
+    while cursor > 0 && !value.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    let mut marked = value.to_owned();
+    marked.insert(cursor, '█');
+    marked
 }
 
 fn wrap_editor_text(value: &str, width: u16) -> Vec<String> {
@@ -827,14 +852,14 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             ),
             area,
         );
-        if publish && area.width > 8 && area.height > 6 {
+        if publish && area.width > 8 && area.height > 4 {
             let label = if area.width >= 19 {
                 "Enter Publish"
             } else {
                 "Publish"
             };
             let width = outlined_button_width(label, true).min(area.width.saturating_sub(4));
-            let button = Rect::new(area.x + 2, area.bottom().saturating_sub(4), width, 3);
+            let button = Rect::new(area.x + 2, area.bottom().saturating_sub(2), width, 1);
             render_outlined_button(frame, app, button, label, UiAction::PublishGitHub, false);
         }
         return;
@@ -1002,19 +1027,19 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let width = outlined_button_width(label, true);
         if x > inner.x && x.saturating_add(width) > inner.right() {
             x = inner.x;
-            body_y = body_y.saturating_add(3);
+            body_y = body_y.saturating_add(1);
         }
         render_outlined_button(
             frame,
             app,
-            Rect::new(x, body_y, width.min(inner.right().saturating_sub(x)), 3),
+            Rect::new(x, body_y, width.min(inner.right().saturating_sub(x)), 1),
             label,
             action,
             selected,
         );
         x = x.saturating_add(width + 1);
     }
-    body_y = body_y.saturating_add(4);
+    body_y = body_y.saturating_add(2);
 
     let removable_key = settings.mode == AiMode::Api
         && matches!(
@@ -1022,13 +1047,13 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             crate::credentials::CredentialStatus::Stored
                 | crate::credentials::CredentialStatus::SessionOnly
         );
-    let footer_y = inner.bottom().saturating_sub(3);
+    let footer_y = inner.bottom().saturating_sub(1);
     let configure_label = "Configure";
     let configure_width = outlined_button_width(configure_label, true);
     render_outlined_button(
         frame,
         app,
-        Rect::new(inner.x, footer_y, configure_width.min(inner.width), 3),
+        Rect::new(inner.x, footer_y, configure_width.min(inner.width), 1),
         configure_label,
         UiAction::OpenAiSetup(settings.mode),
         false,
@@ -1041,7 +1066,7 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             render_outlined_button(
                 frame,
                 app,
-                Rect::new(x, footer_y, remove_width, 3),
+                Rect::new(x, footer_y, remove_width, 1),
                 remove_label,
                 UiAction::RemoveAiCredential,
                 false,
@@ -1301,11 +1326,16 @@ fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Ove
             label,
             value,
             ..
-        } => (
-            format!(" {title} "),
-            format!("{label}\n\n{value}█\n\nEnter to confirm · Esc to cancel"),
-            BLUE,
-        ),
+        } => {
+            let value = cursor_marked(&value, app.text_cursor);
+            (
+                format!(" {title} "),
+                format!(
+                    "{label}\n\n{value}\n\n←/→ move · Backspace/Delete edit · Enter confirm · Esc cancel"
+                ),
+                BLUE,
+            )
+        }
         Overlay::GitHubVisibility { name, selected } => {
             let private = if selected == GitHubVisibility::Private {
                 "[Private]"
@@ -1325,13 +1355,16 @@ fn render_overlay(frame: &mut Frame<'_>, app: &mut App, area: Rect, overlay: Ove
                 BLUE,
             )
         }
-        Overlay::Search { value } => (
-            " Search focused view ".to_owned(),
-            format!(
-                "Find files, commits, branches, or items in the current panel.\n\n/{value}█\n\nEnter to find · Esc to cancel · N finds next"
-            ),
-            BLUE,
-        ),
+        Overlay::Search { value } => {
+            let value = cursor_marked(&value, app.text_cursor);
+            (
+                " Search focused view ".to_owned(),
+                format!(
+                    "Find files, commits, branches, or items in the current panel.\n\n/{value}\n\n←/→ move · Backspace/Delete edit · Enter find · Esc cancel"
+                ),
+                BLUE,
+            )
+        }
         Overlay::AiSetup(_) => unreachable!("AI setup overlays render separately"),
     };
     frame.render_widget(
@@ -1428,7 +1461,7 @@ fn render_ai_setup_overlay(
         }
         crate::app::AiSetupStep::Command => (
             "Command for the other agent (required)",
-            format!("{}█", draft.command),
+            cursor_marked(&draft.command, app.text_cursor),
         ),
         crate::app::AiSetupStep::Model => (
             if draft.mode == AiMode::Api {
@@ -1436,19 +1469,19 @@ fn render_ai_setup_overlay(
             } else {
                 "Model (optional)"
             },
-            format!("{}█", draft.model),
+            cursor_marked(&draft.model, app.text_cursor),
         ),
         crate::app::AiSetupStep::ApiKey => (
             "API key (leave empty to keep the current source)",
-            format!("{}█", draft.secret_mask()),
+            draft.secret_mask_with_cursor(app.text_cursor),
         ),
         crate::app::AiSetupStep::Endpoint => (
             "Complete OpenAI-compatible chat-completions endpoint",
-            format!("{}█", draft.endpoint),
+            cursor_marked(&draft.endpoint, app.text_cursor),
         ),
         crate::app::AiSetupStep::Instructions => (
             "Commit-message instructions (optional)",
-            format!("{}█", draft.instructions),
+            cursor_marked(&draft.instructions, app.text_cursor),
         ),
         crate::app::AiSetupStep::Review => {
             let provider = match draft.mode {
@@ -1514,7 +1547,7 @@ fn render_ai_setup_overlay(
         inner.x,
         inner.y,
         inner.width,
-        inner.height.saturating_sub(3),
+        inner.height.saturating_sub(1),
     );
     let placeholder = ai_setup_placeholder(&draft)
         .map(|value| truncate_to_width(value, content_area.width.saturating_sub(1) as usize));
@@ -1569,11 +1602,11 @@ fn render_ai_setup_overlay(
         render_offset_scrollbar(frame, popup, scroll, max_scroll);
     }
 
-    if inner.height >= 3 {
-        let y = inner.bottom().saturating_sub(3);
+    if inner.height >= 2 {
+        let y = inner.bottom().saturating_sub(1);
         let back_label = "Back";
         let back_width = outlined_button_width(back_label, true).min(inner.width);
-        let back = Rect::new(inner.x, y, back_width, 3);
+        let back = Rect::new(inner.x, y, back_width, 1);
         render_outlined_button(frame, app, back, back_label, UiAction::AiSetupBack, false);
         let label = if draft.step == crate::app::AiSetupStep::Review {
             "Save"
@@ -1581,7 +1614,7 @@ fn render_ai_setup_overlay(
             "Next"
         };
         let width = outlined_button_width(label, true).min(inner.width);
-        let next = Rect::new(inner.right().saturating_sub(width), y, width, 3);
+        let next = Rect::new(inner.right().saturating_sub(width), y, width, 1);
         render_outlined_button(
             frame,
             app,
@@ -1772,7 +1805,7 @@ fn help_text(
     let (context_title, context) = match focus {
         Focus::Commit => (
             "Commit — current panel",
-            "  Type                 Edit message\n  Ctrl+U/Backspace     Clear message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  F1                   Help\n  Esc                  Leave message\n  Tab                  Next panel",
+            "  Type                 Edit message\n  Left/Right           Move text cursor\n  Backspace/Delete     Delete around cursor\n  Ctrl+U/Ctrl+Backspace Clear message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  F1                   Help\n  Esc                  Leave message\n  Tab                  Next panel",
         ),
         Focus::Changes if has_conflicts => (
             "Merge Changes — current panel",
@@ -1825,7 +1858,7 @@ fn help_text(
     };
 
     format!(
-        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  /              Search focused view\n  N              Next search match\n  ? / F1         Open/close help\n  q / Ctrl+C     Quit\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External old/new difftool\n  E              Interactive line staging\n\nRepository\n  c                    Commit message\n  Ctrl+U/Backspace     Clear commit message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  Ctrl+G               Generate commit message\n  U                    Undo last commit\n  f / l / p            Fetch/pull/push\n  L                    Pull with rebase\n  P / T                Push to/pull from target\n  F                    Force push with lease\n  D                    Git diagnostics\n  s / z                Create/list stashes\n  W                    Worktree list\n  Y                    AI panel\n  r                    Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGit operations\n  C / S / A      Continue/skip/abort\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, ?, or F1 to close."
+        "{context_title}\n{context}\n\nAll shortcuts\n\nNavigation\n  j/k or arrows  Move\n  Page Up/Down   Move 10 items\n  Home/End       First/last item\n  Tab/Shift+Tab  Next/previous panel\n  Enter          Open/activate\n  [ / ]          Previous/next repository\n  /              Search focused view\n  N              Next search match\n  ? / F1         Open/close help\n  q / Ctrl+C     Quit\n\nText inputs\n  Left/Right     Move cursor\n  Home/End       Start/end\n  Backspace/Delete Edit around cursor\n\nChanges\n  Space          Stage/unstage file or hunk\n  a / u          Stage/unstage all\n  d              Discard (confirmation)\n  e              External old/new difftool\n  E              Interactive line staging\n\nRepository\n  c                    Commit message\n  Ctrl+U/Ctrl+Backspace Clear commit message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  Ctrl+G               Generate commit message\n  U                    Undo last commit\n  f / l / p            Fetch/pull/push\n  L                    Pull with rebase\n  P / T                Push to/pull from target\n  F                    Force push with lease\n  D                    Git diagnostics\n  s / z                Create/list stashes\n  W                    Worktree list\n  Y                    AI panel\n  r                    Refresh\n\nBranches\n  n / x          Create/delete\n  m / R          Merge/rebase\n  w              Add worktree\n\nStashes\n  A / P / X      Apply/pop/drop\n\nGraph\n  y / v / t      Cherry-pick/revert/tag\n\nGit operations\n  C / S / A      Continue/skip/abort\n\nGitHub\n  Enter          View PR/issue\n  i / o          Switch type/open web\n  C / K          Checkout PR/view checks\n\nHelp scrolling\n  j/k or arrows  Scroll one line\n  Page Up/Down   Scroll ten lines\n  Home/End       Top/bottom\n  Mouse wheel    Scroll\n\nPress Esc, Enter, ?, or F1 to close."
     )
 }
 
@@ -2008,6 +2041,7 @@ mod tests {
             .map(|line| format!("Commit message line {line}"))
             .collect::<Vec<_>>()
             .join("\n");
+        app.text_cursor = app.commit_message.len();
         let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
 
         terminal
@@ -2092,7 +2126,7 @@ mod tests {
             .find(|hit| matches!(hit.action, UiAction::OpenAiSetup(AiMode::Agent)))
             .expect("AI panel should expose clickable setup")
             .rect;
-        assert_eq!(configure.y, 16, "Configure should stay at the panel bottom");
+        assert_eq!(configure.y, 18, "Configure should stay at the panel bottom");
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: configure.x,
@@ -2379,7 +2413,7 @@ mod tests {
                 "Configure shared the mode row at width {width}"
             );
             assert_eq!(
-                configure_y, 26,
+                configure_y, 28,
                 "Configure left the bottom at width {width}"
             );
 
@@ -2425,13 +2459,13 @@ mod tests {
         assert_eq!(top.first().unwrap().rect.width, 12);
         assert_eq!(top.last().unwrap().rect.right(), 47);
         for button in &top {
-            assert_eq!(button.rect.height, 3);
+            assert_eq!(button.rect.height, 1);
             let corner = terminal
                 .backend()
                 .buffer()
                 .cell((button.rect.x, button.rect.y))
                 .unwrap();
-            assert_eq!(corner.symbol(), "┌");
+            assert_eq!(corner.symbol(), "│");
             assert_eq!(corner.bg, Color::Reset);
         }
         let configure = app
@@ -2440,7 +2474,7 @@ mod tests {
             .find(|hit| matches!(hit.action, UiAction::OpenAiSetup(_)))
             .unwrap()
             .rect;
-        assert_eq!(configure, Rect::new(1, 16, 13, 3));
+        assert_eq!(configure, Rect::new(1, 18, 13, 1));
 
         let output = terminal
             .backend()
@@ -2594,14 +2628,14 @@ mod tests {
 
             assert_eq!(buttons.len(), 4, "width {width}");
             for button in &buttons {
-                assert_eq!(button.rect.height, 3, "width {width}");
+                assert_eq!(button.rect.height, 1, "width {width}");
                 assert!(button.rect.right() <= width, "width {width}");
                 let top_left = terminal
                     .backend()
                     .buffer()
                     .cell((button.rect.x, button.rect.y))
                     .unwrap();
-                assert_eq!(top_left.symbol(), "┌", "width {width}");
+                assert_eq!(top_left.symbol(), "│", "width {width}");
                 assert_eq!(top_left.bg, Color::Reset, "width {width}");
             }
             for (index, button) in buttons.iter().enumerate() {
