@@ -1689,13 +1689,14 @@ fn render_ai_setup_overlay(
     if !matches!(
         draft.step,
         crate::app::AiSetupStep::Provider | crate::app::AiSetupStep::Review
-    ) && let Some(cursor_line) = content_lines.iter().position(|line| line.contains('█'))
-    {
-        let cursor_line = cursor_line.min(u16::MAX as usize) as u16;
-        if cursor_line < scroll {
-            scroll = cursor_line;
-        } else if cursor_line >= scroll.saturating_add(content_area.height) {
-            scroll = cursor_line.saturating_sub(content_area.height.saturating_sub(1));
+    ) {
+        if let Some(cursor_line) = content_lines.iter().position(|line| line.contains('█')) {
+            let cursor_line = cursor_line.min(u16::MAX as usize) as u16;
+            if cursor_line < scroll {
+                scroll = cursor_line;
+            } else if cursor_line >= scroll.saturating_add(content_area.height) {
+                scroll = cursor_line.saturating_sub(content_area.height.saturating_sub(1));
+            }
         }
     }
     frame.render_widget(
