@@ -2,6 +2,8 @@ name: gitside
 base: core24
 version: '0.1.2'
 summary: Source control that fits your terminal
+title: Gitside
+contact: vaas.ygg@gmail.com
 description: |
   Gitside is a responsive Git source-control TUI designed for both full
   terminals and narrow tmux side panes. It supports keyboard and mouse

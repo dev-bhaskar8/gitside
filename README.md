@@ -91,7 +91,7 @@ scoop install gitside
 Provenance-attested macOS, Linux, and Windows installers, portable archives,
 `.deb`, and `.rpm` packages are available from
 [GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases/latest).
-The [WinGet submission](https://github.com/microsoft/winget-pkgs/pull/410857)
+The [WinGet submission](https://github.com/microsoft/winget-pkgs/pull/411316)
 is awaiting approval. Snap is registered and awaiting classic-confinement
 review, so neither command is advertised as available yet. See the
 [installation matrix](docs/distribution.md#installation-matrix) for package and
