@@ -268,7 +268,7 @@ fn render_commit(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         if app.commit_message.is_empty() && !focused {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    "Message (c to edit, Ctrl+Enter to commit)",
+                    "Message (c to edit, Ctrl+S to commit)",
                     muted_style(),
                 ))),
                 text_area,
@@ -544,12 +544,12 @@ fn render_wide_body(frame: &mut Frame<'_>, app: &mut App, area: Rect, three: boo
 
 fn render_combined_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let staged = app.active().status.staged.clone();
-    let working = if app.active().status.conflicts.is_empty() {
-        app.active().status.unstaged.clone()
-    } else {
-        app.active().status.conflicts.clone()
-    };
-    let has_conflicts = !app.active().status.conflicts.is_empty();
+    let working = app.active().status.unstaged.clone();
+    let conflicts = working
+        .iter()
+        .filter(|change| change.kind == ChangeKind::Conflicted)
+        .count();
+    let unstaged = working.len().saturating_sub(conflicts);
     let focused = matches!(app.focus, Focus::Changes | Focus::Staged);
     let selected = match app.focus {
         Focus::Staged => app.selected_staged,
@@ -557,11 +557,10 @@ fn render_combined_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         _ => 0,
     };
     let total = staged.len().saturating_add(working.len());
-    let title = if has_conflicts {
+    let title = if conflicts > 0 {
         format!(
-            " Merge Changes ({total} · S{} C{}) ",
-            staged.len(),
-            working.len()
+            " Changes ({total} · S{} U{unstaged} C{conflicts}) ",
+            staged.len()
         )
     } else {
         format!(" Changes ({total} · S{} U{}) ", staged.len(), working.len())
@@ -588,7 +587,7 @@ fn render_combined_changes(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             let selected_row = focused && selected == row_index;
             let scope = if *is_staged {
                 "S"
-            } else if has_conflicts {
+            } else if change.kind == ChangeKind::Conflicted {
                 "C"
             } else {
                 "U"
@@ -1227,32 +1226,20 @@ fn render_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let Some(preview) = app.preview.as_ref() else {
         return;
     };
+    let inner_width = area.width.saturating_sub(2).max(1);
     let visible = area.height.saturating_sub(2) as usize;
-    let line_count = preview.body.lines().count().max(1);
+    let lines = preview_visual_lines(&preview.body, inner_width);
+    let line_count = lines.len().max(1);
     let max_scroll = line_count.saturating_sub(visible).min(u16::MAX as usize) as u16;
     let scroll = preview.scroll.min(max_scroll);
     let title = preview.title.clone();
-    let lines = preview
-        .body
-        .lines()
+    let visible_lines = lines
+        .into_iter()
         .skip(scroll as usize)
-        .map(|line| {
-            let style = if line.starts_with('+') && !line.starts_with("+++") {
-                Style::default().fg(GREEN)
-            } else if line.starts_with('-') && !line.starts_with("---") {
-                Style::default().fg(RED)
-            } else if line.starts_with("@@") {
-                Style::default().fg(BLUE)
-            } else if line.starts_with("diff ") || line.starts_with("commit ") {
-                Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(TEXT)
-            };
-            Line::styled(line.to_owned(), style)
-        })
+        .take(visible)
         .collect::<Vec<_>>();
     frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Paragraph::new(visible_lines).block(
             Block::default()
                 .title(format!(
                     " {} {}{} [j/k hunk · PgUp/PgDn scroll · Esc close] ",
@@ -1271,13 +1258,43 @@ fn render_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     });
     if let Some(preview) = app.preview.as_mut() {
         preview.scroll = scroll;
+        preview.viewport_width = inner_width;
     }
     if max_scroll > 0 {
         render_offset_scrollbar(frame, area, scroll, max_scroll);
     }
 }
 
+fn preview_visual_lines(body: &str, width: u16) -> Vec<Line<'static>> {
+    let mut output = Vec::new();
+    for source in body.split('\n') {
+        let style = if source.starts_with('+') && !source.starts_with("+++") {
+            Style::default().fg(GREEN)
+        } else if source.starts_with('-') && !source.starts_with("---") {
+            Style::default().fg(RED)
+        } else if source.starts_with("@@") {
+            Style::default().fg(BLUE)
+        } else if source.starts_with("diff ") || source.starts_with("commit ") {
+            Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(TEXT)
+        };
+        output.extend(
+            wrap_editor_text(source, width)
+                .into_iter()
+                .map(|line| Line::styled(line, style)),
+        );
+    }
+    if output.is_empty() {
+        output.push(Line::default());
+    }
+    output
+}
+
 fn render_status(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let selected_conflict = app
+        .selected_change()
+        .is_some_and(|change| change.kind == ChangeKind::Conflicted);
     let help = if app.focus == Focus::GitHub
         && app.active().github_state == GitHubConnectionState::NoRemote
     {
@@ -1286,7 +1303,7 @@ fn render_status(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         contextual_footer_hint(
             app.focus,
             area.width,
-            !app.active().status.conflicts.is_empty(),
+            selected_conflict,
             app.active().status.operation.is_some(),
         )
     };
@@ -1664,19 +1681,29 @@ fn render_ai_setup_overlay(
         .len()
         .saturating_sub(content_area.height as usize)
         .min(u16::MAX as usize) as u16;
-    let scroll = if matches!(
-        draft.step,
-        crate::app::AiSetupStep::Provider | crate::app::AiSetupStep::Review
-    ) {
+    let mut scroll = if draft.step == crate::app::AiSetupStep::Provider {
         0
     } else {
-        max_scroll
+        draft.scroll.min(max_scroll)
     };
+    if !matches!(
+        draft.step,
+        crate::app::AiSetupStep::Provider | crate::app::AiSetupStep::Review
+    ) && let Some(cursor_line) = content_lines.iter().position(|line| line.contains('█'))
+    {
+        let cursor_line = cursor_line.min(u16::MAX as usize) as u16;
+        if cursor_line < scroll {
+            scroll = cursor_line;
+        } else if cursor_line >= scroll.saturating_add(content_area.height) {
+            scroll = cursor_line.saturating_sub(content_area.height.saturating_sub(1));
+        }
+    }
     frame.render_widget(
         Paragraph::new(
             content_lines
-                .into_iter()
+                .iter()
                 .skip(scroll as usize)
+                .cloned()
                 .map(Line::from)
                 .collect::<Vec<_>>(),
         ),
@@ -1702,6 +1729,10 @@ fn render_ai_setup_overlay(
     }
     if max_scroll > 0 {
         render_offset_scrollbar(frame, popup, scroll, max_scroll);
+    }
+    if let Some(Overlay::AiSetup(live)) = &mut app.overlay {
+        live.scroll = scroll;
+        live.max_scroll = max_scroll;
     }
 
     if inner.height >= 2 {
@@ -1779,7 +1810,8 @@ fn render_help_overlay(frame: &mut Frame<'_>, app: &mut App, popup: Rect, reques
     let body = wrap_help_text(
         &help_text(
             app.focus,
-            !app.active().status.conflicts.is_empty(),
+            app.selected_change()
+                .is_some_and(|change| change.kind == ChangeKind::Conflicted),
             app.active().status.operation.is_some(),
             app.active().github_state,
         ),
@@ -1910,7 +1942,7 @@ fn help_text(
     let (context_title, context) = match focus {
         Focus::Commit => (
             "Commit — current panel",
-            "  Type                 Edit message\n  Left/Right           Move text cursor\n  Backspace/Delete     Delete around cursor\n  Ctrl+U/Ctrl+Backspace Clear message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+G               Generate message\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  F1                   Help\n  Esc                  Leave message\n  Tab                  Next panel",
+            "  Type                 Edit message\n  Left/Right           Move text cursor\n  Backspace/Delete     Delete around cursor\n  Ctrl+U/Ctrl+Backspace Clear message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+G               Generate message\n  Ctrl+S/Ctrl+Enter    Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  F1                   Help\n  Esc                  Leave message\n  Tab                  Next panel",
         ),
         Focus::Changes if has_conflicts => (
             "Merge Changes — current panel",
@@ -3306,16 +3338,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn conflicts_replace_changes_with_contextual_resolution_help() {
+    async fn conflicts_remain_visible_with_contextual_resolution_help() {
         let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Changes;
         app.active_mut().status.staged.clear();
-        app.active_mut().status.conflicts = vec![Change {
+        let conflict = Change {
             path: "conflict.txt".into(),
             original_path: None,
             kind: ChangeKind::Conflicted,
             staged: false,
-        }];
+        };
+        app.active_mut().status.conflicts = vec![conflict.clone()];
+        app.active_mut().status.unstaged = vec![conflict];
         let mut terminal = Terminal::new(TestBackend::new(50, 30)).unwrap();
 
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
@@ -3326,7 +3360,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(output.contains("Merge Changes (1 · S0 C1)"));
+        assert!(output.contains("Changes (1 · S0 U0 C1)"));
         assert!(output.contains("O Current"));
 
         app.overlay = Some(Overlay::Help {
@@ -3497,5 +3531,67 @@ mod tests {
         let wrapped = wrap_help_text("  Space          Stage file", 25);
         assert_eq!(wrapped, "  Space          Stage\n  file");
         assert!(wrapped.lines().all(|line| display_width(line) <= 25));
+    }
+
+    #[tokio::test]
+    async fn preview_scroll_uses_wrapped_terminal_rows() {
+        let mut app = App::isolated_test(Settings::default()).await;
+        app.focus = Focus::Preview;
+        app.preview = Some(crate::app::Preview {
+            title: "Long preview".into(),
+            body: "x".repeat(200),
+            scroll: u16::MAX,
+            change: None,
+            hunks: Vec::new(),
+            selected_hunk: 0,
+            viewport_width: 1,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(32, 8)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let preview = app.preview.as_ref().unwrap();
+        assert_eq!(preview.viewport_width, 30);
+        assert!(
+            preview.scroll > 0,
+            "one logical line wraps into scrollable rows"
+        );
+        assert!(preview.scroll < u16::MAX);
+    }
+
+    #[tokio::test]
+    async fn ai_setup_keeps_long_editable_text_scrollable() {
+        let mut app = App::isolated_test(Settings::default()).await;
+        app.focus = Focus::Ai;
+        app.settings.ai.mode = AiMode::Agent;
+        let mut terminal = Terminal::new(TestBackend::new(80, 28)).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+            .await;
+        let Some(Overlay::AiSetup(draft)) = &mut app.overlay else {
+            panic!("AI setup should open");
+        };
+        draft.step = crate::app::AiSetupStep::Instructions;
+        draft.instructions = (0..30)
+            .map(|index| format!("rule {index}: keep the subject concise"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.text_cursor = draft.instructions.len();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let Some(Overlay::AiSetup(draft)) = &app.overlay else {
+            unreachable!()
+        };
+        assert!(draft.max_scroll > 0);
+        assert!(
+            draft.scroll > 0,
+            "the cursor should stay visible at the end"
+        );
+        let previous = draft.scroll;
+
+        app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
+            .await;
+        let Some(Overlay::AiSetup(draft)) = &app.overlay else {
+            unreachable!()
+        };
+        assert!(draft.scroll < previous);
     }
 }

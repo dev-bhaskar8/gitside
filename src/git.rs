@@ -6,7 +6,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use tokio::{io::AsyncWriteExt, process::Command};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    process::Command,
+};
 
 use crate::model::{
     Branch, Change, ChangeKind, Commit, GitOperation, Remote, RepoStatus, Stash, Worktree,
@@ -36,6 +39,9 @@ pub struct CommitOptions {
 pub struct CommandOutput {
     pub stdout: Vec<u8>,
 }
+
+const MAX_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
+const PREVIEW_TRUNCATED: &str = "\n\n… preview truncated at 2 MiB …\n";
 
 impl GitRepo {
     pub async fn discover(path: impl AsRef<Path>) -> Result<Self> {
@@ -114,6 +120,66 @@ impl GitRepo {
         Ok(CommandOutput {
             stdout: output.stdout,
         })
+    }
+
+    async fn command_limited<I, S>(&self, args: I, limit: usize) -> Result<(CommandOutput, bool)>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut command = Command::new("git");
+        command.arg("-C").arg(&self.root).args(args);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().context("failed to start Git")?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("Git stdout was unavailable"))?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("Git stderr was unavailable"))?;
+        let stderr_task = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).await.map(|_| bytes)
+        });
+        let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
+        let mut buffer = [0_u8; 8192];
+        let mut truncated = false;
+        loop {
+            let read = stdout.read(&mut buffer).await?;
+            if read == 0 {
+                break;
+            }
+            let remaining = limit.saturating_sub(bytes.len());
+            bytes.extend_from_slice(&buffer[..read.min(remaining)]);
+            if read > remaining {
+                truncated = true;
+                let _ = child.kill().await;
+                break;
+            }
+        }
+        drop(stdout);
+        let status = child.wait().await?;
+        let stderr = stderr_task
+            .await
+            .context("failed to join Git stderr reader")??;
+        if !truncated && !status.success() {
+            let stderr = String::from_utf8_lossy(&stderr).trim().to_owned();
+            bail!(
+                "git exited with {}: {}",
+                status.code().unwrap_or(-1),
+                if stderr.is_empty() {
+                    "no diagnostic output"
+                } else {
+                    &stderr
+                }
+            );
+        }
+        Ok((CommandOutput { stdout: bytes }, truncated))
     }
 
     pub async fn status(&self) -> Result<RepoStatus> {
@@ -296,24 +362,42 @@ impl GitRepo {
         args.push("--");
         let mut owned: Vec<OsString> = args.into_iter().map(OsString::from).collect();
         owned.push(change.path.as_os_str().to_owned());
-        let output = self.command(owned, None).await?;
+        let (output, truncated) = self.command_limited(owned, MAX_PREVIEW_BYTES).await?;
         if output.stdout.is_empty() && change.kind == ChangeKind::Untracked {
             let path = self.root.join(&change.path);
-            let content = tokio::fs::read(path).await?;
+            let metadata = tokio::fs::symlink_metadata(&path).await?;
+            if metadata.file_type().is_symlink() {
+                let target = tokio::fs::read_link(&path).await?;
+                return Ok(format!("+symbolic link → {}\n", target.display()));
+            }
+            let mut content = Vec::new();
+            tokio::fs::File::open(path)
+                .await?
+                .take((MAX_PREVIEW_BYTES + 1) as u64)
+                .read_to_end(&mut content)
+                .await?;
+            let truncated = content.len() > MAX_PREVIEW_BYTES;
+            content.truncate(MAX_PREVIEW_BYTES);
+            if content.contains(&0) {
+                return Ok("Binary file preview omitted.\n".into());
+            }
             let mut result = String::new();
             for line in String::from_utf8_lossy(&content).lines() {
                 result.push('+');
                 result.push_str(line);
                 result.push('\n');
             }
+            if truncated {
+                result.push_str(PREVIEW_TRUNCATED);
+            }
             return Ok(result);
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(limited_text(output.stdout, truncated))
     }
 
     pub async fn show_commit(&self, oid: &str) -> Result<String> {
-        let output = self
-            .command(
+        let (output, truncated) = self
+            .command_limited(
                 [
                     "show",
                     "--no-ext-diff",
@@ -322,10 +406,10 @@ impl GitRepo {
                     "--patch",
                     oid,
                 ],
-                None,
+                MAX_PREVIEW_BYTES,
             )
             .await?;
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(limited_text(output.stdout, truncated))
     }
 
     pub async fn stage(&self, path: &Path) -> Result<()> {
@@ -433,7 +517,7 @@ impl GitRepo {
     }
 
     pub async fn checkout(&self, branch: &str) -> Result<()> {
-        self.command(["switch", branch], None).await?;
+        self.command(["switch", "--", branch], None).await?;
         Ok(())
     }
 
@@ -443,32 +527,34 @@ impl GitRepo {
     }
 
     pub async fn delete_branch(&self, name: &str) -> Result<()> {
-        self.command(["branch", "--delete", name], None).await?;
+        self.command(["branch", "--delete", "--", name], None)
+            .await?;
         Ok(())
     }
 
     pub async fn merge(&self, branch: &str) -> Result<()> {
-        self.command(["merge", branch], None).await?;
+        self.command(["merge", "--", branch], None).await?;
         Ok(())
     }
 
     pub async fn rebase(&self, branch: &str) -> Result<()> {
-        self.command(["rebase", branch], None).await?;
+        self.command(["rebase", "--", branch], None).await?;
         Ok(())
     }
 
     pub async fn cherry_pick(&self, oid: &str) -> Result<()> {
-        self.command(["cherry-pick", oid], None).await?;
+        self.command(["cherry-pick", "--", oid], None).await?;
         Ok(())
     }
 
     pub async fn revert(&self, oid: &str) -> Result<()> {
-        self.command(["revert", "--no-edit", oid], None).await?;
+        self.command(["revert", "--no-edit", "--", oid], None)
+            .await?;
         Ok(())
     }
 
     pub async fn create_tag(&self, name: &str, oid: &str) -> Result<()> {
-        self.command(["tag", name, oid], None).await?;
+        self.command(["tag", "--", name, oid], None).await?;
         Ok(())
     }
 
@@ -492,7 +578,7 @@ impl GitRepo {
         if rebase {
             args.push("--rebase");
         }
-        args.extend([remote, branch]);
+        args.extend(["--", remote, branch]);
         self.command(args, None).await?;
         Ok(())
     }
@@ -507,7 +593,7 @@ impl GitRepo {
         if force_with_lease {
             args.push("--force-with-lease");
         }
-        args.extend([remote, branch]);
+        args.extend(["--", remote, branch]);
         self.command(args, None).await?;
         Ok(())
     }
@@ -575,7 +661,7 @@ impl GitRepo {
     }
 
     pub async fn publish(&self, remote: &str, branch: &str) -> Result<()> {
-        self.command(["push", "--set-upstream", remote, branch], None)
+        self.command(["push", "--set-upstream", "--", remote, branch], None)
             .await?;
         Ok(())
     }
@@ -613,8 +699,8 @@ impl GitRepo {
     }
 
     pub async fn show_stash(&self, reference: &str) -> Result<String> {
-        let output = self
-            .command(
+        let (output, truncated) = self
+            .command_limited(
                 [
                     "stash",
                     "show",
@@ -623,10 +709,10 @@ impl GitRepo {
                     "--no-color",
                     reference,
                 ],
-                None,
+                MAX_PREVIEW_BYTES,
             )
             .await?;
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(limited_text(output.stdout, truncated))
     }
 
     pub async fn apply_stash(&self, reference: &str) -> Result<()> {
@@ -665,6 +751,7 @@ impl GitRepo {
             [
                 OsStr::new("worktree"),
                 OsStr::new("add"),
+                OsStr::new("--"),
                 path.as_os_str(),
                 OsStr::new(branch),
             ],
@@ -679,6 +766,7 @@ impl GitRepo {
             [
                 OsStr::new("worktree"),
                 OsStr::new("remove"),
+                OsStr::new("--"),
                 path.as_os_str(),
             ],
             None,
@@ -686,6 +774,14 @@ impl GitRepo {
         .await?;
         Ok(())
     }
+}
+
+fn limited_text(bytes: Vec<u8>, truncated: bool) -> String {
+    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+    if truncated {
+        text.push_str(PREVIEW_TRUNCATED);
+    }
+    text
 }
 
 fn parse_status(input: &[u8]) -> Result<RepoStatus> {
@@ -1365,5 +1461,55 @@ worktree /repo-feature\0HEAD def456\0branch refs/heads/feature\0locked reason\0\
         assert!(repo.status().await.unwrap().unstaged.iter().any(|change| {
             change.path == Path::new("second.txt") && change.kind == ChangeKind::Untracked
         }));
+    }
+
+    #[tokio::test]
+    async fn bounds_large_and_binary_untracked_previews() {
+        let (directory, repo) = repository().await;
+        fs::write(
+            directory.path().join("large.txt"),
+            vec![b'x'; MAX_PREVIEW_BYTES + 1024],
+        )
+        .unwrap();
+        let large = Change {
+            path: "large.txt".into(),
+            original_path: None,
+            kind: ChangeKind::Untracked,
+            staged: false,
+        };
+        let preview = repo.diff(&large).await.unwrap();
+        assert!(preview.contains("preview truncated at 2 MiB"));
+        assert!(preview.len() <= MAX_PREVIEW_BYTES + PREVIEW_TRUNCATED.len() + 2);
+
+        fs::write(directory.path().join("binary.bin"), b"hello\0world").unwrap();
+        let binary = Change {
+            path: "binary.bin".into(),
+            original_path: None,
+            kind: ChangeKind::Untracked,
+            staged: false,
+        };
+        assert_eq!(
+            repo.diff(&binary).await.unwrap(),
+            "Binary file preview omitted.\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn previews_untracked_symlinks_without_following_them() {
+        use std::os::unix::fs::symlink;
+
+        let (directory, repo) = repository().await;
+        symlink("missing-target", directory.path().join("link")).unwrap();
+        let change = Change {
+            path: "link".into(),
+            original_path: None,
+            kind: ChangeKind::Untracked,
+            staged: false,
+        };
+        assert_eq!(
+            repo.diff(&change).await.unwrap(),
+            "+symbolic link → missing-target\n"
+        );
     }
 }

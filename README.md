@@ -1,9 +1,8 @@
 <p align="center">
-  <br />
-  <img src="site/assets/gitside-showcase.jpg" alt="Real Gitside captures with native terminal colors in a full terminal and narrow tmux side pane" width="820" />
+  <img src="site/assets/gitside-showcase.png" alt="Gitside shown full-screen, in a narrow pane, and in a real Ghostty and tmux workflow" width="100%" />
 </p>
 
-<p align="center"><sub>Actual Gitside output captured at 118×42 and 46×58 terminal cells.</sub></p>
+<p align="center"><sub>Real Gitside sessions: narrow pane, wide terminal, and a live Ghostty/tmux workflow.</sub></p>
 
 <p align="center"><strong>Source control that fits your terminal.</strong></p>
 
@@ -89,8 +88,8 @@ scoop install gitside
 
 ### Direct downloads and pending channels
 
-Signed macOS, Linux, and Windows installers, portable archives, `.deb`, and
-`.rpm` packages are available from
+Provenance-attested macOS, Linux, and Windows installers, portable archives,
+`.deb`, and `.rpm` packages are available from
 [GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases/latest).
 The [WinGet submission](https://github.com/microsoft/winget-pkgs/pull/410857)
 is awaiting approval. Snap is registered and awaiting classic-confinement
@@ -120,7 +119,7 @@ gitside /path/to/repository
 | --- | --- | --- | --- |
 | `j` / `k` | Move | `Tab` | Next panel |
 | `Space` | Stage / unstage | `Enter` | Open / activate |
-| `c` | Commit message | `Ctrl+Enter` | Commit |
+| `c` | Commit message | `Ctrl+S` / `Ctrl+Enter` | Commit |
 | `Ctrl+U` / `Ctrl+Backspace` | Clear commit draft | `Ctrl+G` | Generate message draft |
 | `Y` | Open AI panel | `f` / `l` / `p` | Fetch / pull / push |
 | `r` | Refresh | `g` / `b` / `h` | Graph / branches / GitHub |

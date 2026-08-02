@@ -4,7 +4,8 @@ use anyhow::Result;
 use crossterm::{
     event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, EventStream,
+        Event, EventStream, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -21,26 +22,64 @@ use crate::{
 
 struct TerminalGuard {
     mouse: bool,
+    enhanced_keyboard: bool,
 }
 
 impl TerminalGuard {
     fn enter(mouse: bool) -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
-        if mouse {
-            execute!(stdout, EnableMouseCapture)?;
+        let enhanced_keyboard = execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+            )
+        )
+        .is_ok();
+        let guard = Self {
+            mouse,
+            enhanced_keyboard,
+        };
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste) {
+            let _ = guard.leave();
+            return Err(error.into());
         }
-        Ok(Self { mouse })
+        if mouse {
+            if let Err(error) = execute!(stdout, EnableMouseCapture) {
+                let _ = guard.leave();
+                return Err(error.into());
+            }
+        }
+        Ok(guard)
     }
 
     fn leave(&self) -> Result<()> {
         let mut stdout = io::stdout();
+        let mut first_error = None;
         if self.mouse {
-            execute!(stdout, DisableMouseCapture)?;
+            if let Err(error) = execute!(stdout, DisableMouseCapture) {
+                first_error = Some(error);
+            }
         }
-        execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen)?;
-        disable_raw_mode()?;
+        if let Err(error) = execute!(stdout, DisableBracketedPaste) {
+            first_error.get_or_insert(error);
+        }
+        if self.enhanced_keyboard {
+            if let Err(error) = execute!(stdout, PopKeyboardEnhancementFlags) {
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Err(error) = execute!(stdout, LeaveAlternateScreen) {
+            first_error.get_or_insert(error);
+        }
+        if let Err(error) = disable_raw_mode() {
+            first_error.get_or_insert(error);
+        }
+        if let Some(error) = first_error {
+            return Err(error.into());
+        }
         Ok(())
     }
 }
@@ -84,9 +123,8 @@ pub async fn run(app: &mut App) -> Result<()> {
                     }
                     Event::Mouse(mouse) => app.handle_mouse(mouse).await,
                     Event::Resize(_, _) => EventOutcome::Continue,
-                    Event::Paste(value) if app.focus == crate::app::Focus::Commit => {
-                        app.commit_message.push_str(&value);
-                        app.commit_scroll = 0;
+                    Event::Paste(value) => {
+                        app.handle_paste(&value);
                         EventOutcome::Continue
                     }
                     _ => EventOutcome::Continue,
@@ -106,7 +144,7 @@ pub async fn run(app: &mut App) -> Result<()> {
                         }
                         let _new_guard = TerminalGuard::enter(app.settings.mouse)?;
                         terminal.clear()?;
-                        app.refresh().await;
+                        app.queue_refresh(false);
                         std::mem::forget(_new_guard);
                     }
                     EventOutcome::OpenEditor => {
@@ -116,7 +154,7 @@ pub async fn run(app: &mut App) -> Result<()> {
                         }
                         let _new_guard = TerminalGuard::enter(app.settings.mouse)?;
                         terminal.clear()?;
-                        app.refresh().await;
+                        app.queue_refresh(false);
                         std::mem::forget(_new_guard);
                     }
                 }

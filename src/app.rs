@@ -1,5 +1,6 @@
 use std::{
     env,
+    future::Future,
     path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, Instant},
@@ -19,7 +20,9 @@ use crate::{
     credentials::{CredentialStatus, CredentialStore},
     git::{CommitOptions, ConflictChoice, GitRepo},
     github::{GitHub, GitHubConnectionState, GitHubVisibility},
-    model::{Branch, Change, Commit, Issue, PullRequest, Remote, RepoStatus, Stash, Worktree},
+    model::{
+        Branch, Change, ChangeKind, Commit, Issue, PullRequest, Remote, RepoStatus, Stash, Worktree,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +85,7 @@ pub struct Preview {
     pub change: Option<Change>,
     pub hunks: Vec<String>,
     pub selected_hunk: usize,
+    pub viewport_width: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +141,8 @@ pub struct AiSetupDraft {
     api_key: Zeroizing<String>,
     pub endpoint: String,
     pub instructions: String,
+    pub scroll: u16,
+    pub max_scroll: u16,
 }
 
 impl std::fmt::Debug for AiSetupDraft {
@@ -152,6 +158,8 @@ impl std::fmt::Debug for AiSetupDraft {
             .field("api_key", &"[REDACTED]")
             .field("endpoint", &self.endpoint)
             .field("instructions", &self.instructions)
+            .field("scroll", &self.scroll)
+            .field("max_scroll", &self.max_scroll)
             .finish()
     }
 }
@@ -192,6 +200,8 @@ impl AiSetupDraft {
             api_key: Zeroizing::new(String::new()),
             endpoint: settings.api.endpoint.clone().unwrap_or_default(),
             instructions: settings.instructions.clone(),
+            scroll: 0,
+            max_scroll: 0,
         }
     }
 }
@@ -305,8 +315,29 @@ enum BackgroundResult {
         repo_index: usize,
         label: &'static str,
         result: Result<()>,
+        snapshot: Box<Result<RepoSnapshot>>,
     },
     Commit {
+        repo_index: usize,
+        success: &'static str,
+        result: Result<()>,
+        snapshot: Box<Result<RepoSnapshot>>,
+    },
+    Action {
+        repo_index: usize,
+        success: String,
+        result: Result<()>,
+        snapshot: Box<Result<RepoSnapshot>>,
+        focus_on_success: Option<Focus>,
+        close_preview_on_success: bool,
+    },
+    Preview {
+        repo_index: usize,
+        title: String,
+        change: Option<Change>,
+        result: Result<String>,
+    },
+    Notice {
         repo_index: usize,
         success: &'static str,
         result: Result<()>,
@@ -336,6 +367,7 @@ enum BackgroundResult {
     PublishGitHub {
         repo_index: usize,
         result: Result<()>,
+        snapshot: Box<Result<RepoSnapshot>>,
     },
     CommitMessage {
         repo_index: usize,
@@ -501,39 +533,8 @@ impl App {
     pub fn selected_change(&self) -> Option<&Change> {
         match self.focus {
             Focus::Staged => self.active().status.staged.get(self.selected_staged),
-            Focus::Changes if !self.active().status.conflicts.is_empty() => {
-                self.active().status.conflicts.get(self.selected_change)
-            }
             _ => self.active().status.unstaged.get(self.selected_change),
         }
-    }
-
-    pub async fn refresh(&mut self) {
-        self.refresh_repo(self.active_repo, true).await;
-    }
-
-    async fn refresh_repo(&mut self, repo_index: usize, show_status: bool) {
-        self.busy = true;
-        if show_status {
-            self.status_line = "Refreshing…".into();
-        }
-        let Some(view) = self.repos.get(repo_index) else {
-            self.busy = false;
-            return;
-        };
-        let repo = view.repo.clone();
-        let history_limit = view.history_limit;
-        let result = load_repo_snapshot(repo, history_limit).await;
-        match result {
-            Ok(snapshot) => {
-                self.apply_snapshot(repo_index, history_limit, snapshot);
-                if show_status {
-                    self.status_line = "Repository refreshed".into();
-                }
-            }
-            Err(error) => self.report_error(error),
-        }
-        self.busy = false;
     }
 
     pub fn queue_refresh(&mut self, show_status: bool) {
@@ -579,6 +580,15 @@ impl App {
         }
     }
 
+    fn apply_background_snapshot(&mut self, repo_index: usize, snapshot: RepoSnapshot) {
+        let history_limit = self
+            .repos
+            .get(repo_index)
+            .map(|view| view.history_limit)
+            .unwrap_or(self.settings.graph_page_size);
+        self.apply_snapshot(repo_index, history_limit, snapshot);
+    }
+
     pub async fn poll_background(&mut self) -> bool {
         if !self
             .background_task
@@ -598,27 +608,112 @@ impl App {
                 repo_index,
                 label,
                 result,
-            }) => match result {
-                Ok(()) => {
-                    self.refresh_repo(repo_index, false).await;
+                snapshot,
+            }) => match (result, *snapshot) {
+                (Ok(()), Ok(snapshot)) => {
+                    self.apply_background_snapshot(repo_index, snapshot);
                     self.status_line = format!("{label} complete");
                 }
-                Err(error) => self.report_error(error),
+                (Ok(()), Err(error)) => {
+                    self.report_error(error.context("Git action succeeded, but refresh failed"));
+                }
+                (Err(error), Ok(snapshot)) => {
+                    self.apply_background_snapshot(repo_index, snapshot);
+                    self.report_error(error);
+                }
+                (Err(error), Err(refresh_error)) => self.report_error(error.context(format!(
+                    "Git action failed; repository refresh also failed: {refresh_error:#}"
+                ))),
             },
             Ok(BackgroundResult::Commit {
                 repo_index,
                 success,
                 result,
-            }) => match result {
-                Ok(()) => {
+                snapshot,
+            }) => match (result, *snapshot) {
+                (Ok(()), Ok(snapshot)) => {
                     self.commit_message.clear();
                     self.text_cursor = 0;
                     self.commit_scroll = 0;
                     self.commit_history_index = None;
                     self.focus = Focus::Changes;
-                    self.refresh_repo(repo_index, false).await;
+                    self.apply_background_snapshot(repo_index, snapshot);
                     self.status_line = success.into();
                 }
+                (Ok(()), Err(error)) => {
+                    self.report_error(error.context("Commit succeeded, but refresh failed"));
+                }
+                (Err(error), Ok(snapshot)) => {
+                    self.apply_background_snapshot(repo_index, snapshot);
+                    self.report_error(error);
+                }
+                (Err(error), Err(refresh_error)) => self.report_error(error.context(format!(
+                    "Commit failed; repository refresh also failed: {refresh_error:#}"
+                ))),
+            },
+            Ok(BackgroundResult::Action {
+                repo_index,
+                success,
+                result,
+                snapshot,
+                focus_on_success,
+                close_preview_on_success,
+            }) => match (result, *snapshot) {
+                (Ok(()), Ok(snapshot)) => {
+                    self.apply_background_snapshot(repo_index, snapshot);
+                    if repo_index == self.active_repo {
+                        if close_preview_on_success {
+                            self.preview = None;
+                        }
+                        if let Some(focus) = focus_on_success {
+                            self.focus = focus;
+                        }
+                    }
+                    self.status_line = success;
+                }
+                (Ok(()), Err(error)) => {
+                    self.report_error(error.context("Git action succeeded, but refresh failed"));
+                }
+                (Err(error), Ok(snapshot)) => {
+                    self.apply_background_snapshot(repo_index, snapshot);
+                    self.report_error(error);
+                }
+                (Err(error), Err(refresh_error)) => self.report_error(error.context(format!(
+                    "Git action failed; repository refresh also failed: {refresh_error:#}"
+                ))),
+            },
+            Ok(BackgroundResult::Preview {
+                repo_index,
+                title,
+                change,
+                result,
+            }) => match result {
+                Ok(body) if repo_index == self.active_repo => {
+                    self.preview = Some(Preview {
+                        title,
+                        hunks: split_diff_hunks(&body),
+                        body,
+                        scroll: 0,
+                        change,
+                        selected_hunk: 0,
+                        viewport_width: 1,
+                    });
+                    self.focus = Focus::Preview;
+                    self.status_line = "Preview loaded".into();
+                }
+                Ok(_) => {
+                    self.status_line =
+                        "Preview discarded because the active repository changed".into();
+                }
+                Err(error) => self.report_error(error),
+            },
+            Ok(BackgroundResult::Notice {
+                repo_index,
+                success,
+                result,
+            }) => match result {
+                Ok(()) if repo_index == self.active_repo => self.status_line = success.into(),
+                Ok(()) => {}
                 Err(error) => self.report_error(error),
             },
             Ok(BackgroundResult::StageChanges {
@@ -650,11 +745,7 @@ impl App {
                             }
                         } else {
                             self.focus = Focus::Changes;
-                            let changes = if self.active().status.conflicts.is_empty() {
-                                &self.active().status.unstaged
-                            } else {
-                                &self.active().status.conflicts
-                            };
+                            let changes = &self.active().status.unstaged;
                             if let Some(index) =
                                 changes.iter().position(|item| paths.contains(&item.path))
                             {
@@ -740,15 +831,28 @@ impl App {
                 }
                 Err(error) => self.report_error(error),
             },
-            Ok(BackgroundResult::PublishGitHub { repo_index, result }) => match result {
-                Ok(()) => {
-                    self.refresh_repo(repo_index, false).await;
+            Ok(BackgroundResult::PublishGitHub {
+                repo_index,
+                result,
+                snapshot,
+            }) => match (result, *snapshot) {
+                (Ok(()), Ok(snapshot)) => {
+                    self.apply_background_snapshot(repo_index, snapshot);
                     self.status_line = "Published repository to GitHub".into();
                     if repo_index == self.active_repo && self.focus == Focus::GitHub {
                         self.load_github();
                     }
                 }
-                Err(error) => self.report_error(error),
+                (Ok(()), Err(error)) => self.report_error(
+                    error.context("GitHub repository was published, but refresh failed"),
+                ),
+                (Err(error), Ok(snapshot)) => {
+                    self.apply_background_snapshot(repo_index, snapshot);
+                    self.report_error(error);
+                }
+                (Err(error), Err(refresh_error)) => self.report_error(error.context(format!(
+                    "Publishing failed; repository refresh also failed: {refresh_error:#}"
+                ))),
             },
             Ok(BackgroundResult::CommitMessage { repo_index, result }) => match result {
                 Ok(message) if repo_index == self.active_repo => {
@@ -842,6 +946,9 @@ impl App {
                 KeyCode::Esc => self.focus = Focus::Changes,
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.clear_commit_message();
+                }
+                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.commit(CommitOptions::default()).await;
                 }
                 KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.clear_commit_message();
@@ -1098,6 +1205,56 @@ impl App {
         EventOutcome::Continue
     }
 
+    pub fn handle_paste(&mut self, pasted: &str) {
+        if pasted.is_empty() {
+            return;
+        }
+        match &mut self.overlay {
+            Some(Overlay::Prompt {
+                value,
+                replace_on_type,
+                ..
+            }) => {
+                let pasted = single_line_paste(pasted);
+                if *replace_on_type {
+                    value.clear();
+                    self.text_cursor = 0;
+                    *replace_on_type = false;
+                }
+                insert_str_at_text_cursor(value, &mut self.text_cursor, &pasted);
+            }
+            Some(Overlay::Search { value }) => {
+                insert_str_at_text_cursor(value, &mut self.text_cursor, &single_line_paste(pasted));
+            }
+            Some(Overlay::AiSetup(draft))
+                if draft.step != AiSetupStep::Provider && draft.step != AiSetupStep::Review =>
+            {
+                let pasted = if draft.step == AiSetupStep::Instructions {
+                    multiline_paste(pasted)
+                } else if draft.step == AiSetupStep::ApiKey {
+                    pasted.trim_end_matches(['\r', '\n']).to_owned()
+                } else {
+                    single_line_paste(pasted)
+                };
+                insert_str_at_text_cursor(
+                    ai_setup_input_mut(draft),
+                    &mut self.text_cursor,
+                    &pasted,
+                );
+            }
+            None if self.focus == Focus::Commit => {
+                insert_str_at_text_cursor(
+                    &mut self.commit_message,
+                    &mut self.text_cursor,
+                    &multiline_paste(pasted),
+                );
+                self.commit_scroll = 0;
+                self.commit_history_index = None;
+            }
+            _ => {}
+        }
+    }
+
     async fn handle_overlay_key(&mut self, key: KeyEvent, overlay: Overlay) -> EventOutcome {
         match overlay {
             Overlay::Help {
@@ -1309,6 +1466,20 @@ impl App {
             ) {
                 return EventOutcome::Continue;
             }
+        } else if let Some(Overlay::AiSetup(draft)) = &mut self.overlay {
+            match event.kind {
+                MouseEventKind::ScrollUp => draft.scroll = draft.scroll.saturating_sub(3),
+                MouseEventKind::ScrollDown => {
+                    draft.scroll = draft.scroll.saturating_add(3).min(draft.max_scroll)
+                }
+                _ => {}
+            }
+            if matches!(
+                event.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            ) {
+                return EventOutcome::Continue;
+            }
         } else if self.overlay.is_some()
             && matches!(
                 event.kind,
@@ -1509,6 +1680,30 @@ impl App {
     async fn handle_ai_setup_key(&mut self, key: KeyEvent, mut draft: AiSetupDraft) {
         match key.code {
             KeyCode::Esc => self.overlay = None,
+            KeyCode::PageUp => {
+                draft.scroll = draft.scroll.saturating_sub(5);
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::PageDown => {
+                draft.scroll = draft.scroll.saturating_add(5).min(draft.max_scroll);
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::Home if draft.step == AiSetupStep::Review => {
+                draft.scroll = 0;
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::End if draft.step == AiSetupStep::Review => {
+                draft.scroll = draft.max_scroll;
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::Up if draft.step == AiSetupStep::Review => {
+                draft.scroll = draft.scroll.saturating_sub(1);
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::Down if draft.step == AiSetupStep::Review => {
+                draft.scroll = draft.scroll.saturating_add(1).min(draft.max_scroll);
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
             KeyCode::BackTab => {
                 self.overlay = Some(Overlay::AiSetup(draft));
                 self.retreat_ai_setup();
@@ -1657,6 +1852,8 @@ impl App {
                 return;
             }
         }
+        draft.scroll = 0;
+        draft.max_scroll = 0;
         self.text_cursor = ai_setup_input(&draft).len();
         self.overlay = Some(Overlay::AiSetup(draft));
     }
@@ -1685,6 +1882,8 @@ impl App {
             AiSetupStep::Instructions => AiSetupStep::ApiKey,
             AiSetupStep::Review => AiSetupStep::Instructions,
         };
+        draft.scroll = 0;
+        draft.max_scroll = 0;
         self.text_cursor = ai_setup_input(&draft).len();
         self.overlay = Some(Overlay::AiSetup(draft));
     }
@@ -1756,15 +1955,14 @@ impl App {
         match self.focus {
             Focus::Changes | Focus::Staged => {
                 let status = &self.active().status;
-                let working = if status.conflicts.is_empty() {
-                    &status.unstaged
-                } else {
-                    &status.conflicts
-                };
                 status
                     .staged
                     .get(index)
-                    .or_else(|| working.get(index.saturating_sub(status.staged.len())))
+                    .or_else(|| {
+                        status
+                            .unstaged
+                            .get(index.saturating_sub(status.staged.len()))
+                    })
                     .map(|change| change.path.to_string_lossy().into_owned())
                     .unwrap_or_default()
             }
@@ -1826,42 +2024,25 @@ impl App {
         let Some(change) = self.selected_change().cloned() else {
             return;
         };
-        let repo = self.active().repo.clone();
-        match repo.diff(&change).await {
-            Ok(body) => {
-                self.preview = Some(Preview {
-                    title: change.path.display().to_string(),
-                    hunks: split_diff_hunks(&body),
-                    body,
-                    scroll: 0,
-                    change: Some(change),
-                    selected_hunk: 0,
-                });
-                self.focus = Focus::Preview;
-            }
-            Err(error) => self.report_error(error),
-        }
+        let title = change.path.display().to_string();
+        let operation_change = change.clone();
+        self.queue_preview(
+            "Loading diff…",
+            title,
+            Some(change),
+            move |repo| async move { repo.diff(&operation_change).await },
+        );
     }
 
     async fn open_commit_preview(&mut self) {
         let Some(commit) = self.active().history.get(self.selected_commit).cloned() else {
             return;
         };
-        let repo = self.active().repo.clone();
-        match repo.show_commit(&commit.oid).await {
-            Ok(body) => {
-                self.preview = Some(Preview {
-                    title: format!("{} {}", short_oid(&commit.oid), commit.subject),
-                    body,
-                    scroll: 0,
-                    change: None,
-                    hunks: Vec::new(),
-                    selected_hunk: 0,
-                });
-                self.focus = Focus::Preview;
-            }
-            Err(error) => self.report_error(error),
-        }
+        let title = format!("{} {}", short_oid(&commit.oid), commit.subject);
+        let oid = commit.oid;
+        self.queue_preview("Loading commit…", title, None, move |repo| async move {
+            repo.show_commit(&oid).await
+        });
     }
 
     async fn toggle_stage(&mut self) {
@@ -1876,6 +2057,10 @@ impl App {
         let Some(change) = self.selected_change().cloned() else {
             return;
         };
+        if change.kind == ChangeKind::Conflicted {
+            self.status_line = "Resolve the conflict with O, I, or B before staging it".into();
+            return;
+        }
         self.queue_change_operation(vec![change.path], !change.staged, false);
     }
 
@@ -1914,8 +2099,98 @@ impl App {
         }));
     }
 
+    fn queue_repo_action<F, Fut>(
+        &mut self,
+        pending: impl Into<String>,
+        success: impl Into<String>,
+        focus_on_success: Option<Focus>,
+        close_preview_on_success: bool,
+        operation: F,
+    ) where
+        F: FnOnce(GitRepo) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        if self.background_task.is_some() {
+            self.status_line = "Another Git operation is still running".into();
+            return;
+        }
+        let repo_index = self.active_repo;
+        let repo = self.active().repo.clone();
+        let history_limit = self.active().history_limit;
+        let success = success.into();
+        self.busy = true;
+        self.status_line = pending.into();
+        self.background_task = Some(tokio::spawn(async move {
+            let result = operation(repo.clone()).await;
+            let snapshot = Box::new(load_repo_snapshot(repo, history_limit).await);
+            BackgroundResult::Action {
+                repo_index,
+                success,
+                result,
+                snapshot,
+                focus_on_success,
+                close_preview_on_success,
+            }
+        }));
+    }
+
+    fn queue_preview<F, Fut>(
+        &mut self,
+        pending: impl Into<String>,
+        title: String,
+        change: Option<Change>,
+        operation: F,
+    ) where
+        F: FnOnce(GitRepo) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<String>> + Send + 'static,
+    {
+        if self.background_task.is_some() {
+            self.status_line = "Another Git operation is still running".into();
+            return;
+        }
+        let repo_index = self.active_repo;
+        let repo = self.active().repo.clone();
+        self.busy = true;
+        self.status_line = pending.into();
+        self.background_task = Some(tokio::spawn(async move {
+            BackgroundResult::Preview {
+                repo_index,
+                title,
+                change,
+                result: operation(repo).await,
+            }
+        }));
+    }
+
+    fn queue_notice<Fut>(
+        &mut self,
+        pending: impl Into<String>,
+        success: &'static str,
+        operation: Fut,
+    ) where
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        if self.background_task.is_some() {
+            self.status_line = "Another operation is still running".into();
+            return;
+        }
+        let repo_index = self.active_repo;
+        self.busy = true;
+        self.status_line = pending.into();
+        self.background_task = Some(tokio::spawn(async move {
+            BackgroundResult::Notice {
+                repo_index,
+                success,
+                result: operation.await,
+            }
+        }));
+    }
+
     fn conflicts_focused(&self) -> bool {
-        self.focus == Focus::Changes && !self.active().status.conflicts.is_empty()
+        self.focus == Focus::Changes
+            && self
+                .selected_change()
+                .is_some_and(|change| change.kind == ChangeKind::Conflicted)
     }
 
     fn operation_focused(&self) -> bool {
@@ -1926,10 +2201,15 @@ impl App {
         let Some(change) = self.selected_change().cloned() else {
             return;
         };
-        let repo = self.active().repo.clone();
-        let result = repo.resolve_conflict(&change.path, choice).await;
-        self.finish_action(result, &format!("Resolved {}", change.path.display()))
-            .await;
+        let path = change.path;
+        let success = format!("Resolved {}", path.display());
+        self.queue_repo_action(
+            "Resolving conflict…",
+            success,
+            Some(Focus::Changes),
+            false,
+            move |repo| async move { repo.resolve_conflict(&path, choice).await },
+        );
     }
 
     async fn continue_operation(&mut self) {
@@ -1941,9 +2221,13 @@ impl App {
             self.status_line = "Resolve every conflict before continuing".into();
             return;
         }
-        let repo = self.active().repo.clone();
-        let result = repo.continue_operation(operation).await;
-        self.finish_action(result, "Continued Git operation").await;
+        self.queue_repo_action(
+            "Continuing Git operation…",
+            "Continued Git operation",
+            Some(Focus::Changes),
+            false,
+            move |repo| async move { repo.continue_operation(operation).await },
+        );
     }
 
     async fn abort_operation(&mut self) {
@@ -1951,19 +2235,26 @@ impl App {
             self.status_line = "No merge, rebase, cherry-pick, or revert is in progress".into();
             return;
         };
-        let repo = self.active().repo.clone();
-        let result = repo.abort_operation(operation).await;
-        self.finish_action(result, "Aborted Git operation").await;
+        self.queue_repo_action(
+            "Aborting Git operation…",
+            "Aborted Git operation",
+            Some(Focus::Changes),
+            true,
+            move |repo| async move { repo.abort_operation(operation).await },
+        );
     }
 
     async fn skip_operation(&mut self) {
         let Some(operation) = self.active().status.operation else {
             return;
         };
-        let repo = self.active().repo.clone();
-        let result = repo.skip_operation(operation).await;
-        self.finish_action(result, "Skipped current Git operation step")
-            .await;
+        self.queue_repo_action(
+            "Skipping operation step…",
+            "Skipped current Git operation step",
+            Some(Focus::Changes),
+            false,
+            move |repo| async move { repo.skip_operation(operation).await },
+        );
     }
 
     fn recall_commit_message(&mut self, amount: isize) {
@@ -2014,6 +2305,7 @@ impl App {
             change: None,
             hunks: Vec::new(),
             selected_hunk: 0,
+            viewport_width: 1,
         });
         self.focus = Focus::Preview;
     }
@@ -2135,6 +2427,7 @@ impl App {
         }
         let repo_index = self.active_repo;
         let repo = self.active().repo.clone();
+        let history_limit = self.active().history_limit;
         let message = self.commit_message.clone();
         let success = match (options.amend, options.signoff) {
             (true, true) => "Amended commit with sign-off",
@@ -2146,10 +2439,13 @@ impl App {
         self.status_line = "Committing…".into();
         self.button_activity = Some((ButtonActivity::Commit, Instant::now()));
         self.background_task = Some(tokio::spawn(async move {
+            let result = repo.commit(&message, options).await;
+            let snapshot = Box::new(load_repo_snapshot(repo, history_limit).await);
             BackgroundResult::Commit {
                 repo_index,
                 success,
-                result: repo.commit(&message, options).await,
+                result,
+                snapshot,
             }
         }));
     }
@@ -2368,6 +2664,7 @@ impl App {
         self.button_activity = Some((activity, Instant::now()));
         let repo_index = self.active_repo;
         let repo = self.active().repo.clone();
+        let history_limit = self.active().history_limit;
         self.background_task = Some(tokio::spawn(async move {
             let result = match action {
                 RemoteAction::Fetch => repo.fetch().await,
@@ -2385,10 +2682,12 @@ impl App {
                 RemoteAction::Publish { remote, branch } => repo.publish(&remote, &branch).await,
                 RemoteAction::Sync => repo.sync().await,
             };
+            let snapshot = Box::new(load_repo_snapshot(repo, history_limit).await);
             BackgroundResult::Remote {
                 repo_index,
                 label,
                 result,
+                snapshot,
             }
         }));
     }
@@ -2435,51 +2734,49 @@ impl App {
     }
 
     async fn run_stash(&mut self) {
-        let repo = self.active().repo.clone();
-        let result = repo.stash().await;
-        self.finish_action(result, "Created stash").await;
+        self.queue_repo_action(
+            "Creating stash…",
+            "Created stash",
+            Some(Focus::Stashes),
+            false,
+            |repo| async move { repo.stash().await },
+        );
     }
 
     async fn open_stash_preview(&mut self) {
         let Some(stash) = self.active().stashes.get(self.selected_stash).cloned() else {
             return;
         };
-        let repo = self.active().repo.clone();
-        match repo.show_stash(&stash.reference).await {
-            Ok(body) => {
-                self.preview = Some(Preview {
-                    title: format!("{} {}", stash.reference, stash.subject),
-                    hunks: split_diff_hunks(&body),
-                    body,
-                    scroll: 0,
-                    change: None,
-                    selected_hunk: 0,
-                });
-                self.focus = Focus::Preview;
-            }
-            Err(error) => self.report_error(error),
-        }
+        let title = format!("{} {}", stash.reference, stash.subject);
+        let reference = stash.reference;
+        self.queue_preview("Loading stash…", title, None, move |repo| async move {
+            repo.show_stash(&reference).await
+        });
     }
 
     async fn apply_selected_stash(&mut self, pop: bool) {
         let Some(stash) = self.active().stashes.get(self.selected_stash).cloned() else {
             return;
         };
-        let repo = self.active().repo.clone();
-        let result = if pop {
-            repo.pop_stash(&stash.reference).await
-        } else {
-            repo.apply_stash(&stash.reference).await
-        };
-        self.finish_action(
-            result,
-            &format!(
-                "{} {}",
-                if pop { "Popped" } else { "Applied" },
-                stash.reference
-            ),
-        )
-        .await;
+        let reference = stash.reference;
+        let success = format!("{} {reference}", if pop { "Popped" } else { "Applied" });
+        self.queue_repo_action(
+            if pop {
+                "Popping stash…"
+            } else {
+                "Applying stash…"
+            },
+            success,
+            Some(Focus::Changes),
+            false,
+            move |repo| async move {
+                if pop {
+                    repo.pop_stash(&reference).await
+                } else {
+                    repo.apply_stash(&reference).await
+                }
+            },
+        );
     }
 
     async fn request_drop_stash(&mut self) {
@@ -2522,10 +2819,15 @@ impl App {
             self.status_line = format!("Already on {}", branch.name);
             return;
         }
-        let repo = self.active().repo.clone();
-        let result = repo.checkout(&branch.name).await;
-        self.finish_action(result, &format!("Switched to {}", branch.name))
-            .await;
+        let name = branch.name;
+        let success = format!("Switched to {name}");
+        self.queue_repo_action(
+            "Switching branch…",
+            success,
+            Some(Focus::Branches),
+            true,
+            move |repo| async move { repo.checkout(&name).await },
+        );
     }
 
     async fn request_delete_branch(&mut self) {
@@ -2558,10 +2860,15 @@ impl App {
             self.status_line = "Select another branch to merge into the current branch".into();
             return;
         }
-        let repo = self.active().repo.clone();
-        let result = repo.merge(&branch.name).await;
-        self.finish_action(result, &format!("Merged {}", branch.name))
-            .await;
+        let name = branch.name;
+        let success = format!("Merged {name}");
+        self.queue_repo_action(
+            "Merging branch…",
+            success,
+            Some(Focus::Changes),
+            false,
+            move |repo| async move { repo.merge(&name).await },
+        );
     }
 
     async fn request_rebase(&mut self) {
@@ -2586,24 +2893,34 @@ impl App {
         let Some(commit) = self.active().history.get(self.selected_commit).cloned() else {
             return;
         };
-        let repo = self.active().repo.clone();
-        let result = repo.cherry_pick(&commit.oid).await;
-        self.finish_action(result, &format!("Cherry-picked {}", short_oid(&commit.oid)))
-            .await;
+        let oid = commit.oid;
+        let success = format!("Cherry-picked {}", short_oid(&oid));
+        self.queue_repo_action(
+            "Cherry-picking commit…",
+            success,
+            Some(Focus::Changes),
+            false,
+            move |repo| async move { repo.cherry_pick(&oid).await },
+        );
     }
 
     async fn revert_selected(&mut self) {
         let Some(commit) = self.active().history.get(self.selected_commit).cloned() else {
             return;
         };
-        let repo = self.active().repo.clone();
-        let result = repo.revert(&commit.oid).await;
-        self.finish_action(result, &format!("Reverted {}", short_oid(&commit.oid)))
-            .await;
+        let oid = commit.oid;
+        let success = format!("Reverted {}", short_oid(&oid));
+        self.queue_repo_action(
+            "Reverting commit…",
+            success,
+            Some(Focus::Changes),
+            false,
+            move |repo| async move { repo.revert(&oid).await },
+        );
     }
 
     async fn execute_prompt(&mut self, action: PromptAction, value: String) {
-        let value = value.trim();
+        let value = value.trim().to_owned();
         let remote_prompt = matches!(
             &action,
             PromptAction::PushTarget { .. } | PromptAction::PullTarget { .. }
@@ -2612,26 +2929,48 @@ impl App {
             self.status_line = "A name is required".into();
             return;
         }
-        let repo = self.active().repo.clone();
         match action {
             PromptAction::CreateBranch => {
-                let result = repo.create_branch(value).await;
-                self.finish_action(result, &format!("Created branch {value}"))
-                    .await;
+                if !valid_git_operand(&value) {
+                    self.status_line = "Branch names cannot start with '-'".into();
+                    return;
+                }
+                let success = format!("Created branch {value}");
+                self.queue_repo_action(
+                    "Creating branch…",
+                    success,
+                    Some(Focus::Branches),
+                    false,
+                    move |repo| async move { repo.create_branch(&value).await },
+                );
             }
             PromptAction::CreateTag { oid } => {
-                let result = repo.create_tag(value, &oid).await;
-                self.finish_action(result, &format!("Created tag {value}"))
-                    .await;
+                if !valid_git_operand(&value) {
+                    self.status_line = "Tag names cannot start with '-'".into();
+                    return;
+                }
+                let success = format!("Created tag {value}");
+                self.queue_repo_action(
+                    "Creating tag…",
+                    success,
+                    Some(Focus::Graph),
+                    false,
+                    move |repo| async move { repo.create_tag(&value, &oid).await },
+                );
             }
             PromptAction::AddWorktree { branch } => {
                 let path = PathBuf::from(value);
-                let result = repo.add_worktree(&path, &branch).await;
-                self.finish_action(result, &format!("Added worktree {}", path.display()))
-                    .await;
+                let success = format!("Added worktree {}", path.display());
+                self.queue_repo_action(
+                    "Adding worktree…",
+                    success,
+                    Some(Focus::Worktrees),
+                    false,
+                    move |repo| async move { repo.add_worktree(&path, &branch).await },
+                );
             }
             PromptAction::PushTarget { remote, branch } => {
-                let Ok((remote, branch)) = parse_remote_target(value, remote, branch) else {
+                let Ok((remote, branch)) = parse_remote_target(&value, remote, branch) else {
                     self.status_line = "Enter a remote and branch separated by a space".into();
                     return;
                 };
@@ -2645,7 +2984,7 @@ impl App {
                 );
             }
             PromptAction::PullTarget { remote, branch } => {
-                let Ok((remote, branch)) = parse_remote_target(value, remote, branch) else {
+                let Ok((remote, branch)) = parse_remote_target(&value, remote, branch) else {
                     self.status_line = "Enter a remote and branch separated by a space".into();
                     return;
                 };
@@ -2655,13 +2994,13 @@ impl App {
                 );
             }
             PromptAction::PublishGitHubName => {
-                if !valid_github_repository_name(value) {
+                if !valid_github_repository_name(&value) {
                     self.status_line =
                         "Use letters, numbers, '.', '-' or '_' for the repository name".into();
                     return;
                 }
                 self.overlay = Some(Overlay::GitHubVisibility {
-                    name: value.into(),
+                    name: value,
                     selected: GitHubVisibility::Private,
                 });
             }
@@ -2698,39 +3037,62 @@ impl App {
     async fn execute_confirmed(&mut self, action: ConfirmAction) {
         match action {
             ConfirmAction::Discard { path, untracked } => {
-                let repo = self.active().repo.clone();
-                let result = repo.discard(&path, untracked).await;
-                self.finish_action(result, "Discarded change").await;
+                self.queue_repo_action(
+                    "Discarding change…",
+                    "Discarded change",
+                    Some(Focus::Changes),
+                    true,
+                    move |repo| async move { repo.discard(&path, untracked).await },
+                );
             }
             ConfirmAction::DeleteBranch { name } => {
-                let repo = self.active().repo.clone();
-                let result = repo.delete_branch(&name).await;
-                self.finish_action(result, &format!("Deleted branch {name}"))
-                    .await;
+                let success = format!("Deleted branch {name}");
+                self.queue_repo_action(
+                    "Deleting branch…",
+                    success,
+                    Some(Focus::Branches),
+                    false,
+                    move |repo| async move { repo.delete_branch(&name).await },
+                );
             }
             ConfirmAction::Rebase { branch } => {
-                let repo = self.active().repo.clone();
-                let result = repo.rebase(&branch).await;
-                self.finish_action(result, &format!("Rebased onto {branch}"))
-                    .await;
+                let success = format!("Rebased onto {branch}");
+                self.queue_repo_action(
+                    "Rebasing branch…",
+                    success,
+                    Some(Focus::Changes),
+                    false,
+                    move |repo| async move { repo.rebase(&branch).await },
+                );
             }
             ConfirmAction::DropStash { reference } => {
-                let repo = self.active().repo.clone();
-                let result = repo.drop_stash(&reference).await;
-                self.finish_action(result, &format!("Dropped {reference}"))
-                    .await;
+                let success = format!("Dropped {reference}");
+                self.queue_repo_action(
+                    "Dropping stash…",
+                    success,
+                    Some(Focus::Stashes),
+                    false,
+                    move |repo| async move { repo.drop_stash(&reference).await },
+                );
             }
             ConfirmAction::RemoveWorktree { path } => {
-                let repo = self.active().repo.clone();
-                let result = repo.remove_worktree(&path).await;
-                self.finish_action(result, &format!("Removed worktree {}", path.display()))
-                    .await;
+                let success = format!("Removed worktree {}", path.display());
+                self.queue_repo_action(
+                    "Removing worktree…",
+                    success,
+                    Some(Focus::Worktrees),
+                    false,
+                    move |repo| async move { repo.remove_worktree(&path).await },
+                );
             }
             ConfirmAction::UndoLastCommit => {
-                let repo = self.active().repo.clone();
-                let result = repo.undo_last_commit().await;
-                self.finish_action(result, "Undid last commit and kept its changes")
-                    .await;
+                self.queue_repo_action(
+                    "Undoing last commit…",
+                    "Undid last commit and kept its changes",
+                    Some(Focus::Changes),
+                    false,
+                    |repo| async move { repo.undo_last_commit().await },
+                );
             }
             ConfirmAction::ForcePush { remote, branch } => {
                 self.run_remote(
@@ -2750,17 +3112,6 @@ impl App {
             } => {
                 self.queue_publish_github(name, visibility, remote, push);
             }
-        }
-    }
-
-    async fn finish_action(&mut self, result: Result<()>, success: &str) {
-        match result {
-            Ok(()) => {
-                self.status_line = success.into();
-                self.refresh().await;
-                self.status_line = success.into();
-            }
-            Err(error) => self.report_error(error),
         }
     }
 
@@ -2838,13 +3189,18 @@ impl App {
         self.busy = true;
         self.button_activity = Some((ButtonActivity::PublishGitHub, Instant::now()));
         let repo_index = self.active_repo;
-        let github = GitHub::new(self.active().repo.root());
+        let repo = self.active().repo.clone();
+        let history_limit = self.active().history_limit;
+        let github = GitHub::new(repo.root());
         self.background_task = Some(tokio::spawn(async move {
+            let result = github
+                .publish_repository(&name, visibility, &remote, push)
+                .await;
+            let snapshot = Box::new(load_repo_snapshot(repo, history_limit).await);
             BackgroundResult::PublishGitHub {
                 repo_index,
-                result: github
-                    .publish_repository(&name, visibility, &remote, push)
-                    .await,
+                result,
+                snapshot,
             }
         }));
     }
@@ -2894,15 +3250,14 @@ impl App {
     }
 
     async fn open_github_preview(&mut self) {
-        let github = GitHub::new(self.active().repo.root());
-        let result = if self.github_show_issues {
+        if self.github_show_issues {
             let Some(issue) = self.active().issues.get(self.selected_github).cloned() else {
                 return;
             };
-            github
-                .issue_detail(issue.number)
-                .await
-                .map(|body| (format!("#{} {}", issue.number, issue.title), body))
+            let title = format!("#{} {}", issue.number, issue.title);
+            self.queue_preview("Loading issue…", title, None, move |repo| async move {
+                GitHub::new(repo.root()).issue_detail(issue.number).await
+            });
         } else {
             let Some(pr) = self
                 .active()
@@ -2912,44 +3267,47 @@ impl App {
             else {
                 return;
             };
-            github
-                .pull_request_detail(pr.number)
-                .await
-                .map(|body| (format!("#{} {}", pr.number, pr.title), body))
-        };
-        match result {
-            Ok((title, body)) => {
-                self.preview = Some(Preview {
-                    title,
-                    body,
-                    scroll: 0,
-                    change: None,
-                    hunks: Vec::new(),
-                    selected_hunk: 0,
-                });
-                self.focus = Focus::Preview;
-            }
-            Err(error) => self.report_error(error),
+            let title = format!("#{} {}", pr.number, pr.title);
+            self.queue_preview(
+                "Loading pull request…",
+                title,
+                None,
+                move |repo| async move {
+                    GitHub::new(repo.root())
+                        .pull_request_detail(pr.number)
+                        .await
+                },
+            );
         }
     }
 
     async fn open_github_in_browser(&mut self) {
-        let github = GitHub::new(self.active().repo.root());
-        let result = if self.github_show_issues {
-            let Some(issue) = self.active().issues.get(self.selected_github) else {
+        let root = self.active().repo.root().to_path_buf();
+        let (number, issue) = if self.github_show_issues {
+            let Some(issue) = self.active().issues.get(self.selected_github).cloned() else {
                 return;
             };
-            github.open_issue(issue.number).await
+            (issue.number, true)
         } else {
-            let Some(pr) = self.active().pull_requests.get(self.selected_github) else {
+            let Some(pr) = self
+                .active()
+                .pull_requests
+                .get(self.selected_github)
+                .cloned()
+            else {
                 return;
             };
-            github.open_pull_request(pr.number).await
+            (pr.number, false)
         };
-        match result {
-            Ok(()) => self.status_line = "Opened in browser".into(),
-            Err(error) => self.report_error(error),
-        }
+        let operation = async move {
+            let github = GitHub::new(&root);
+            if issue {
+                github.open_issue(number).await
+            } else {
+                github.open_pull_request(number).await
+            }
+        };
+        self.queue_notice("Opening browser…", "Opened in browser", operation);
     }
 
     async fn checkout_pull_request(&mut self) {
@@ -2961,10 +3319,18 @@ impl App {
         else {
             return;
         };
-        let github = GitHub::new(self.active().repo.root());
-        let result = github.checkout_pull_request(pr.number).await;
-        self.finish_action(result, &format!("Checked out PR #{}", pr.number))
-            .await;
+        let success = format!("Checked out PR #{}", pr.number);
+        self.queue_repo_action(
+            "Checking out pull request…",
+            success,
+            Some(Focus::Changes),
+            true,
+            move |repo| async move {
+                GitHub::new(repo.root())
+                    .checkout_pull_request(pr.number)
+                    .await
+            },
+        );
     }
 
     async fn open_pull_request_checks(&mut self) {
@@ -2976,21 +3342,12 @@ impl App {
         else {
             return;
         };
-        let github = GitHub::new(self.active().repo.root());
-        match github.pull_request_checks(pr.number).await {
-            Ok(body) => {
-                self.preview = Some(Preview {
-                    title: format!("Checks for PR #{}", pr.number),
-                    body,
-                    scroll: 0,
-                    change: None,
-                    hunks: Vec::new(),
-                    selected_hunk: 0,
-                });
-                self.focus = Focus::Preview;
-            }
-            Err(error) => self.report_error(error),
-        }
+        let title = format!("Checks for PR #{}", pr.number);
+        self.queue_preview("Loading checks…", title, None, move |repo| async move {
+            GitHub::new(repo.root())
+                .pull_request_checks(pr.number)
+                .await
+        });
     }
 
     pub async fn open_selected_in_difftool(&mut self) -> Result<()> {
@@ -3118,7 +3475,11 @@ impl App {
                             .saturating_add(amount as usize)
                             .min(max)
                     };
-                    preview.scroll = hunk_line_offset(&preview.body, preview.selected_hunk);
+                    preview.scroll = hunk_line_offset(
+                        &preview.body,
+                        preview.selected_hunk,
+                        preview.viewport_width,
+                    );
                 }
             }
             return;
@@ -3156,12 +3517,7 @@ impl App {
         match self.focus {
             Focus::Changes | Focus::Staged => {
                 let status = &self.active().status;
-                status.staged.len()
-                    + if status.conflicts.is_empty() {
-                        status.unstaged.len()
-                    } else {
-                        status.conflicts.len()
-                    }
+                status.staged.len() + status.unstaged.len()
             }
             Focus::Graph => self.active().history.len(),
             Focus::Branches => self.active().branches.len(),
@@ -3225,13 +3581,9 @@ impl App {
     }
 
     fn clamp_selections(&mut self) {
-        self.selected_change =
-            self.selected_change
-                .min(if self.active().status.conflicts.is_empty() {
-                    self.active().status.unstaged.len().saturating_sub(1)
-                } else {
-                    self.active().status.conflicts.len().saturating_sub(1)
-                });
+        self.selected_change = self
+            .selected_change
+            .min(self.active().status.unstaged.len().saturating_sub(1));
         self.selected_staged = self
             .selected_staged
             .min(self.active().status.staged.len().saturating_sub(1));
@@ -3278,25 +3630,26 @@ impl App {
             self.status_line = "This diff has no independently stageable text hunks".into();
             return;
         };
-        let repo = self.active().repo.clone();
-        let result = repo.apply_cached_patch(&patch, change.staged).await;
-        if result.is_ok() {
-            self.preview = None;
-            self.focus = if change.staged {
-                Focus::Staged
+        let staged = change.staged;
+        self.queue_repo_action(
+            if staged {
+                "Unstaging hunk…"
             } else {
-                Focus::Changes
-            };
-        }
-        self.finish_action(
-            result,
-            if change.staged {
+                "Staging hunk…"
+            },
+            if staged {
                 "Unstaged hunk"
             } else {
                 "Staged hunk"
             },
-        )
-        .await;
+            Some(if staged {
+                Focus::Staged
+            } else {
+                Focus::Changes
+            }),
+            true,
+            move |repo| async move { repo.apply_cached_patch(&patch, staged).await },
+        );
     }
 
     async fn switch_repo(&mut self, amount: isize) {
@@ -3491,6 +3844,22 @@ fn insert_at_text_cursor(value: &mut String, cursor: &mut usize, character: char
     *cursor += character.len_utf8();
 }
 
+fn insert_str_at_text_cursor(value: &mut String, cursor: &mut usize, text: &str) {
+    *cursor = clamp_text_cursor(value, *cursor);
+    value.insert_str(*cursor, text);
+    *cursor += text.len();
+}
+
+fn multiline_paste(value: &str) -> String {
+    value.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn single_line_paste(value: &str) -> String {
+    multiline_paste(value)
+        .trim_end_matches('\n')
+        .replace('\n', " ")
+}
+
 fn backspace_at_text_cursor(value: &mut String, cursor: &mut usize) {
     let current = clamp_text_cursor(value, *cursor);
     if current == 0 {
@@ -3537,13 +3906,23 @@ fn parse_remote_target(
     default_branch: String,
 ) -> Result<(String, String)> {
     if value.is_empty() {
+        if !valid_git_operand(&default_remote) || !valid_git_operand(&default_branch) {
+            bail!("remote and branch names cannot start with '-'");
+        }
         return Ok((default_remote, default_branch));
     }
     let fields = value.split_whitespace().collect::<Vec<_>>();
     if fields.len() != 2 {
         bail!("remote target requires a remote and branch");
     }
+    if !valid_git_operand(fields[0]) || !valid_git_operand(fields[1]) {
+        bail!("remote and branch names cannot start with '-'");
+    }
     Ok((fields[0].into(), fields[1].into()))
+}
+
+fn valid_git_operand(value: &str) -> bool {
+    !value.trim().is_empty() && !value.starts_with('-')
 }
 
 fn valid_github_repository_name(value: &str) -> bool {
@@ -3610,13 +3989,30 @@ fn split_diff_hunks(diff: &str) -> Vec<String> {
         .collect()
 }
 
-fn hunk_line_offset(diff: &str, selected_hunk: usize) -> u16 {
-    diff.lines()
-        .enumerate()
-        .filter(|(_, line)| line.starts_with("@@"))
+fn hunk_line_offset(diff: &str, selected_hunk: usize, width: u16) -> u16 {
+    diff.match_indices("@@")
+        .filter(|(index, _)| *index == 0 || diff.as_bytes().get(index - 1) == Some(&b'\n'))
         .nth(selected_hunk)
-        .map(|(index, _)| index.saturating_sub(2) as u16)
+        .map(|(index, _)| {
+            let rows = visual_line_count(&diff[..index], width);
+            rows.saturating_sub(2).min(u16::MAX as usize) as u16
+        })
         .unwrap_or(0)
+}
+
+fn visual_line_count(value: &str, width: u16) -> usize {
+    let width = usize::from(width.max(1));
+    value
+        .split_inclusive('\n')
+        .map(|line| {
+            let line = line.strip_suffix('\n').unwrap_or(line);
+            let display = line
+                .chars()
+                .filter_map(unicode_width::UnicodeWidthChar::width)
+                .sum::<usize>();
+            display.max(1).div_ceil(width)
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -4557,6 +4953,15 @@ mod tests {
         let mut app = App::new(cli, settings).await.unwrap();
         app.request_discard().await;
 
+        while app
+            .background_task
+            .as_ref()
+            .is_some_and(|task| !task.is_finished())
+        {
+            tokio::task::yield_now().await;
+        }
+        assert!(app.poll_background().await);
+
         assert_eq!(fs::read_to_string(file).unwrap(), "original\n");
         assert!(app.overlay.is_none());
         assert!(app.active().status.unstaged.is_empty());
@@ -4592,5 +4997,70 @@ mod tests {
             .await;
         assert_eq!(app.selected_change, 2);
         assert_eq!(app.last_search.as_deref(), Some("alpha"));
+    }
+
+    #[tokio::test]
+    async fn paste_respects_the_cursor_and_input_shape() {
+        let mut app = App::isolated_test(Settings::default()).await;
+        app.focus = Focus::Commit;
+        app.commit_message = "ab".into();
+        app.text_cursor = 1;
+        app.handle_paste("one\r\ntwo");
+        assert_eq!(app.commit_message, "aone\ntwob");
+        assert_eq!(app.text_cursor, "aone\ntwo".len());
+
+        app.overlay = Some(Overlay::Prompt {
+            title: "Name".into(),
+            label: "Name".into(),
+            value: "replace me".into(),
+            action: PromptAction::CreateBranch,
+            replace_on_type: true,
+        });
+        app.text_cursor = 0;
+        app.handle_paste("feature\nbranch\n");
+        let Some(Overlay::Prompt {
+            value,
+            replace_on_type,
+            ..
+        }) = &app.overlay
+        else {
+            panic!("prompt should remain open");
+        };
+        assert_eq!(value, "feature branch");
+        assert!(!replace_on_type);
+        assert_eq!(app.text_cursor, value.len());
+    }
+
+    #[tokio::test]
+    async fn conflicts_do_not_hide_ordinary_changes_or_stage_with_space() {
+        let mut app = App::isolated_test(Settings::default()).await;
+        let conflict = Change {
+            path: "conflict.rs".into(),
+            original_path: None,
+            kind: ChangeKind::Conflicted,
+            staged: false,
+        };
+        let ordinary = Change {
+            path: "ordinary.rs".into(),
+            original_path: None,
+            kind: ChangeKind::Modified,
+            staged: false,
+        };
+        app.active_mut().status.conflicts = vec![conflict.clone()];
+        app.active_mut().status.unstaged = vec![conflict, ordinary];
+        app.focus = Focus::Changes;
+
+        assert_eq!(app.current_len(), 2);
+        assert!(app.conflicts_focused());
+        app.toggle_stage().await;
+        assert!(app.background_task.is_none());
+        assert!(app.status_line.contains("O, I, or B"));
+
+        app.selected_change = 1;
+        assert!(!app.conflicts_focused());
+        assert_eq!(
+            app.selected_change().unwrap().path,
+            Path::new("ordinary.rs")
+        );
     }
 }

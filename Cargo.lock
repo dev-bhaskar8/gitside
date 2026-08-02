@@ -861,7 +861,6 @@ dependencies = [
  "serde_json",
  "shell-words",
  "tempfile",
- "thiserror",
  "tokio",
  "toml",
  "toml_edit 0.22.27",

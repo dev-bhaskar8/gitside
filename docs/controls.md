@@ -38,7 +38,7 @@ actions when terminal mouse events are enabled. In tmux, use `set -g mouse on`.
 | `G` / `Y` | Generate outside the editor / open AI status |
 | AI panel: `e`, `1`/`2`/`3` | Enable; choose Local/Agent/API |
 | AI panel: `c` / `k` | Guided setup / remove selected provider key |
-| `Ctrl+Enter` | Commit |
+| `Ctrl+S` / `Ctrl+Enter` | Commit (`Ctrl+S` works without enhanced key reporting) |
 | `Ctrl+Shift+Enter` | Amend previous commit |
 | `Ctrl+Alt+Enter` | Commit with sign-off |
 | `Ctrl+Shift+Alt+Enter` | Amend with sign-off |

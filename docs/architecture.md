@@ -55,12 +55,12 @@ editor, credential prompt, or pinentry temporarily leave the alternate screen
 and inherit the terminal. Git and `gh` retain responsibility for authentication,
 hooks, signing, SSH, LFS, and transport behavior.
 
-Fetch, pull, push, repository refreshes, GitHub list loading, and history
-pagination run as background tasks so the event and rendering loop remains
-responsive. Snapshot reads run concurrently inside their task. A single task
-slot serializes repository work and prevents overlapping network mutations.
-Completed remote actions refresh the repository they started from, even if the
-user has switched views.
+Repository mutations, previews, fetch, pull, push, refreshes, GitHub requests,
+and history pagination run as background tasks so the event and rendering loop
+remains responsive. Snapshot reads run concurrently inside their task. A single
+task slot serializes repository work and prevents overlapping mutations.
+Completed actions refresh the repository they started from, even if the user
+has switched views.
 
 Commit-message generation uses that same background-task boundary and inserts
 only an editable draft. The `ai` adapter supports deterministic local rules,
@@ -89,11 +89,11 @@ before refresh. Git object-store churn and read-only events are ignored. A
 low-frequency safety poll remains active, and the configured polling interval is
 used as the fallback on platforms where a watcher cannot be created.
 
-Conflict handling uses repository state as progressive disclosure. The Changes
-panel switches to Merge Changes only while conflicts exist, and whole-file
-current/incoming/both plus operation continue/abort commands are then exposed
-through contextual shortcuts and Help. Resolving a file stages it so Git can
-recognize that the conflict is complete.
+Conflict handling uses repository state as progressive disclosure. Conflicted
+rows are marked `C` alongside ordinary staged and unstaged changes; selecting
+one exposes whole-file current/incoming/both plus operation continue/abort
+commands through contextual shortcuts and Help. Resolving a file stages it so
+Git can recognize that the conflict is complete.
 
 Search is an ephemeral overlay rather than a persistent toolbar. A query maps
 to searchable text owned by the focused view, selects the next matching model
