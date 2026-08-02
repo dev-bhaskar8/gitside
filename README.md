@@ -55,22 +55,6 @@ Cargo builds Gitside from source and requires Rust 1.85 or newer.
 # Homebrew
 brew install dev-bhaskar8/tap/gitside
 ```
-### Arch Linux
-
-Install the prebuilt AUR package with your preferred helper:
-
-#### paru
-
-```sh
-paru -S gitside-bin
-```
-
-#### yay
-
-```sh
-yay -S gitside-bin
-```
-
 ### Windows
 
 #### Chocolatey
@@ -89,17 +73,15 @@ scoop bucket add gitside https://github.com/dev-bhaskar8/scoop-bucket
 scoop install gitside
 ```
 
-### Direct downloads and pending channels
+### Direct downloads
 
 Provenance-attested macOS, Linux, and Windows installers, portable archives,
 `.deb`, and `.rpm` packages are available from
 [GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases/latest).
-The [WinGet submission](https://github.com/microsoft/winget-pkgs/pull/411316)
-is awaiting approval. Chocolatey’s first version is in automated moderation
-review, and Snap is registered and awaiting classic-confinement review, so
-those registry commands are not advertised as available yet. See the
-[installation matrix](docs/distribution.md#installation-matrix) for package and
-architecture details.
+Chocolatey’s first version is in automated moderation review; use the direct
+Windows installer until that review completes. See the
+[installation matrix](docs/distribution.md#installation-matrix) for package
+and architecture details.
 
 Pass a repository path from anywhere:
 
