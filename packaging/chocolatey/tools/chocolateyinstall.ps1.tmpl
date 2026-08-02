@@ -9,11 +9,18 @@ $packageArgs = @{
 }
 
 # Chocolatey can run a 32-bit PowerShell host on a 64-bit Windows installation,
-# so do not use Get-OSArchitectureWidth as a suitability check here. The
-# package contains 64-bit native builds and the release asset is selected from
-# the host architecture variables instead.
-$isArm64 = $env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or
-  $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64'
+# so do not use Get-OSArchitectureWidth as a suitability check here. Prefer the
+# native architecture override when it is present; it is set for WOW64 hosts.
+$nativeArchitecture = $env:PROCESSOR_ARCHITEW6432
+if ([string]::IsNullOrEmpty($nativeArchitecture)) {
+  $nativeArchitecture = $env:PROCESSOR_ARCHITECTURE
+}
+
+if ($nativeArchitecture -ieq 'x86') {
+  throw 'Gitside supports only 64-bit Windows.'
+}
+
+$isArm64 = $nativeArchitecture -ieq 'ARM64'
 
 if ($isArm64) {
   $packageArgs.url64bit = 'https://github.com/dev-bhaskar8/gitside/releases/download/v__VERSION__/gitside-aarch64-pc-windows-msvc.zip'

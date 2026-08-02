@@ -40,6 +40,7 @@ rg -q '<packageSourceUrl>https://github.com/dev-bhaskar8/gitside/tree/main/packa
 rg -q '<iconUrl>https://raw.githubusercontent.com/dev-bhaskar8/gitside/main/site/assets/gitside-mark.svg</iconUrl>' \
   "$output/chocolatey/gitside.nuspec"
 ! rg -q 'Get-OSArchitectureWidth -eq 32' "$output/chocolatey/tools/chocolateyinstall.ps1"
+rg -q '\$nativeArchitecture = \$env:PROCESSOR_ARCHITEW6432' "$output/chocolatey/tools/chocolateyinstall.ps1"
 test -s "$output/aur/PKGBUILD"
 test -s "$output/aur/.SRCINFO"
 
