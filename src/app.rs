@@ -290,6 +290,7 @@ pub struct App {
     last_click: Option<(u16, u16, Instant)>,
     background_task: Option<JoinHandle<BackgroundResult>>,
     pub ai_generation_state: AiGenerationState,
+    pub button_activity: Option<(ButtonActivity, Instant)>,
     last_search: Option<String>,
     commit_history_index: Option<usize>,
     commit_history_draft: String,
@@ -300,6 +301,11 @@ enum BackgroundResult {
     Remote {
         repo_index: usize,
         label: &'static str,
+        result: Result<()>,
+    },
+    Commit {
+        repo_index: usize,
+        success: &'static str,
         result: Result<()>,
     },
     History {
@@ -338,6 +344,17 @@ pub enum AiGenerationState {
     Idle,
     Queued,
     Generating(Instant),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonActivity {
+    Fetch,
+    Pull,
+    Push,
+    Refresh,
+    PublishGitHub,
+    RemoveAiCredential,
+    Commit,
 }
 
 struct RepoSnapshot {
@@ -418,6 +435,7 @@ impl App {
             last_click: None,
             background_task: None,
             ai_generation_state: AiGenerationState::Idle,
+            button_activity: None,
             last_search: None,
             commit_history_index: None,
             commit_history_draft: String::new(),
@@ -483,6 +501,7 @@ impl App {
         self.busy = true;
         if show_status {
             self.status_line = "Refreshing…".into();
+            self.button_activity = Some((ButtonActivity::Refresh, Instant::now()));
         }
         self.background_task = Some(tokio::spawn(async move {
             BackgroundResult::Refresh {
@@ -526,6 +545,7 @@ impl App {
             return false;
         };
         self.busy = false;
+        self.button_activity = None;
         match task.await {
             Ok(BackgroundResult::Remote {
                 repo_index,
@@ -535,6 +555,22 @@ impl App {
                 Ok(()) => {
                     self.refresh_repo(repo_index, false).await;
                     self.status_line = format!("{label} complete");
+                }
+                Err(error) => self.report_error(error),
+            },
+            Ok(BackgroundResult::Commit {
+                repo_index,
+                success,
+                result,
+            }) => match result {
+                Ok(()) => {
+                    self.commit_message.clear();
+                    self.text_cursor = 0;
+                    self.commit_scroll = 0;
+                    self.commit_history_index = None;
+                    self.focus = Focus::Changes;
+                    self.refresh_repo(repo_index, false).await;
+                    self.status_line = success.into();
                 }
                 Err(error) => self.report_error(error),
             },
@@ -1919,20 +1955,29 @@ impl App {
     }
 
     async fn commit(&mut self, options: CommitOptions) {
-        let repo = self.active().repo.clone();
-        let result = repo.commit(&self.commit_message, options).await;
-        if result.is_ok() {
-            self.commit_message.clear();
-            self.commit_scroll = 0;
-            self.focus = Focus::Changes;
+        if self.background_task.is_some() {
+            self.status_line = "Another Git operation is still running".into();
+            return;
         }
+        let repo_index = self.active_repo;
+        let repo = self.active().repo.clone();
+        let message = self.commit_message.clone();
         let success = match (options.amend, options.signoff) {
             (true, true) => "Amended commit with sign-off",
             (true, false) => "Amended commit",
             (false, true) => "Committed changes with sign-off",
             (false, false) => "Committed changes",
         };
-        self.finish_action(result, success).await;
+        self.busy = true;
+        self.status_line = "Committing…".into();
+        self.button_activity = Some((ButtonActivity::Commit, Instant::now()));
+        self.background_task = Some(tokio::spawn(async move {
+            BackgroundResult::Commit {
+                repo_index,
+                success,
+                result: repo.commit(&message, options).await,
+            }
+        }));
     }
 
     fn queue_commit_message_generation(&mut self) {
@@ -2117,6 +2162,7 @@ impl App {
         let credentials = self.credentials.clone();
         self.busy = true;
         self.status_line = "Removing API key…".into();
+        self.button_activity = Some((ButtonActivity::RemoveAiCredential, Instant::now()));
         self.background_task = Some(tokio::spawn(async move {
             let result = match credentials.delete(provider).await {
                 Ok(_) => Ok(credentials
@@ -2135,6 +2181,17 @@ impl App {
         }
         self.status_line = format!("{label}…");
         self.busy = true;
+        let activity = match &action {
+            RemoteAction::Fetch => ButtonActivity::Fetch,
+            RemoteAction::Pull | RemoteAction::PullRebase | RemoteAction::PullFrom { .. } => {
+                ButtonActivity::Pull
+            }
+            RemoteAction::Push
+            | RemoteAction::PushTo { .. }
+            | RemoteAction::Publish { .. }
+            | RemoteAction::Sync => ButtonActivity::Push,
+        };
+        self.button_activity = Some((activity, Instant::now()));
         let repo_index = self.active_repo;
         let repo = self.active().repo.clone();
         self.background_task = Some(tokio::spawn(async move {
@@ -2605,6 +2662,7 @@ impl App {
         }
         self.status_line = "Publishing to GitHub…".into();
         self.busy = true;
+        self.button_activity = Some((ButtonActivity::PublishGitHub, Instant::now()));
         let repo_index = self.active_repo;
         let github = GitHub::new(self.active().repo.root());
         self.background_task = Some(tokio::spawn(async move {
@@ -3915,6 +3973,10 @@ mod tests {
         assert!(app.busy);
         assert!(app.background_task.is_some());
         assert_eq!(app.status_line, "Fetching…");
+        assert!(matches!(
+            app.button_activity,
+            Some((ButtonActivity::Fetch, _))
+        ));
         app.background_task.take().unwrap().abort();
     }
 
@@ -3981,6 +4043,10 @@ mod tests {
         assert!(app.busy);
         assert!(app.background_task.is_some());
         assert_eq!(app.status_line, "Refreshing…");
+        assert!(matches!(
+            app.button_activity,
+            Some((ButtonActivity::Refresh, _))
+        ));
         while !app
             .background_task
             .as_ref()
@@ -3990,6 +4056,7 @@ mod tests {
         }
         assert!(app.poll_background().await);
         assert!(!app.busy);
+        assert!(app.button_activity.is_none());
         assert_eq!(app.status_line, "Repository refreshed");
     }
 

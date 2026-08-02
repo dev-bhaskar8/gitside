@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::{
     ai,
-    app::{AiGenerationState, App, Focus, HitRegion, Overlay, UiAction},
+    app::{AiGenerationState, App, ButtonActivity, Focus, HitRegion, Overlay, UiAction},
     config::{AiMode, LayoutPreference},
     github::{GitHubConnectionState, GitHubVisibility},
     model::{Change, ChangeKind},
@@ -59,22 +59,32 @@ fn render_outlined_button(
     if rect.width < 3 || rect.height < 1 || rect.is_empty() {
         return;
     }
-    let label = truncate_to_width(label, rect.width as usize);
-    let left = (rect.width as usize).saturating_sub(display_width(&label)) / 2;
-    let right = (rect.width as usize).saturating_sub(display_width(&label) + left);
-    let text = format!("{}{}{}", " ".repeat(left), label, " ".repeat(right));
-    let mut accent = Style::default()
-        .fg(BLUE)
-        .add_modifier(Modifier::REVERSED | Modifier::BOLD);
     if selected {
-        accent = accent.add_modifier(Modifier::UNDERLINED);
+        let content_width = rect.width.saturating_sub(2) as usize;
+        let label = truncate_to_width(label, content_width);
+        let left = content_width.saturating_sub(display_width(&label)) / 2;
+        let right = content_width.saturating_sub(display_width(&label) + left);
+        let text = format!("[{}{}{}]", " ".repeat(left), label, " ".repeat(right));
+        frame.render_widget(
+            Paragraph::new(text)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
+            rect,
+        );
+    } else {
+        let label = truncate_to_width(label, rect.width as usize);
+        let left = (rect.width as usize).saturating_sub(display_width(&label)) / 2;
+        let right = (rect.width as usize).saturating_sub(display_width(&label) + left);
+        let text = format!("{}{}{}", " ".repeat(left), label, " ".repeat(right));
+        frame.render_widget(
+            Paragraph::new(text).alignment(Alignment::Center).style(
+                Style::default()
+                    .fg(BLUE)
+                    .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            ),
+            rect,
+        );
     }
-    frame.render_widget(
-        Paragraph::new(text)
-            .alignment(Alignment::Center)
-            .style(accent),
-        rect,
-    );
     app.hits.push(HitRegion { rect, action });
 }
 
@@ -122,19 +132,53 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         (0, 0) => String::new(),
         (ahead, behind) => format!("  ↑{ahead} ↓{behind}"),
     };
-    let title = if area.width < 58 {
-        format!(" {}  {}", active.repo.name(), branch)
+    let repo_name = active.repo.name();
+    let (title, title_width) = if area.width < 58 {
+        let fixed_width = display_width(&format!("   {sync}"));
+        let available = usize::from(area.width).saturating_sub(fixed_width);
+        let repo_width = available / 2;
+        let branch_width = available.saturating_sub(repo_width);
+        let text = format!(
+            " {}  {}{}",
+            truncate_middle(&repo_name, repo_width),
+            truncate_middle(branch, branch_width),
+            sync
+        );
+        let width = display_width(&text) as u16;
+        (
+            Line::from(Span::styled(
+                text,
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            width,
+        )
     } else {
-        format!(" Gitside  │  {}  │  {}{}", active.repo.name(), branch, sync)
+        let fixed_width = display_width(&format!(" Gitside  │    │  {sync}"));
+        let available = usize::from(area.width).saturating_sub(fixed_width);
+        let repo_width = available / 2;
+        let branch_width = available.saturating_sub(repo_width);
+        let repo_name = truncate_middle(&repo_name, repo_width);
+        let branch = truncate_middle(branch, branch_width);
+        let suffix = format!("  │  {repo_name}  │  {branch}{sync}");
+        let width = (display_width(" Gitside") + display_width(&suffix)) as u16;
+        (
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    "Gitside",
+                    Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    suffix,
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            width,
+        )
     };
     frame.render_widget(
         Paragraph::new(title)
-            .style(
-                Style::default()
-                    .fg(TEXT)
-                    .bg(PANEL)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .style(Style::default().bg(PANEL))
             .block(
                 Block::default()
                     .borders(Borders::BOTTOM)
@@ -143,28 +187,34 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         area,
     );
 
-    let thin_toolbar = area.width < 75;
     let push_label = app.push_control_label();
     let expanded = [
-        "f Fetch".to_owned(),
-        "l Pull".to_owned(),
-        format!("p {push_label}"),
-        "r ↻".to_owned(),
+        animated_button_label(app, ButtonActivity::Fetch, "f", "Fetch", true),
+        animated_button_label(app, ButtonActivity::Pull, "l", "Pull", true),
+        animated_button_label(app, ButtonActivity::Push, "p", push_label, true),
+        animated_button_label(app, ButtonActivity::Refresh, "r", "↻", true),
     ];
     let expanded_width = expanded
         .iter()
         .map(|label| outlined_button_width(label, true))
         .sum::<u16>()
         + 3;
-    let full_labels = area.width >= expanded_width;
+    let gap = u16::from(area.width >= 15);
+    let can_share_full = title_width.saturating_add(expanded_width + 1) <= area.width;
+    let toolbar_on_second_row = !can_share_full;
+    let full_labels = if toolbar_on_second_row {
+        area.width >= expanded_width
+    } else {
+        can_share_full
+    };
     let labels = if full_labels {
         expanded
     } else {
         [
-            "f".to_owned(),
-            "l".to_owned(),
-            "p".to_owned(),
-            "r".to_owned(),
+            animated_button_label(app, ButtonActivity::Fetch, "f", "Fetch", false),
+            animated_button_label(app, ButtonActivity::Pull, "l", "Pull", false),
+            animated_button_label(app, ButtonActivity::Push, "p", push_label, false),
+            animated_button_label(app, ButtonActivity::Refresh, "r", "↻", false),
         ]
     };
     let actions = [
@@ -174,13 +224,16 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         UiAction::Refresh,
     ];
     let padded = full_labels;
-    let gap = u16::from(area.width >= 15);
     let widths = labels
         .each_ref()
         .map(|label| outlined_button_width(label, padded));
     let total_width = widths.iter().sum::<u16>() + gap * 3;
     let mut left = area.right().saturating_sub(total_width);
-    let button_y = if thin_toolbar { area.y + 1 } else { area.y };
+    let button_y = if toolbar_on_second_row {
+        area.y + 1
+    } else {
+        area.y
+    };
     for (index, ((label, action), width)) in labels.into_iter().zip(actions).zip(widths).enumerate()
     {
         let rect = Rect::new(left, button_y, width, 1);
@@ -287,18 +340,16 @@ fn render_commit(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         button_width,
         1,
     );
+    let commit_label =
+        animated_button_label(app, ButtonActivity::Commit, "✓", "Commit", button_width > 4);
     frame.render_widget(
-        Paragraph::new(if button_width > 4 {
-            " ✓ Commit "
-        } else {
-            " ✓ "
-        })
-        .alignment(Alignment::Center)
-        .style(
-            Style::default()
-                .fg(BLUE)
-                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
-        ),
+        Paragraph::new(format!(" {commit_label} "))
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(BLUE)
+                    .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            ),
         button,
     );
     app.hits.push(HitRegion {
@@ -347,6 +398,27 @@ fn ai_spinner(started: std::time::Instant) -> char {
     let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let frame = (started.elapsed().as_millis() / 100) as usize % frames.len();
     frames[frame]
+}
+
+fn animated_button_label(
+    app: &App,
+    activity: ButtonActivity,
+    shortcut: &str,
+    label: &str,
+    verbose: bool,
+) -> String {
+    let marker = app
+        .button_activity
+        .filter(|(current, _)| *current == activity)
+        .map_or_else(
+            || shortcut.to_owned(),
+            |(_, started)| ai_spinner(started).to_string(),
+        );
+    if verbose {
+        format!("{marker} {label}")
+    } else {
+        marker
+    }
 }
 
 fn cursor_marked(value: &str, cursor: usize) -> String {
@@ -851,10 +923,17 @@ fn render_github(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         );
         if publish && area.width > 8 && area.height > 4 {
             let full = area.width >= 19;
-            let label = if full { "Enter Publish" } else { "p" };
-            let width = outlined_button_width(label, full).min(area.width.saturating_sub(4));
+            let label = animated_button_label(
+                app,
+                ButtonActivity::PublishGitHub,
+                if full { "Enter" } else { "p" },
+                "Publish",
+                full,
+            );
+            let normal_label = if full { "Enter Publish" } else { "p" };
+            let width = outlined_button_width(normal_label, full).min(area.width.saturating_sub(4));
             let button = Rect::new(area.x + 2, area.bottom().saturating_sub(2), width, 1);
-            render_outlined_button(frame, app, button, label, UiAction::PublishGitHub, false);
+            render_outlined_button(frame, app, button, &label, UiAction::PublishGitHub, false);
         }
         return;
     }
@@ -1001,7 +1080,7 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         "e AI off"
     };
     let top_controls = [
-        (enabled_label, UiAction::ToggleAiEnabled, settings.enabled),
+        (enabled_label, UiAction::ToggleAiEnabled, !settings.enabled),
         (
             if full_controls { "1 Local" } else { "1" },
             UiAction::SelectAiMode(AiMode::Local),
@@ -1045,7 +1124,7 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 | crate::credentials::CredentialStatus::SessionOnly
         );
     let footer_y = inner.bottom().saturating_sub(1);
-    let configure_label = if full_controls { "Configure" } else { "c" };
+    let configure_label = if full_controls { "c Configure" } else { "c" };
     let configure_width = outlined_button_width(configure_label, full_controls);
     render_outlined_button(
         frame,
@@ -1056,15 +1135,21 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         false,
     );
     if removable_key {
-        let remove_label = if full_controls { "Remove key" } else { "k" };
-        let remove_width = outlined_button_width(remove_label, full_controls);
+        let remove_label = animated_button_label(
+            app,
+            ButtonActivity::RemoveAiCredential,
+            "k",
+            "Remove key",
+            full_controls,
+        );
+        let remove_width = outlined_button_width(&remove_label, full_controls);
         let x = inner.x.saturating_add(configure_width + 1);
         if x.saturating_add(remove_width) <= inner.right() {
             render_outlined_button(
                 frame,
                 app,
                 Rect::new(x, footer_y, remove_width, 1),
-                remove_label,
+                &remove_label,
                 UiAction::RemoveAiCredential,
                 false,
             );
@@ -1227,7 +1312,7 @@ fn contextual_footer_hint(
     }
     if width < 50 {
         return match focus {
-            Focus::Commit => " F1 Help · Commit",
+            Focus::Commit => " F1 Help · Ctrl+G Generate",
             Focus::Changes if has_conflicts => " ? Help · O/I/B Resolve",
             Focus::Changes if has_operation => " ? Help · C Continue",
             Focus::Changes => " ? Help · Space Stage",
@@ -1242,7 +1327,7 @@ fn contextual_footer_hint(
         };
     }
     match focus {
-        Focus::Commit => " F1 Help · Ctrl+Enter Commit · Esc Done",
+        Focus::Commit => " F1 Help · Ctrl+G Generate · Ctrl+Enter Commit",
         Focus::Changes if has_conflicts => " ? Help · O Current · I Incoming · B Both",
         Focus::Changes if has_operation => " ? Help · C Continue · S Skip · A Abort",
         Focus::Changes => " ? Help · Space Stage · e Diff · E Lines",
@@ -1805,7 +1890,7 @@ fn help_text(
     let (context_title, context) = match focus {
         Focus::Commit => (
             "Commit — current panel",
-            "  Type                 Edit message\n  Left/Right           Move text cursor\n  Backspace/Delete     Delete around cursor\n  Ctrl+U/Ctrl+Backspace Clear message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  F1                   Help\n  Esc                  Leave message\n  Tab                  Next panel",
+            "  Type                 Edit message\n  Left/Right           Move text cursor\n  Backspace/Delete     Delete around cursor\n  Ctrl+U/Ctrl+Backspace Clear message\n  Up/Down              Previous/next message\n  Page Up/Down         Scroll long draft\n  Ctrl+Home/End        Top/bottom of draft\n  Ctrl+G               Generate message\n  Ctrl+Enter           Commit\n  Ctrl+Shift+Enter     Amend commit\n  Ctrl+Alt+Enter       Commit with sign-off\n  Ctrl+Shift+Alt+Enter Amend with sign-off\n  F1                   Help\n  Esc                  Leave message\n  Tab                  Next panel",
         ),
         Focus::Changes if has_conflicts => (
             "Merge Changes — current panel",
@@ -2030,6 +2115,31 @@ mod tests {
             );
             assert!(generate.right() <= width, "Generate escaped width {width}");
         }
+    }
+
+    #[tokio::test]
+    async fn commit_button_animates_during_background_commit() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.button_activity = Some((ButtonActivity::Commit, std::time::Instant::now()));
+        let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        terminal
+            .draw(|frame| render_commit(frame, &mut app, Rect::new(0, 0, 60, 8)))
+            .unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(
+            ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+                .iter()
+                .any(|frame| output.contains(frame))
+        );
+        assert!(output.contains("Commit"));
     }
 
     #[tokio::test]
@@ -2466,9 +2576,18 @@ mod tests {
                 .buffer()
                 .cell((button.rect.x, button.rect.y))
                 .unwrap();
-            assert_eq!(corner.symbol(), " ");
             assert_eq!(corner.bg, Color::Reset);
-            assert!(corner.modifier.contains(Modifier::REVERSED));
+            if matches!(
+                button.action,
+                UiAction::ToggleAiEnabled | UiAction::SelectAiMode(AiMode::Local)
+            ) {
+                assert_eq!(corner.symbol(), "[");
+                assert!(!corner.modifier.contains(Modifier::REVERSED));
+                assert!(!corner.modifier.contains(Modifier::UNDERLINED));
+            } else {
+                assert_eq!(corner.symbol(), " ");
+                assert!(corner.modifier.contains(Modifier::REVERSED));
+            }
         }
         let configure = app
             .hits
@@ -2476,7 +2595,7 @@ mod tests {
             .find(|hit| matches!(hit.action, UiAction::OpenAiSetup(_)))
             .unwrap()
             .rect;
-        assert_eq!(configure, Rect::new(1, 18, 13, 1));
+        assert_eq!(configure, Rect::new(1, 18, 15, 1));
 
         let output = terminal
             .backend()
@@ -2485,8 +2604,93 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        for control in ["e AI off", "1 Local", "2 Agent", "3 API", "Configure"] {
+        for control in ["e AI off", "1 Local", "2 Agent", "3 API", "c Configure"] {
             assert!(output.contains(control), "missing compact {control}");
+        }
+        assert!(output.contains("[ e AI off ]"));
+        assert!(output.contains("[ 1 Local ]"));
+    }
+
+    #[tokio::test]
+    async fn disabled_ai_toggle_is_hollow_and_enabled_toggle_is_filled() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Ai;
+
+        for (width, expected) in [(80, "[ e AI off ]"), (32, "[e]")] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
+            terminal
+                .draw(|frame| render_ai(frame, &mut app, Rect::new(0, 0, width, 20)))
+                .unwrap();
+            let output = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(
+                output.contains(expected),
+                "missing {expected} at width {width}"
+            );
+        }
+
+        app.settings.ai.enabled = true;
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| render_ai(frame, &mut app, Rect::new(0, 0, 80, 20)))
+            .unwrap();
+        let toggle = app
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, UiAction::ToggleAiEnabled))
+            .unwrap();
+        let first = terminal
+            .backend()
+            .buffer()
+            .cell((toggle.rect.x, toggle.rect.y))
+            .unwrap();
+        assert_eq!(first.symbol(), " ");
+        assert!(first.modifier.contains(Modifier::REVERSED));
+    }
+
+    #[tokio::test]
+    async fn active_ai_mode_is_hollow_in_wide_and_compact_layouts() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.focus = Focus::Ai;
+
+        for (mode, wide_label, compact_label) in [
+            (AiMode::Local, "[ 1 Local ]", "[1]"),
+            (AiMode::Agent, "[ 2 Agent ]", "[2]"),
+            (AiMode::Api, "[ 3 API ]", "[3]"),
+        ] {
+            app.settings.ai.mode = mode;
+            for (width, expected) in [(80, wide_label), (32, compact_label)] {
+                let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
+                terminal
+                    .draw(|frame| render_ai(frame, &mut app, Rect::new(0, 0, width, 20)))
+                    .unwrap();
+                let output = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(
+                    output.contains(expected),
+                    "missing {expected} at width {width}"
+                );
+                assert!(
+                    !terminal
+                        .backend()
+                        .buffer()
+                        .content()
+                        .iter()
+                        .any(|cell| cell.modifier.contains(Modifier::UNDERLINED))
+                );
+            }
         }
     }
 
@@ -2666,6 +2870,97 @@ mod tests {
                 assert!(buttons.iter().all(|button| button.rect.width == 3));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn remote_button_animates_without_changing_its_hit_target() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.active_mut().status.branch.upstream = Some("origin/main".into());
+        let mut terminal = Terminal::new(TestBackend::new(80, 3)).unwrap();
+
+        terminal
+            .draw(|frame| render_header(frame, &mut app, Rect::new(0, 0, 80, 3)))
+            .unwrap();
+        let idle = app
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, UiAction::Fetch))
+            .unwrap()
+            .rect;
+        app.hits.clear();
+        app.button_activity = Some((ButtonActivity::Fetch, std::time::Instant::now()));
+        terminal
+            .draw(|frame| render_header(frame, &mut app, Rect::new(0, 0, 80, 3)))
+            .unwrap();
+        let loading = app
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, UiAction::Fetch))
+            .unwrap()
+            .rect;
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert_eq!(loading, idle);
+        assert!(
+            ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+                .iter()
+                .any(|frame| output.contains(frame))
+        );
+        assert!(!output.contains("f Fetch"));
+    }
+
+    #[tokio::test]
+    async fn gitside_wordmark_uses_the_accent_color() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 3)).unwrap();
+        terminal
+            .draw(|frame| render_header(frame, &mut app, Rect::new(0, 0, 80, 3)))
+            .unwrap();
+
+        let first_letter = terminal.backend().buffer().cell((1, 0)).unwrap();
+        assert_eq!(first_letter.symbol(), "G");
+        assert_eq!(first_letter.fg, BLUE);
+        assert!(first_letter.modifier.contains(Modifier::BOLD));
+    }
+
+    #[tokio::test]
+    async fn long_header_never_hides_ahead_or_behind_counts() {
+        let cli = Cli::try_parse_from(["gitside", "."]).unwrap();
+        let mut app = App::new(cli, Settings::default()).await.unwrap();
+        app.active_mut().status.branch.head =
+            Some("feature/a-very-long-branch-name-that-needs-space".into());
+        app.active_mut().status.branch.ahead = 9;
+        app.active_mut().status.branch.behind = 0;
+        let mut terminal = Terminal::new(TestBackend::new(80, 3)).unwrap();
+        terminal
+            .draw(|frame| render_header(frame, &mut app, Rect::new(0, 0, 80, 3)))
+            .unwrap();
+
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(output.contains("↑9 ↓0"));
+        assert!(
+            app.hits
+                .iter()
+                .filter(|hit| matches!(
+                    hit.action,
+                    UiAction::Fetch | UiAction::Pull | UiAction::Push | UiAction::Refresh
+                ))
+                .all(|hit| hit.rect.y == 1)
+        );
     }
 
     #[tokio::test]
@@ -3065,7 +3360,7 @@ mod tests {
         );
         assert_eq!(
             contextual_footer_hint(Focus::Commit, 80, false, false),
-            " F1 Help · Ctrl+Enter Commit · Esc Done"
+            " F1 Help · Ctrl+G Generate · Ctrl+Enter Commit"
         );
         assert!(!contextual_footer_hint(Focus::Changes, 40, false, false).contains("Tab"));
         assert_eq!(truncate_to_width("répo 🚀", 6), "répo ");
