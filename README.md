@@ -107,6 +107,26 @@ Git-focused draft from staged changes (or the current working tree when nothing
 is staged). Gitside never stages, commits, pushes, or changes branches during
 generation. See the [AI configuration guide](docs/configuration.md#commit-message-generation).
 
+## Same-repository benchmark
+
+To compare the launch experience directly, I ran Gitside, lazygit, gitui, and
+tig against this checkout (87 commits) in the same 118×42 tmux terminal on
+macOS arm64. These are the medians of five launches. Time is measured to the
+first usable screen, memory is process RSS at that point, and every run was
+quit with `q`.
+
+| Tool | Time to first UI | Memory (RSS) | Binary | Stability |
+| --- | ---: | ---: | ---: | --- |
+| `gitside` 0.1.2 | **0.75 s** | **10 MiB** | 5.2 MB | 5/5 clean exits |
+| `gitui` 0.28.1-nightly | 0.16 s | 15 MiB | 10.0 MB | 5/5 clean exits |
+| `lazygit` 0.63.1 | 0.27 s | 30 MiB | 18.6 MB | 5/5 clean exits |
+| `tig` 2.6.1 | 0.15 s | 3.5 MiB | 0.7 MB | 5/5 clean exits |
+
+This is an interactive launch comparison, not a full-history stress test.
+Gitside loads a bounded history page initially and fetches more commits as you
+scroll, so a 900k-commit repository should be benchmarked separately before
+drawing conclusions about large-repository performance.
+
 ## Essential controls
 
 | Key | Action | Key | Action |

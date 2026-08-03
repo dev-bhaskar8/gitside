@@ -26,6 +26,7 @@
       <a class="brand" href="./" aria-label="Gitside home"><span class="brand-mark">⌁</span> gitside</a>
       <nav aria-label="Main navigation">
         <a href="docs/">Docs</a>
+        <a href="#benchmarks">Benchmarks</a>
         <a href="https://github.com/dev-bhaskar8/gitside">GitHub</a>
         <a class="nav-cta" href="#install">Install</a>
       </nav>
@@ -63,6 +64,28 @@
         <article><span class="feature-number">04</span><h3>GitHub, contextually</h3><p>Publish repositories and work with pull requests and issues through your existing authenticated GitHub CLI.</p></article>
         <article><span class="feature-number">05</span><h3>Never frozen</h3><p>Fetch, pull, push, refresh, and GitHub requests run in the background while input stays responsive.</p></article>
         <article><span class="feature-number">06</span><h3>Your terminal stays yours</h3><p>Backgrounds inherit your terminal profile, preserving light themes, dark themes, and transparency.</p></article>
+      </section>
+
+      <section id="benchmarks" class="benchmark section-shell">
+        <div class="benchmark-intro">
+          <div><p class="kicker">Measured on the same checkout</p><h2>Small footprint.<br />Clear trade-offs.</h2></div>
+          <p>Five launches of each tool against this 87-commit repository, using the same 118×42 tmux terminal on macOS arm64. Time is to the first usable screen; memory is process RSS.</p>
+        </div>
+        <div class="benchmark-card">
+          <div class="benchmark-table-wrap">
+            <table class="benchmark-table">
+              <caption>Median of five launches · versions current on August 3, 2026</caption>
+              <thead><tr><th scope="col">Tool</th><th scope="col">First UI</th><th scope="col">Memory</th><th scope="col">Binary</th><th scope="col">Stability</th></tr></thead>
+              <tbody>
+                <tr class="benchmark-highlight"><td>gitside 0.1.2</td><td>0.75 s</td><td>10 MiB</td><td>5.2 MB</td><td>5/5 clean exits</td></tr>
+                <tr><td>gitui 0.28.1-nightly</td><td>0.16 s</td><td>15 MiB</td><td>10.0 MB</td><td>5/5 clean exits</td></tr>
+                <tr><td>lazygit 0.63.1</td><td>0.27 s</td><td>30 MiB</td><td>18.6 MB</td><td>5/5 clean exits</td></tr>
+                <tr><td>tig 2.6.1</td><td>0.15 s</td><td>3.5 MiB</td><td>0.7 MB</td><td>5/5 clean exits</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="benchmark-note">This is an interactive launch comparison, not a full-history stress test. Gitside loads a bounded history page initially and fetches more commits as you scroll.</p>
+        </div>
       </section>
 
       <section id="ai" class="ai-callout section-shell">
