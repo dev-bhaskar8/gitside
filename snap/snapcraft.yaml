@@ -28,6 +28,8 @@ parts:
     plugin: rust
     source: .
     rust-channel: stable
+    build-attributes:
+      - enable-patchelf
     build-packages:
       - pkg-config
       - libdbus-1-dev
