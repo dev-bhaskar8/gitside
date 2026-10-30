@@ -135,7 +135,7 @@ pub struct AiSetupDraft {
     pub mode: AiMode,
     pub step: AiSetupStep,
     pub agent_provider: AgentProvider,
-    pub available_agents: [bool; 4],
+    pub available_agents: [bool; AgentProvider::ALL.len()],
     pub generate_after_save: bool,
     pub api_provider: ApiProvider,
     pub command: String,
@@ -1487,6 +1487,21 @@ impl App {
                 return EventOutcome::Continue;
             }
         } else if let Some(Overlay::AiSetup(draft)) = &mut self.overlay {
+            if draft.step == AiSetupStep::Provider
+                && matches!(
+                    event.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                )
+            {
+                let current = setup_provider_index(draft);
+                let index = if event.kind == MouseEventKind::ScrollUp {
+                    current.saturating_sub(1)
+                } else {
+                    (current + 1).min(provider_count(draft.mode) - 1)
+                };
+                set_setup_provider(draft, index);
+                return EventOutcome::Continue;
+            }
             match event.kind {
                 MouseEventKind::ScrollUp => draft.scroll = draft.scroll.saturating_sub(3),
                 MouseEventKind::ScrollDown => {
@@ -1700,6 +1715,16 @@ impl App {
     async fn handle_ai_setup_key(&mut self, key: KeyEvent, mut draft: AiSetupDraft) {
         match key.code {
             KeyCode::Esc => self.overlay = None,
+            KeyCode::PageUp | KeyCode::PageDown if draft.step == AiSetupStep::Provider => {
+                let current = setup_provider_index(&draft);
+                let index = if key.code == KeyCode::PageUp {
+                    current.saturating_sub(5)
+                } else {
+                    (current + 5).min(provider_count(draft.mode) - 1)
+                };
+                set_setup_provider(&mut draft, index);
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
             KeyCode::PageUp => {
                 draft.scroll = draft.scroll.saturating_sub(5);
                 self.overlay = Some(Overlay::AiSetup(draft));
@@ -1760,8 +1785,8 @@ impl App {
                 self.text_cursor = ai_setup_input(&draft).len();
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
-            KeyCode::Char(character @ '1'..='5') if draft.step == AiSetupStep::Provider => {
-                let index = character.to_digit(10).unwrap_or(1) as usize - 1;
+            KeyCode::Char(character @ '0'..='9') if draft.step == AiSetupStep::Provider => {
+                let index = (character.to_digit(10).unwrap_or(1) as usize + 9) % 10;
                 if index < provider_count(draft.mode) {
                     set_setup_provider(&mut draft, index);
                 }
@@ -1822,7 +1847,7 @@ impl App {
             AiSetupStep::Provider => {
                 if draft.generate_after_save
                     && draft.mode == AiMode::Agent
-                    && draft.agent_provider != AgentProvider::Custom
+                    && !draft.agent_provider.needs_command()
                 {
                     let index = setup_provider_index(&draft);
                     if !draft.available_agents[index] {
@@ -1838,7 +1863,7 @@ impl App {
                 draft.step = if draft.mode == AiMode::Agent
                     && matches!(
                         draft.agent_provider,
-                        AgentProvider::Custom | AgentProvider::Antigravity
+                        AgentProvider::Custom | AgentProvider::Acp | AgentProvider::Antigravity
                     ) {
                     AiSetupStep::Command
                 } else {
@@ -1846,13 +1871,12 @@ impl App {
                 };
             }
             AiSetupStep::Command => {
-                if draft.agent_provider == AgentProvider::Custom && draft.command.trim().is_empty()
-                {
-                    self.status_line = "A custom agent command is required".into();
+                if draft.agent_provider.needs_command() && draft.command.trim().is_empty() {
+                    self.status_line = "An agent executable or command is required".into();
                     self.overlay = Some(Overlay::AiSetup(draft));
                     return;
                 }
-                draft.step = if draft.agent_provider == AgentProvider::Antigravity {
+                draft.step = if draft.agent_provider != AgentProvider::Custom {
                     AiSetupStep::Model
                 } else {
                     AiSetupStep::Instructions
@@ -1910,7 +1934,10 @@ impl App {
             }
             AiSetupStep::Model
                 if draft.mode == AiMode::Agent
-                    && draft.agent_provider == AgentProvider::Antigravity =>
+                    && matches!(
+                        draft.agent_provider,
+                        AgentProvider::Antigravity | AgentProvider::Acp
+                    ) =>
             {
                 AiSetupStep::Command
             }
@@ -2647,7 +2674,10 @@ impl App {
                     settings.ai.agent.command = nonempty_owned(draft.command);
                     settings.ai.agent.model = None;
                 } else {
-                    if draft.agent_provider == AgentProvider::Antigravity {
+                    if matches!(
+                        draft.agent_provider,
+                        AgentProvider::Antigravity | AgentProvider::Acp
+                    ) {
                         settings.ai.agent.command = nonempty_owned(draft.command);
                     }
                     settings.ai.agent.model = nonempty_owned(draft.model);
@@ -3789,7 +3819,7 @@ enum RemoteAction {
 
 fn provider_count(mode: AiMode) -> usize {
     match mode {
-        AiMode::Agent => 5,
+        AiMode::Agent => AgentProvider::ALL.len(),
         AiMode::Api => 5,
         AiMode::Local => 1,
     }
@@ -3797,13 +3827,7 @@ fn provider_count(mode: AiMode) -> usize {
 
 fn setup_provider_index(draft: &AiSetupDraft) -> usize {
     match draft.mode {
-        AiMode::Agent => match draft.agent_provider {
-            AgentProvider::Codex => 0,
-            AgentProvider::Claude => 1,
-            AgentProvider::Opencode => 2,
-            AgentProvider::Antigravity => 3,
-            AgentProvider::Custom => 4,
-        },
+        AiMode::Agent => draft.agent_provider.index(),
         AiMode::Api => match draft.api_provider {
             ApiProvider::Openai => 0,
             ApiProvider::Anthropic => 1,
@@ -3818,13 +3842,7 @@ fn setup_provider_index(draft: &AiSetupDraft) -> usize {
 fn set_setup_provider(draft: &mut AiSetupDraft, index: usize) {
     match draft.mode {
         AiMode::Agent => {
-            let provider = match index {
-                1 => AgentProvider::Claude,
-                2 => AgentProvider::Opencode,
-                3 => AgentProvider::Antigravity,
-                4 => AgentProvider::Custom,
-                _ => AgentProvider::Codex,
-            };
+            let provider = AgentProvider::ALL.get(index).copied().unwrap_or_default();
             if draft.agent_provider != provider {
                 draft.agent_provider = provider;
                 draft.model.clear();
@@ -4376,7 +4394,7 @@ mod tests {
         ));
 
         app.open_ai_setup(AiMode::Agent);
-        app.handle_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE))
             .await;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
@@ -4503,7 +4521,7 @@ mod tests {
         assert_eq!(draft.mode, AiMode::Agent);
         assert!(draft.generate_after_save);
         // Installation detection never claims the user is authenticated.
-        draft.available_agents = [false; 4];
+        draft.available_agents = [false; AgentProvider::ALL.len()];
         draft.agent_provider = AgentProvider::Codex;
         app.advance_ai_setup().await;
         assert!(app.status_line.contains("Install this CLI"));
@@ -4966,7 +4984,7 @@ printf '%s' '{"subject":"Add feature","body":""}' > "$output"
 
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
             .await;
-        app.handle_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE))
             .await;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;

@@ -1,7 +1,7 @@
 mod commit;
 mod provider;
 
-pub(crate) use provider::antigravity::login as antigravity_login;
+pub(crate) use provider::acp::login as antigravity_login;
 
 use std::{env, path::Path, time::Duration};
 
@@ -99,13 +99,7 @@ pub fn mode_label(settings: &AiSettings) -> &'static str {
 pub fn provider_label(settings: &AiSettings) -> &'static str {
     match settings.mode {
         AiMode::Local => "Offline rules",
-        AiMode::Agent => match settings.agent.provider {
-            AgentProvider::Codex => "Codex",
-            AgentProvider::Claude => "Claude Code",
-            AgentProvider::Opencode => "OpenCode",
-            AgentProvider::Antigravity => "Antigravity",
-            AgentProvider::Custom => "Other agent",
-        },
+        AiMode::Agent => settings.agent.provider.label(),
         AiMode::Api => match settings.api.provider {
             ApiProvider::Openai => "OpenAI",
             ApiProvider::Anthropic => "Anthropic",
@@ -117,14 +111,8 @@ pub fn provider_label(settings: &AiSettings) -> &'static str {
 }
 
 /// Installation detection only; authentication remains owned by each CLI.
-pub fn available_agents(settings: &AiSettings) -> [bool; 4] {
-    [
-        AgentProvider::Codex,
-        AgentProvider::Claude,
-        AgentProvider::Opencode,
-        AgentProvider::Antigravity,
-    ]
-    .map(|provider| {
+pub fn available_agents(settings: &AiSettings) -> [bool; AgentProvider::ALL.len()] {
+    AgentProvider::ALL.map(|provider| {
         let mut candidate = settings.clone();
         candidate.agent.provider = provider;
         if settings.agent.provider != provider {
@@ -876,7 +864,13 @@ printf '%s' '{"type":"result","is_error":false,"structured_output":{"subject":"F
             Ok("codex") => AgentProvider::Codex,
             Ok("claude") => AgentProvider::Claude,
             Ok("opencode") => AgentProvider::Opencode,
-            _ => panic!("set GITSIDE_LIVE_AGENT to codex, claude, or opencode"),
+            Ok("cursor") => AgentProvider::Cursor,
+            Ok("grok") => AgentProvider::Grok,
+            Ok("pi") => AgentProvider::Pi,
+            Ok("muse") => AgentProvider::Muse,
+            _ => panic!(
+                "set GITSIDE_LIVE_AGENT to codex, claude, opencode, cursor, grok, pi, or muse"
+            ),
         };
         let (_directory, repo) = staged_repository().await;
         let mut settings = AiSettings {

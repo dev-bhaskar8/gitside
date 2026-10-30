@@ -1,6 +1,6 @@
-//! Rust port of T3 Code's dedicated Antigravity text helper (MIT).
+//! ACP text helpers adapted from T3 Code (MIT), plus Cursor's official ACP interface.
 //! ACP transport, temporary workspace, no tools, bounded output, owned cleanup.
-use super::{TextRequest, agent_program};
+use super::{TextRequest, agent_program, resolve_program};
 use crate::config::{AgentProvider, AiSettings};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -47,7 +47,10 @@ pub(super) async fn generate(settings: &AiSettings, request: &TextRequest) -> Re
         .await;
     client.stop().await;
     if result.is_ok() && contains_files(client.workspace.path())? {
-        bail!("Antigravity wrote files during commit generation");
+        bail!(
+            "{} wrote files during commit generation",
+            settings.agent.provider.label()
+        );
     }
     result
 }
@@ -77,7 +80,9 @@ struct Client {
     workspace: TempDir,
     workspace_path: PathBuf,
     _runtime: TempDir,
-    profile: PathBuf,
+    profile: Option<PathBuf>,
+    provider: AgentProvider,
+    auth_method: Option<String>,
     session: Option<String>,
     output: String,
     next_id: u64,
@@ -86,14 +91,35 @@ struct Client {
 
 impl Client {
     async fn spawn(settings: &AiSettings, signing_in: bool) -> Result<Self> {
-        let profile = settings
-            .agent
-            .antigravity_home
-            .clone()
-            .or_else(|| dirs::data_local_dir().map(|p| p.join("gitside/antigravity")))
-            .context("could not locate Antigravity profile; set ai.agent.antigravity_home")?;
-        prepare_profile(&profile).await?;
-        let profile = tokio::fs::canonicalize(&profile).await?;
+        let profile = if settings.agent.provider == AgentProvider::Antigravity {
+            let profile = settings
+                .agent
+                .antigravity_home
+                .clone()
+                .or_else(|| dirs::data_local_dir().map(|p| p.join("gitside/antigravity")))
+                .context("could not locate Antigravity profile; set ai.agent.antigravity_home")?;
+            prepare_profile(&profile).await?;
+            Some(tokio::fs::canonicalize(&profile).await?)
+        } else {
+            None
+        };
+        let auth_method = match settings.agent.provider {
+            AgentProvider::Antigravity => Some("oauth-personal".to_owned()),
+            AgentProvider::Cursor => Some("cursor_login".to_owned()),
+            AgentProvider::Grok => Some(
+                if env::var("XAI_API_KEY").is_ok_and(|key| !key.trim().is_empty()) {
+                    "xai.api_key"
+                } else {
+                    "cached_token"
+                }
+                .to_owned(),
+            ),
+            _ => settings
+                .agent
+                .acp_auth_method
+                .clone()
+                .filter(|value| !value.trim().is_empty()),
+        };
         let workspace = tempfile::tempdir()?;
         let workspace_path = std::fs::canonicalize(workspace.path())?;
         let runtime = tempfile::tempdir()?;
@@ -106,94 +132,93 @@ impl Client {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // Isolate the account without reading/copying another application's login.
-        for (name, _) in env::vars_os() {
-            if REMOVED_ENV.contains(&name.to_string_lossy().to_uppercase().as_str()) {
-                command.env_remove(name);
+        if let Some(profile) = &profile {
+            // Isolate the account without reading/copying another application's login.
+            for (name, _) in env::vars_os() {
+                if REMOVED_ENV.contains(&name.to_string_lossy().to_uppercase().as_str()) {
+                    command.env_remove(name);
+                }
             }
-        }
-        let executable = env::current_exe()?;
-        let executable = executable.to_string_lossy();
-        if executable.contains(if cfg!(windows) { ';' } else { ':' }) {
-            bail!("Gitside executable path cannot be used for Antigravity browser handling");
-        }
-        let browser = format!(
-            "{} __antigravity-browser %s",
-            shell_words::quote(&executable)
-        );
-        command
-            .env("GEMINI_HOME", &profile)
-            .env("AGY_ACP_FORCE_FILE_STORAGE", "1")
-            .env("PYTHONUNBUFFERED", "1")
-            .env("BROWSER", browser);
-        command.env(
-            if cfg!(windows) { "TEMP" } else { "TMPDIR" },
-            runtime.path(),
-        );
-        if cfg!(windows) {
-            command.env("TMP", runtime.path());
-        }
-        if cfg!(target_os = "linux") {
-            command.arg("--uid=");
-        }
-        // Google's archive ships these two executables together.
-        if let Some(executable) = resolve_program(&program) {
-            let harness = executable
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join(if cfg!(windows) {
-                    "localharness_external.exe"
-                } else {
-                    "localharness_external"
-                });
-            if harness.is_file() {
-                command.env("ANTIGRAVITY_HARNESS_PATH", harness);
+            let executable = env::current_exe()?;
+            let executable = executable.to_string_lossy();
+            if executable.contains(if cfg!(windows) { ';' } else { ':' }) {
+                bail!("Gitside executable path cannot be used for Antigravity browser handling");
             }
-        }
-        // Google's bundled Python may not know the host distribution's CA path.
-        if cfg!(target_os = "linux")
-            && env::var_os("SSL_CERT_FILE").is_none()
-            && env::var_os("SSL_CERT_DIR").is_none()
-        {
-            let mut candidates = vec![env::var_os("NIX_SSL_CERT_FILE").map(PathBuf::from)];
-            candidates.extend(
-                [
-                    "/etc/ssl/certs/ca-bundle.crt",
-                    "/etc/ssl/certs/ca-certificates.crt",
-                    "/etc/pki/tls/certs/ca-bundle.crt",
-                    "/etc/ssl/cert.pem",
-                ]
-                .into_iter()
-                .map(|path| Some(PathBuf::from(path))),
+            let browser = format!(
+                "{} __antigravity-browser %s",
+                shell_words::quote(&executable)
             );
-            if let Some(certificate) = candidates
-                .into_iter()
-                .flatten()
-                .find(|path| path.is_absolute() && path.is_file())
+            command
+                .env("GEMINI_HOME", profile)
+                .env("AGY_ACP_FORCE_FILE_STORAGE", "1")
+                .env("PYTHONUNBUFFERED", "1")
+                .env("BROWSER", browser);
+            command.env(
+                if cfg!(windows) { "TEMP" } else { "TMPDIR" },
+                runtime.path(),
+            );
+            if cfg!(windows) {
+                command.env("TMP", runtime.path());
+            }
+            if cfg!(target_os = "linux") {
+                command.arg("--uid=");
+            }
+            // Google's archive ships these two executables together.
+            if let Some(executable) = resolve_program(&program) {
+                let harness =
+                    executable
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .join(if cfg!(windows) {
+                            "localharness_external.exe"
+                        } else {
+                            "localharness_external"
+                        });
+                if harness.is_file() {
+                    command.env("ANTIGRAVITY_HARNESS_PATH", harness);
+                }
+            }
+            // Google's bundled Python may not know the host distribution's CA path.
+            if cfg!(target_os = "linux")
+                && env::var_os("SSL_CERT_FILE").is_none()
+                && env::var_os("SSL_CERT_DIR").is_none()
             {
-                command.env("SSL_CERT_FILE", certificate);
+                let mut candidates = vec![env::var_os("NIX_SSL_CERT_FILE").map(PathBuf::from)];
+                candidates.extend(
+                    [
+                        "/etc/ssl/certs/ca-bundle.crt",
+                        "/etc/ssl/certs/ca-certificates.crt",
+                        "/etc/pki/tls/certs/ca-bundle.crt",
+                        "/etc/ssl/cert.pem",
+                    ]
+                    .into_iter()
+                    .map(|path| Some(PathBuf::from(path))),
+                );
+                if let Some(certificate) = candidates
+                    .into_iter()
+                    .flatten()
+                    .find(|path| path.is_absolute() && path.is_file())
+                {
+                    command.env("SSL_CERT_FILE", certificate);
+                }
             }
         }
         command.args(&settings.agent.args);
+        match settings.agent.provider {
+            AgentProvider::Cursor => {
+                command.args(["--mode", "ask", "acp"]);
+            }
+            AgentProvider::Grok => {
+                command.args(["--permission-mode", "default", "agent", "stdio"]);
+            }
+            _ => {}
+        }
         #[cfg(unix)]
         command.process_group(0);
-        let mut child = command.spawn().context("Antigravity ACP runtime was not found; install Google's ACP Registry runtime and set ai.agent.command")?;
-        let stdin = child
-            .stdin
-            .take()
-            .context("Antigravity stdin unavailable")?;
-        let stdout = BufReader::new(
-            child
-                .stdout
-                .take()
-                .context("Antigravity stdout unavailable")?,
-        );
-        let mut stderr = BufReader::new(
-            child
-                .stderr
-                .take()
-                .context("Antigravity stderr unavailable")?,
-        );
+        let mut child = command.spawn().with_context(|| format!("{} ACP runtime was not found; install it and set ai.agent.command if it is not on PATH", settings.agent.provider.label()))?;
+        let stdin = child.stdin.take().context("ACP stdin unavailable")?;
+        let stdout = BufReader::new(child.stdout.take().context("ACP stdout unavailable")?);
+        let mut stderr = BufReader::new(child.stderr.take().context("ACP stderr unavailable")?);
         let (tx, diagnostics) = mpsc::channel(16);
         let stderr = tokio::spawn(async move {
             let mut buffer = Vec::new();
@@ -217,6 +242,8 @@ impl Client {
             workspace_path,
             _runtime: runtime,
             profile,
+            provider: settings.agent.provider,
+            auth_method,
             session: None,
             output: String::new(),
             next_id: 1,
@@ -224,16 +251,26 @@ impl Client {
         })
     }
 
+    fn label(&self) -> &'static str {
+        self.provider.label()
+    }
+
     async fn run(&mut self, model: Option<&str>, request: Option<&TextRequest>) -> Result<String> {
-        let init = self.request("initialize", json!({"protocolVersion":1,
+        let mut params = json!({"protocolVersion":1,
             "clientInfo":{"name":"gitside","version":env!("CARGO_PKG_VERSION")},
             "clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}
-        })).await?;
-        if init["protocolVersion"] != 1 {
-            bail!("Antigravity did not negotiate ACP v1");
+        });
+        if self.provider == AgentProvider::Grok {
+            params["_meta"] = json!({"clientType":"extension"});
         }
-        self.request("authenticate", json!({"methodId":"oauth-personal"}))
-            .await?;
+        let init = self.request("initialize", params).await?;
+        if init["protocolVersion"] != 1 {
+            bail!("{} did not negotiate ACP v1", self.label());
+        }
+        if let Some(method) = self.auth_method.clone() {
+            self.request("authenticate", json!({"methodId":method}))
+                .await?;
+        }
         let created = self
             .request(
                 "session/new",
@@ -242,20 +279,36 @@ impl Client {
             .await?;
         let session = created["sessionId"]
             .as_str()
-            .filter(|id| valid_session_id(id))
-            .context("Antigravity returned an invalid session ID")?
+            .filter(|id| {
+                !id.is_empty()
+                    && id.len() <= 512
+                    && !id.chars().any(char::is_control)
+                    && (self.provider != AgentProvider::Antigravity || valid_session_id(id))
+            })
+            .with_context(|| format!("{} returned an invalid session ID", self.label()))?
             .to_owned();
         self.session = Some(session.clone());
         if request.is_none() {
             return Ok(String::new());
         }
-        if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+        if self.provider == AgentProvider::Cursor {
+            self.request(
+                "session/set_mode",
+                json!({"sessionId":session,"modeId":"ask"}),
+            )
+            .await?;
+        }
+        if let Some(model) = model.map(str::trim).filter(|value| {
+            !value.is_empty()
+                && *value != "default"
+                && !(self.provider == AgentProvider::Grok && *value == "grok-build")
+        }) {
             let options = created["configOptions"]
                 .as_array()
                 .and_then(|options| options.iter().find(|option| option["id"] == "model"));
             if let Some(options) = options {
                 if !model_in_options(&options["options"], model) {
-                    bail!("Antigravity model is unavailable for this account");
+                    bail!("{} model is unavailable for this account", self.label());
                 }
                 self.request(
                     "session/set_config_option",
@@ -268,7 +321,7 @@ impl Client {
                     .as_array()
                     .is_some_and(|models| models.iter().any(|entry| entry["modelId"] == model))
                 {
-                    bail!("Antigravity did not advertise the selected model");
+                    bail!("{} did not advertise the selected model", self.label());
                 }
                 self.request(
                     "session/set_model",
@@ -285,51 +338,68 @@ impl Client {
             )
             .await?;
         if result["stopReason"] != "end_turn" {
-            bail!("Antigravity did not finish commit generation");
+            bail!("{} did not finish commit generation", self.label());
         }
         if self.output.trim().is_empty() {
-            bail!("Antigravity returned empty commit output");
+            bail!("{} returned empty commit output", self.label());
         }
         Ok(std::mem::take(&mut self.output))
     }
 
     async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+        let mut params = params;
+        let prompt_id = (self.provider == AgentProvider::Grok && method == "session/prompt")
+            .then(|| uuid::Uuid::now_v7().to_string());
+        if let Some(prompt_id) = &prompt_id {
+            params["_meta"] = json!({"promptId":prompt_id,"requestId":prompt_id});
+        }
         let id = self.next_id;
         self.next_id += 1;
         self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .await?;
         loop {
             let line = tokio::select! {
-                line = read_line(&mut self.stdout, &mut self.stdout_buffer) => line?.context("Antigravity stopped before completing its response")?,
+                line = read_line(&mut self.stdout, &mut self.stdout_buffer) => line?.with_context(|| format!("{} stopped before completing its response; check its login and CLI version", self.label()))?,
                 Some(line) = self.diagnostics.recv() => { self.authorization_line(&line)?; continue; }
             };
             if line.starts_with(AUTH_PREFIX) {
                 self.authorization_line(&line)?;
                 continue;
             }
-            let event: Value =
-                serde_json::from_str(&line).context("Antigravity returned invalid ACP JSON")?;
+            let event: Value = serde_json::from_str(&line)
+                .with_context(|| format!("{} returned invalid ACP JSON", self.label()))?;
+            if event["jsonrpc"] != "2.0" {
+                bail!("{} returned an invalid RPC envelope", self.label());
+            }
             if event.get("method").is_some() {
                 self.handle_agent_message(&event).await?;
+                if let Some(prompt_id) = &prompt_id {
+                    if let Some(result) =
+                        grok_completion(&event, self.session.as_deref(), prompt_id)?
+                    {
+                        return Ok(result);
+                    }
+                }
                 continue;
             }
             if event["id"] != id {
-                bail!("Antigravity returned an unexpected response ID");
+                bail!("{} returned an unexpected response ID", self.label());
             }
             if let Some(error) = event.get("error") {
-                if error["code"] == -32000 {
+                if self.provider == AgentProvider::Antigravity && error["code"] == -32000 {
                     bail!("Sign in using gitside antigravity-login before generating");
                 }
                 let message = error["message"].as_str().unwrap_or("ACP request failed");
                 bail!(
-                    "Antigravity {method} failed: {}",
+                    "{} {method} failed: {}",
+                    self.label(),
                     super::shorten_subject(message, 300)
                 );
             }
             return event
                 .get("result")
                 .cloned()
-                .context("Antigravity returned no ACP result");
+                .with_context(|| format!("{} returned no ACP result", self.label()));
         }
     }
 
@@ -342,7 +412,10 @@ impl Client {
                 json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Tools and user input are disabled for commit generation"}})
             };
             self.send(response).await?;
-            bail!("Antigravity requested tools or user input during commit generation");
+            bail!(
+                "{} requested tools or user input during commit generation",
+                self.label()
+            );
         }
         if method != "session/update" {
             return Ok(());
@@ -351,17 +424,27 @@ impl Client {
         if params["sessionId"].as_str() != self.session.as_deref() {
             return Ok(());
         }
+        if self.provider == AgentProvider::Grok
+            && params["_meta"]["promptId"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("task-completed-"))
+        {
+            return Ok(());
+        }
         let update = &params["update"];
         match update["sessionUpdate"].as_str() {
             Some("tool_call" | "tool_call_update") => {
-                bail!("Antigravity attempted tool work during commit generation")
+                bail!(
+                    "{} attempted tool work during commit generation",
+                    self.label()
+                )
             }
             Some("agent_message_chunk") if update["content"]["type"] == "text" => {
                 let text = update["content"]["text"]
                     .as_str()
-                    .context("Antigravity text chunk was malformed")?;
+                    .context("ACP text chunk was malformed")?;
                 if self.output.len() + text.len() > MAX_OUTPUT {
-                    bail!("Antigravity output exceeded the commit limit");
+                    bail!("{} output exceeded the commit limit", self.label());
                 }
                 self.output.push_str(text);
             }
@@ -402,8 +485,11 @@ impl Client {
 
     async fn stop(&mut self) {
         if let Some(session) = &self.session {
-            let message =
+            let mut message =
                 json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}});
+            if self.provider == AgentProvider::Grok {
+                message["params"]["_meta"] = json!({"cancelTrigger":"ctrl_c"});
+            }
             let _ = tokio::time::timeout(Duration::from_millis(200), self.send(message)).await;
         }
         kill_group(&self.child);
@@ -413,10 +499,8 @@ impl Client {
     }
     fn cleanup_session(&self) {
         let Some(session) = &self.session else { return };
-        let base = self
-            .profile
-            .join("antigravity-acp/conversations")
-            .join(session);
+        let Some(profile) = &self.profile else { return };
+        let base = profile.join("antigravity-acp/conversations").join(session);
         let metadata = std::fs::read(base.with_extension("meta"))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
@@ -426,7 +510,7 @@ impl Client {
         for suffix in ["db", "db-wal", "db-shm", "db-journal", "meta"] {
             let _ = std::fs::remove_file(base.with_extension(suffix));
         }
-        let _ = std::fs::remove_dir_all(self.profile.join("antigravity-acp/brain").join(session));
+        let _ = std::fs::remove_dir_all(profile.join("antigravity-acp/brain").join(session));
     }
 }
 impl Drop for Client {
@@ -436,7 +520,7 @@ impl Drop for Client {
         self.cleanup_session();
     }
 }
-fn kill_group(child: &Child) {
+pub(super) fn kill_group(child: &Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
         // This child started its own process group; no unrelated processes join it.
@@ -448,7 +532,7 @@ fn kill_group(child: &Child) {
     let _ = child;
 }
 
-async fn read_line(
+pub(super) async fn read_line(
     reader: &mut (impl AsyncBufRead + Unpin),
     bytes: &mut Vec<u8>,
 ) -> Result<Option<String>> {
@@ -465,7 +549,7 @@ async fn read_line(
             .position(|byte| *byte == b'\n')
             .map_or(chunk.len(), |index| index + 1);
         if bytes.len() + length > MAX_LINE {
-            bail!("Antigravity exceeded the ACP message limit");
+            bail!("AI provider exceeded the ACP message limit");
         }
         let done = chunk[length - 1] == b'\n';
         bytes.extend_from_slice(&chunk[..length]);
@@ -476,7 +560,7 @@ async fn read_line(
     }
     Ok(Some(
         String::from_utf8(std::mem::take(bytes))
-            .context("Antigravity returned non-UTF-8 output")?
+            .context("ACP provider returned non-UTF-8 output")?
             .trim_end_matches(['\r', '\n'])
             .to_owned(),
     ))
@@ -492,19 +576,45 @@ fn valid_session_id(id: &str) -> bool {
             }
         })
 }
+
+// Grok sometimes completes through an extension notification before its prompt RPC.
+// Correlate both session and prompt: background wakes must never finish this request.
+fn grok_completion(event: &Value, session: Option<&str>, prompt: &str) -> Result<Option<Value>> {
+    let method = event["method"].as_str().unwrap_or_default();
+    let params = &event["params"];
+    if params["sessionId"].as_str() != session || event.get("id").is_some() {
+        return Ok(None);
+    }
+    let (id, reason) = match method {
+        "x.ai/session/prompt_complete" | "_x.ai/session/prompt_complete" => {
+            (&params["promptId"], &params["stopReason"])
+        }
+        "x.ai/session_notification" | "_x.ai/session_notification" | "_x.ai/session/update"
+            if params["update"]["sessionUpdate"] == "turn_completed" =>
+        {
+            let update = &params["update"];
+            (
+                update.get("prompt_id").unwrap_or(&update["promptId"]),
+                update.get("stop_reason").unwrap_or(&update["stopReason"]),
+            )
+        }
+        _ => return Ok(None),
+    };
+    if id.as_str() != Some(prompt) {
+        return Ok(None);
+    }
+    let reason = reason.as_str().unwrap_or("end_turn");
+    if reason == "rate_limit" {
+        bail!("Grok usage limit reached; try again later");
+    }
+    Ok(Some(json!({"stopReason":reason})))
+}
 fn model_in_options(options: &Value, model: &str) -> bool {
     options.as_array().is_some_and(|options| {
         options
             .iter()
             .any(|option| option["value"] == model || model_in_options(&option["options"], model))
     })
-}
-fn resolve_program(program: &str) -> Option<PathBuf> {
-    if Path::new(program).components().count() > 1 {
-        return std::fs::canonicalize(program).ok();
-    }
-    env::split_paths(&env::var_os("PATH")?)
-        .find_map(|dir| std::fs::canonicalize(dir.join(program)).ok())
 }
 async fn prepare_profile(profile: &Path) -> Result<()> {
     let config = profile.join("config");
@@ -547,7 +657,7 @@ async fn prepare_profile(profile: &Path) -> Result<()> {
     .await?;
     Ok(())
 }
-fn contains_files(path: &Path) -> Result<bool> {
+pub(super) fn contains_files(path: &Path) -> Result<bool> {
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;
         if entry.file_type()?.is_dir() {
@@ -721,6 +831,136 @@ for line in sys.stdin:
             let (_directory, settings) = fixture(mode).await;
             let error = generate(&settings, &task()).await.unwrap_err();
             assert!(error.to_string().contains(expected), "{mode}: {error:#}");
+        }
+    }
+
+    #[cfg(unix)]
+    async fn native_fixture(provider: AgentProvider, mode: &str) -> (TempDir, AiSettings) {
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("native-acp");
+        let source = r##"#!/usr/bin/env python3
+import os,sys,json,pathlib
+provider=PROVIDER
+mode=MODE
+assert not list(pathlib.Path.cwd().iterdir())
+expected={'cursor':['--mode','ask','acp'],'grok':['--permission-mode','default','agent','stdio'],'acp':[]}
+assert sys.argv[1:]==expected[provider]
+session='native/session-1'
+def send(value): print(json.dumps(value),flush=True)
+for line in sys.stdin:
+ q=json.loads(line);m=q.get('method');p=q.get('params',{});result={}
+ if m=='session/cancel': break
+ if m=='initialize':
+  assert p['clientCapabilities']=={'fs':{'readTextFile':False,'writeTextFile':False},'terminal':False}
+  if provider=='grok':assert p['_meta']=={'clientType':'extension'}
+  result={'protocolVersion':1}
+ if m=='authenticate':
+  method={'cursor':'cursor_login','grok':'xai.api_key' if os.environ.get('XAI_API_KEY','').strip() else 'cached_token','acp':'existing_login'}[provider]
+  assert p['methodId']==method
+  if mode=='auth':send({'jsonrpc':'2.0','id':q['id'],'error':{'code':-32000,'message':'Please sign in first'}});continue
+ if m=='session/new':
+  assert p['mcpServers']==[] and pathlib.Path(p['cwd']).resolve()==pathlib.Path.cwd()
+  result={'sessionId':session,'models':{'availableModels':[{'modelId':'model-1'}]}}
+ if m=='session/set_mode':assert p['modeId']=='ask'
+ if m=='session/set_model':assert p['modelId']=='model-1'
+ if m=='session/prompt':
+  assert 'Return a JSON object' in p['prompt'][0]['text']
+  if mode=='tools':
+   send({'jsonrpc':'2.0','id':'tool','method':'session/request_permission','params':{'sessionId':session,'options':[]}})
+   reply=json.loads(sys.stdin.readline());assert reply['result']['outcome']['outcome']=='cancelled';continue
+  if mode=='input':
+   send({'jsonrpc':'2.0','id':'input','method':'cursor/ask_question','params':{'sessionId':session}})
+   reply=json.loads(sys.stdin.readline());assert reply['error']['code']==-32601;continue
+  for sid,text,kind in [('unrelated','ignore','agent_message_chunk'),(session,'hidden','agent_thought_chunk'),(session,'{"subject":"Add ACP providers.","body":"Reuse native authentication."}','agent_message_chunk')]:
+   send({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':sid,'update':{'sessionUpdate':kind,'content':{'type':'text','text':text}}}})
+  if provider=='grok' and mode in ['notification','rate-limit']:
+   prompt=p['_meta']['promptId']
+   send({'jsonrpc':'2.0','method':'_x.ai/session/prompt_complete','params':{'sessionId':session,'promptId':'task-completed-ignore','stopReason':'cancelled'}})
+   send({'jsonrpc':'2.0','method':'_x.ai/session_notification','params':{'sessionId':session,'update':{'sessionUpdate':'turn_completed','prompt_id':prompt,'stop_reason':'rate_limit' if mode=='rate-limit' else 'end_turn'}}})
+   continue
+  result={'stopReason':'cancelled' if mode=='cancelled' else 'end_turn'}
+ send({'jsonrpc':'2.0','id':q['id'],'result':result})
+"##.replace("PROVIDER", &json!(match provider { AgentProvider::Cursor=>"cursor",AgentProvider::Grok=>"grok",_=>"acp" }).to_string()).replace("MODE",&json!(mode).to_string());
+        tokio::fs::write(&script, source).await.unwrap();
+        tokio::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .await
+            .unwrap();
+        let mut settings = AiSettings::default();
+        settings.agent.provider = provider;
+        settings.agent.command = Some(script.to_string_lossy().into_owned());
+        settings.agent.model = Some("model-1".into());
+        settings.agent.acp_auth_method = Some("existing_login".into());
+        (directory, settings)
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_grok_and_custom_acp_use_native_auth_models_and_text_events() {
+        for provider in [
+            AgentProvider::Cursor,
+            AgentProvider::Grok,
+            AgentProvider::Acp,
+        ] {
+            let (_directory, settings) = native_fixture(provider, "success").await;
+            let output = generate(&settings, &task()).await.unwrap();
+            assert_eq!(
+                crate::ai::commit::decode(&output).unwrap(),
+                "Add ACP providers\n\nReuse native authentication."
+            );
+        }
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grok_extension_completion_is_correlated_and_propagates_usage_limits() {
+        let (_directory, settings) = native_fixture(AgentProvider::Grok, "notification").await;
+        assert!(
+            generate(&settings, &task())
+                .await
+                .unwrap()
+                .contains("Add ACP providers")
+        );
+        let (_directory, settings) = native_fixture(AgentProvider::Grok, "rate-limit").await;
+        assert!(
+            generate(&settings, &task())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("usage limit")
+        );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_acp_errors_permissions_and_invalid_models_are_not_drafts() {
+        for provider in [
+            AgentProvider::Cursor,
+            AgentProvider::Grok,
+            AgentProvider::Acp,
+        ] {
+            for (mode, expected) in [
+                ("auth", "sign in"),
+                ("tools", "tools or user input"),
+                ("input", "tools or user input"),
+                ("cancelled", "did not finish"),
+            ] {
+                let (_directory, settings) = native_fixture(provider, mode).await;
+                let error =
+                    tokio::time::timeout(Duration::from_secs(5), generate(&settings, &task()))
+                        .await
+                        .unwrap()
+                        .unwrap_err();
+                assert!(
+                    error.to_string().contains(expected),
+                    "{provider:?} {mode}: {error:#}"
+                );
+            }
+            let (_directory, mut settings) = native_fixture(provider, "success").await;
+            settings.agent.model = Some("unavailable".into());
+            assert!(
+                generate(&settings, &task())
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("did not advertise")
+            );
         }
     }
 

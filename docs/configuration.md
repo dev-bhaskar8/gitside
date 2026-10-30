@@ -84,10 +84,12 @@ max_diff_bytes = 32000
 
 ### Existing agent
 
-This mode invokes an already authenticated Codex, Claude Code, or OpenCode CLI
-non-interactively. Gitside supplies the diff on stdin and extracts the final
+This mode invokes an installed, authenticated coding provider non-interactively.
+Gitside sends the supplied Git context through stdin or the provider protocol and extracts the final
 message using Codex’s schema-constrained output file, Claude’s structured JSON
-result (including verbose message arrays), or OpenCode’s JSON text events. Progress, reasoning, and tool events do not become commit text.
+result (including verbose message arrays), OpenCode’s JSON text events, ACP text
+chunks, Pi’s last assistant text, or Muse’s final message. Progress and reasoning
+do not become commit text; protocol helpers reject tool work.
 The model is optional; leaving it blank keeps the CLI's own default.
 
 Generation ports T3 Code’s shared commit prompt and `{subject, body}` output
@@ -111,10 +113,74 @@ instructions = "Use conventional commit subjects."
 timeout_secs = 120
 
 [ai.agent]
-provider = "codex" # codex, claude, opencode, antigravity, or custom
+provider = "codex" # codex, claude, opencode, antigravity, cursor, grok, pi, muse, acp, custom
 # model = "your-model"
-# args = ["additional", "arguments"]
+# command = "/absolute/path/to/cli" # optional executable override
+# args = [] # provider-specific; Pi and Muse utility runs reject launch arguments
 ```
+
+All eight named providers in [T3 Code's provider list](https://github.com/pingdotgg/t3code/blob/9b1d351ba0f63f527f884ffb3f2e394f50388764/docs/user/install.md) have commit-generation adapters:
+
+| Provider | Executable | Authenticate before generating |
+| --- | --- | --- |
+| Codex | `codex` | `codex login` |
+| Claude Code | `claude` | `claude auth login` |
+| OpenCode | `opencode` | `opencode auth login` |
+| Antigravity | Official Google ACP runtime | `gitside antigravity-login`, after runtime setup below |
+| Cursor | `cursor-agent` | `agent login` |
+| Grok Build | `grok` | `grok login` |
+| Pi | `pi` | Start `pi`, then `/login` |
+| Muse Code | `muse` | `muse login` |
+
+Use arrow keys, Page Up/Down, the mouse wheel, or `1`–`9` (`0` for Other) in
+Agent setup. The selected row stays visible in small terminals. Installation
+checks never claim that an account is authenticated. Install providers on the
+machine running Gitside; setup commands run in your normal terminal.
+
+Cursor uses its [official ACP interface](https://cursor.com/docs/cli/acp), rather
+than T3's JavaScript SDK, so Gitside needs no Node bridge. It requests native Ask
+mode. Grok uses `grok --permission-mode default agent stdio`, authenticates with
+its cached login (or `XAI_API_KEY` if present), and supports both normal ACP and
+correlated xAI completion notifications. Usage limits are reported as errors.
+Both run in empty temporary workspaces, with no client filesystem/terminal
+capabilities or supplied MCP servers; tools and interactive requests are rejected.
+ACP capability flags do not disable every provider's own global hooks or MCP
+configuration and are not an OS sandbox. Use trusted, configured runtimes.
+
+Pi uses `--mode rpc --no-session --no-extensions --no-tools`. An optional model
+must use `provider/model` format; extension-only models cannot be used in this
+utility run. Pi owns its model-provider authentication, including supported
+subscriptions and API keys. Muse uses `serve --disable-shell --disable-write`,
+an empty workspace, no requested MSP capabilities, and native `denyUnmatched`
+approvals. Gitside follows T3 in ignoring an inherited `META_API_KEY` for Muse,
+using its saved login. Muse revisions, retractions, early completion, truncated
+answers, and stream gaps are handled before accepting output. Neither helper
+accepts extra launch arguments that could re-enable unattended tools. All four
+helpers kill their owned Unix process group on timeout and remove the temporary
+workspace. Provider-owned global history may still be retained by its runtime.
+
+#### Other ACP agents
+
+An installed ACP v1 stdio agent can use the same bounded text-generation client.
+Install and authenticate it using its own instructions, then choose **ACP agent**
+and enter its executable. Use TOML for arguments and an optional advertised
+non-interactive auth method:
+
+```toml
+[ai.agent]
+provider = "acp"
+command = "/absolute/path/to/agent"
+args = ["acp"] # omit when the executable speaks ACP directly
+# acp_auth_method = "an-advertised-method-for-existing-credentials"
+# model = "an-advertised-model-id"
+```
+
+The adapter rejects tools, approvals, and questions, so an agent that requires
+those for a text-only request will fail with a clear error. This is compatibility
+with installed ACP agents, not T3's registry installer or a claim that every
+registry entry has been tested. T3 itself currently disables commit generation
+for generic registry agents. Gitside does not install/update provider runtimes,
+manage their accounts, or import T3's chat/session orchestration.
 
 For a custom generator, set `provider = "custom"` and `command` to a trusted
 command line. It runs with your user permissions, receives the generation

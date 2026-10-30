@@ -1,9 +1,15 @@
-pub(crate) mod antigravity;
+pub(crate) mod acp;
+mod rpc;
 
 // Provider adapters for T3-style structured commit generation.
 // Shared prompt/decoding lives in ai/commit.rs; Git context stays in ai.rs.
 
-use std::{env, path::Path, process::Stdio, time::Duration};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use reqwest::Client;
@@ -47,8 +53,13 @@ async fn generate_with_agent(
     root: &Path,
     request: &TextRequest,
 ) -> Result<String> {
-    if settings.agent.provider == AgentProvider::Antigravity {
-        return antigravity::generate(settings, request).await;
+    match settings.agent.provider {
+        AgentProvider::Antigravity
+        | AgentProvider::Cursor
+        | AgentProvider::Grok
+        | AgentProvider::Acp => return acp::generate(settings, request).await,
+        AgentProvider::Pi | AgentProvider::Muse => return rpc::generate(settings, request).await,
+        _ => {}
     }
     let prompt = request.combined_prompt();
     let (program, configured_args) = agent_command_parts(settings)?;
@@ -134,7 +145,12 @@ async fn generate_with_agent(
             }
             command.args(&settings.agent.args);
         }
-        AgentProvider::Antigravity => unreachable!("ACP requests use the Antigravity adapter"),
+        AgentProvider::Antigravity
+        | AgentProvider::Cursor
+        | AgentProvider::Grok
+        | AgentProvider::Acp
+        | AgentProvider::Pi
+        | AgentProvider::Muse => unreachable!("Protocol requests use their dedicated adapters"),
         AgentProvider::Custom => {
             command.args(configured_args).args(&settings.agent.args);
         }
@@ -595,6 +611,11 @@ pub(super) fn agent_program(settings: &AiSettings) -> String {
             AgentProvider::Codex => "codex".into(),
             AgentProvider::Claude => "claude".into(),
             AgentProvider::Opencode => "opencode".into(),
+            AgentProvider::Cursor => "cursor-agent".into(),
+            AgentProvider::Grok => "grok".into(),
+            AgentProvider::Pi => "pi".into(),
+            AgentProvider::Muse => "muse".into(),
+            AgentProvider::Acp => "acp-agent".into(),
             AgentProvider::Antigravity => {
                 if cfg!(windows) {
                     "agy_acp_server.exe".into()
@@ -619,17 +640,34 @@ pub(super) fn agent_command_parts(settings: &AiSettings) -> Result<(String, Vec<
 }
 
 pub(super) fn executable_available(command: &str) -> bool {
+    resolve_program(command).is_some()
+}
+
+pub(super) fn resolve_program(command: &str) -> Option<PathBuf> {
+    fn candidate(path: &Path) -> Option<PathBuf> {
+        if is_executable(path) {
+            return std::fs::canonicalize(path).ok();
+        }
+        // npm-installed Pi and other coding CLIs commonly use Windows launchers.
+        if cfg!(windows) && path.extension().is_none() {
+            let extensions = env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".into());
+            for extension in extensions.split(';').filter(|value| value.starts_with('.')) {
+                let mut name = path.as_os_str().to_os_string();
+                name.push(extension);
+                let candidate = PathBuf::from(name);
+                if is_executable(&candidate) {
+                    return std::fs::canonicalize(candidate).ok();
+                }
+            }
+        }
+        None
+    }
     let path = Path::new(command);
     if path.components().count() > 1 {
-        return is_executable(path);
+        return candidate(path);
     }
-    env::var_os("PATH").is_some_and(|paths| {
-        env::split_paths(&paths).any(|directory| {
-            let candidate = directory.join(command);
-            is_executable(&candidate)
-                || (cfg!(windows) && directory.join(format!("{command}.exe")).is_file())
-        })
-    })
+    env::split_paths(&env::var_os("PATH")?)
+        .find_map(|directory| candidate(&directory.join(command)))
 }
 
 fn is_executable(path: &Path) -> bool {

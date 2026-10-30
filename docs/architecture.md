@@ -95,7 +95,7 @@ Claude receives the native JSON-schema option and supports both ordinary result
 envelopes and verbose event arrays. The existing process-local OpenCode commit
 agent remains available. CLI pipes and Codex output files have byte limits.
 
-`src/ai/provider/antigravity.rs` ports the dedicated Antigravity helper using
+`src/ai/provider/acp.rs` ports the dedicated Antigravity helper using
 ACP v1 JSON-RPC over stdio. It performs initialization, native personal-account
 authentication, session creation, advertised-model selection, and one prompt.
 The client identifies itself as Gitside. It offers no file or terminal capability,
@@ -110,6 +110,29 @@ metadata proves ownership by that workspace. Child processes are killed on drop;
 on Unix the dedicated process group includes the native harness. The protocol
 checks are not a native sandbox. The runtime remains a separately installed,
 Google-owned executable rather than a vendored dependency.
+
+The same ACP client serves Cursor, Grok Build, and configured ACP agents. Small
+provider branches select native launch/auth behavior; Google alone owns the
+private OAuth profile and session-file cleanup. Cursor uses native Ask mode;
+Grok correlates extension completion notifications by both session and prompt
+ID, handles usage limits, and suppresses unrelated background output. Unknown
+or unavailable model overrides fail rather than silently choosing another model.
+
+`src/ai/provider/rpc.rs` ports T3's Pi RPC and Muse MSP text helpers. Each owns an
+empty temporary workspace and child process. Pi disables tools, extensions, and
+session persistence, selects provider/model explicitly, waits for settlement,
+and reads the last assistant text. Muse disables shell/write capabilities,
+initializes MSP v1, starts a deny-unmatched session, and tracks revisions and
+retractions for its final answer. Completion before a turn acknowledgement,
+stream gaps, interactive requests, and truncated output are handled explicitly.
+All protocol frames and collected output are bounded; cancellation kills the
+owned Unix process group. These clients use native provider logins and expose
+only text generation, not a full coding-agent session.
+
+`AgentProvider::ALL` is the shared provider catalog for labels, discovery,
+keyboard navigation and mouse targets. The ten-row picker follows selection
+when space is tight. Existing TOML provider names remain valid; changing provider
+clears the old executable override and arguments.
 
 See the [configuration guide](configuration.md#google-antigravity) for installation
 and sign-in, and the [third-party notices](third-party-notices.md) for pinned T3

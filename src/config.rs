@@ -34,7 +34,54 @@ pub enum AgentProvider {
     Claude,
     Opencode,
     Antigravity,
+    Cursor,
+    Grok,
+    Pi,
+    Muse,
+    Acp,
     Custom,
+}
+
+impl AgentProvider {
+    // Keep discovery, keyboard navigation and mouse targets in the same order.
+    pub const ALL: [Self; 10] = [
+        Self::Codex,
+        Self::Claude,
+        Self::Opencode,
+        Self::Antigravity,
+        Self::Cursor,
+        Self::Grok,
+        Self::Pi,
+        Self::Muse,
+        Self::Acp,
+        Self::Custom,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Codex => "Codex",
+            Self::Claude => "Claude Code",
+            Self::Opencode => "OpenCode",
+            Self::Antigravity => "Antigravity",
+            Self::Cursor => "Cursor",
+            Self::Grok => "Grok Build",
+            Self::Pi => "Pi",
+            Self::Muse => "Muse Code",
+            Self::Acp => "ACP agent",
+            Self::Custom => "Other",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|provider| *provider == self)
+            .unwrap_or(0)
+    }
+
+    pub fn needs_command(self) -> bool {
+        matches!(self, Self::Acp | Self::Custom)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -141,6 +188,8 @@ pub struct AgentSettings {
     pub args: Vec<String>,
     pub model: Option<String>,
     pub antigravity_home: Option<PathBuf>,
+    /// Optional advertised ACP authentication method for a custom ACP agent.
+    pub acp_auth_method: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +221,7 @@ impl Default for AgentSettings {
     fn default() -> Self {
         Self {
             antigravity_home: None,
+            acp_auth_method: None,
             provider: AgentProvider::Codex,
             command: None,
             args: Vec::new(),

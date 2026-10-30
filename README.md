@@ -97,19 +97,22 @@ gitside /path/to/repository
 - **GitHub when you need it.** Publish a repository, browse pull requests and issues, check out PRs, and inspect checks through the authenticated `gh` CLI.
 - **Your terminal, your colors.** Gitside inherits the terminal background instead of painting an opaque theme over it.
 - **Responsive and non-blocking.** Network work runs in the background and filesystem notifications keep repository state fresh.
-- **Optional commit drafts.** Configure offline rules, Codex/Claude Code/OpenCode, Antigravity ACP, a custom command, or a direct API inside the clickable AI panel. API keys stay in the OS keychain.
+- **Optional commit drafts.** Configure offline rules, Codex, Claude Code, OpenCode, Antigravity, Cursor, Grok Build, Pi, Muse Code, another ACP agent, a custom command, or a direct API inside the clickable AI panel. API keys stay in the OS keychain.
 
 ### AI commit drafts (optional)
 
-Click Generate or press `Ctrl+G` to choose Codex, Claude Code, OpenCode, or
-Google’s Antigravity ACP runtime. Gitside remembers your choice and returns an
+Click Generate or press `Ctrl+G` to choose Codex, Claude Code, OpenCode,
+Antigravity, Cursor, Grok Build, Pi, Muse Code, or another installed ACP agent. Gitside remembers your choice and returns an
 editable commit draft using T3 Code’s shared structured generation approach.
-Codex, Claude, and OpenCode reuse their existing CLI login and model default;
+The coding CLIs reuse their existing login and model default;
 installation detection does not verify your account.
 
 Antigravity uses a separate Gitside profile: install the official ACP runtime,
 configure its path, then run `gitside antigravity-login`. No separate API key is
-required for these account-based routes.
+required for these account-based routes. Cursor uses `cursor-agent` (`agent login`),
+Grok uses `grok login`, Pi uses `pi` then `/login`, and Muse uses `muse login`.
+Compatible ACP agents can be configured with an executable, arguments, and an
+optional advertised authentication method.
 
 Press `Y` to change the CLI, set an optional model or instructions, or explicitly
 choose offline rules or a direct API. Generation uses staged changes, falling
@@ -200,7 +203,7 @@ model requests. Generation only returns text to the editor. See the detailed
 | --- | --- |
 | `src/app.rs`, `src/ui.rs`, `src/terminal.rs` | Actions, rendering, event loop |
 | `src/ai.rs`, `src/ai/commit.rs` | Git context, shared commit schema, and message cleanup |
-| `src/ai/provider.rs`, `src/ai/provider/antigravity.rs` | CLI/API adapters and Antigravity ACP integration |
+| `src/ai/provider.rs`, `src/ai/provider/acp.rs`, `src/ai/provider/rpc.rs` | CLI/API adapters, ACP sessions, Pi RPC, and Muse MSP |
 | `src/git.rs`, `src/github.rs` | Git and GitHub CLI operations |
 | `src/config.rs`, `src/credentials.rs` | Settings and OS credential storage |
 | `docs/` | Configuration, architecture, platform and distribution guides |

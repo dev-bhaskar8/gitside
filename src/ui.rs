@@ -1057,6 +1057,21 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             crate::config::AgentProvider::Antigravity => {
                 "Uses Google's Antigravity ACP runtime. Sign in with `gitside antigravity-login`; this is separate from agy/IDE sign-in."
             }
+            crate::config::AgentProvider::Cursor => {
+                "Uses Cursor CLI. Install cursor-agent and sign in with `agent login`."
+            }
+            crate::config::AgentProvider::Grok => {
+                "Uses Grok Build over ACP. Install grok and run `grok login`."
+            }
+            crate::config::AgentProvider::Pi => {
+                "Uses Pi RPC with tools and extensions disabled. Run `pi`, then `/login`."
+            }
+            crate::config::AgentProvider::Muse => {
+                "Uses Muse Code's read-only server. Install muse and run `muse login`."
+            }
+            crate::config::AgentProvider::Acp => {
+                "Uses an installed ACP agent over stdio. Configure its executable and sign in using its own setup."
+            }
             crate::config::AgentProvider::Custom => {
                 "Sends the prompt to ai.agent.command over standard input."
             }
@@ -1544,19 +1559,14 @@ fn render_ai_setup_overlay(
 
     let (heading, body) = match draft.step {
         crate::app::AiSetupStep::Provider => {
+            let agents = crate::config::AgentProvider::ALL.map(|provider| provider.label());
             let providers: &[&str] = match draft.mode {
-                AiMode::Agent => &["Codex", "Claude Code", "OpenCode", "Antigravity", "Other"],
+                AiMode::Agent => &agents,
                 AiMode::Api => &["OpenAI", "Anthropic", "Gemini", "OpenRouter", "Other"],
                 AiMode::Local => &["Smart Local"],
             };
             let selected = match draft.mode {
-                AiMode::Agent => match draft.agent_provider {
-                    crate::config::AgentProvider::Codex => 0,
-                    crate::config::AgentProvider::Claude => 1,
-                    crate::config::AgentProvider::Opencode => 2,
-                    crate::config::AgentProvider::Antigravity => 3,
-                    crate::config::AgentProvider::Custom => 4,
-                },
+                AiMode::Agent => draft.agent_provider.index(),
                 AiMode::Api => match draft.api_provider {
                     crate::config::ApiProvider::Openai => 0,
                     crate::config::ApiProvider::Anthropic => 1,
@@ -1568,7 +1578,9 @@ fn render_ai_setup_overlay(
             };
             let mut lines = Vec::new();
             for (index, provider) in providers.iter().enumerate() {
-                let availability = if draft.mode == AiMode::Agent && index < 4 {
+                let availability = if draft.mode == AiMode::Agent
+                    && !crate::config::AgentProvider::ALL[index].needs_command()
+                {
                     if draft.available_agents[index] {
                         " · installed"
                     } else {
@@ -1579,21 +1591,15 @@ fn render_ai_setup_overlay(
                 };
                 let provider = format!("{provider}{availability}");
                 let label = if index == selected {
-                    format!("[{} {provider}]", index + 1)
+                    format!("[{} {provider}]", (index + 1) % 10)
                 } else {
-                    format!(" {} {provider}", index + 1)
+                    format!(" {} {provider}", (index + 1) % 10)
                 };
                 // Leave a cell for the editor wrapper’s end-of-line cursor position.
                 lines.push(truncate_to_width(
                     &label,
                     inner.width.saturating_sub(1) as usize,
                 ));
-                if inner.height > index as u16 + 4 {
-                    app.hits.push(HitRegion {
-                        rect: Rect::new(inner.x, inner.y + 2 + index as u16, inner.width, 1),
-                        action: UiAction::AiSetupChoose(index),
-                    });
-                }
             }
             if draft.mode == AiMode::Agent {
                 lines.push("\nUses the CLI's existing login and default model.".into());
@@ -1608,6 +1614,8 @@ fn render_ai_setup_overlay(
         crate::app::AiSetupStep::Command => (
             if draft.agent_provider == crate::config::AgentProvider::Antigravity {
                 "Antigravity ACP executable path (optional if on PATH)"
+            } else if draft.agent_provider == crate::config::AgentProvider::Acp {
+                "ACP executable path (arguments go in ai.agent.args)"
             } else {
                 "Command for the other agent (required)"
             },
@@ -1635,13 +1643,7 @@ fn render_ai_setup_overlay(
         ),
         crate::app::AiSetupStep::Review => {
             let provider = match draft.mode {
-                AiMode::Agent => match draft.agent_provider {
-                    crate::config::AgentProvider::Codex => "Codex",
-                    crate::config::AgentProvider::Claude => "Claude Code",
-                    crate::config::AgentProvider::Opencode => "OpenCode",
-                    crate::config::AgentProvider::Antigravity => "Antigravity",
-                    crate::config::AgentProvider::Custom => "Other",
-                },
+                AiMode::Agent => draft.agent_provider.label(),
                 AiMode::Api => match draft.api_provider {
                     crate::config::ApiProvider::Openai => "OpenAI",
                     crate::config::ApiProvider::Anthropic => "Anthropic",
@@ -1713,11 +1715,41 @@ fn render_ai_setup_overlay(
         .len()
         .saturating_sub(content_area.height as usize)
         .min(u16::MAX as usize) as u16;
-    let mut scroll = if draft.step == crate::app::AiSetupStep::Provider {
-        0
-    } else {
-        draft.scroll.min(max_scroll)
-    };
+    let mut scroll = draft.scroll.min(max_scroll);
+    if draft.step == crate::app::AiSetupStep::Provider {
+        let selected = match draft.mode {
+            AiMode::Agent => draft.agent_provider.index(),
+            AiMode::Api => match draft.api_provider {
+                crate::config::ApiProvider::Openai => 0,
+                crate::config::ApiProvider::Anthropic => 1,
+                crate::config::ApiProvider::Gemini => 2,
+                crate::config::ApiProvider::Openrouter => 3,
+                crate::config::ApiProvider::Compatible => 4,
+            },
+            AiMode::Local => 0,
+        };
+        let first_line = wrap_editor_text(heading, content_area.width).len() + 1;
+        let selected_line = (first_line + selected) as u16;
+        if selected_line < scroll {
+            scroll = selected_line;
+        } else if selected_line >= scroll.saturating_add(content_area.height) {
+            scroll = selected_line.saturating_sub(content_area.height.saturating_sub(1));
+        }
+        let count = match draft.mode {
+            AiMode::Agent => crate::config::AgentProvider::ALL.len(),
+            AiMode::Api => 5,
+            AiMode::Local => 1,
+        };
+        for index in 0..count {
+            let line = (first_line + index) as u16;
+            if line >= scroll && line < scroll.saturating_add(content_area.height) {
+                app.hits.push(HitRegion {
+                    rect: Rect::new(inner.x, inner.y + line - scroll, inner.width, 1),
+                    action: UiAction::AiSetupChoose(index),
+                });
+            }
+        }
+    }
     if !matches!(
         draft.step,
         crate::app::AiSetupStep::Provider | crate::app::AiSetupStep::Review
@@ -1780,7 +1812,7 @@ fn render_ai_setup_overlay(
         } else if draft.generate_after_save
             && draft.mode == AiMode::Agent
             && draft.step == crate::app::AiSetupStep::Provider
-            && draft.agent_provider != crate::config::AgentProvider::Custom
+            && !draft.agent_provider.needs_command()
         {
             "Generate"
         } else if draft.step == crate::app::AiSetupStep::Review {
@@ -1810,6 +1842,8 @@ fn ai_setup_placeholder(draft: &crate::app::AiSetupDraft) -> Option<&'static str
         crate::app::AiSetupStep::Command if draft.command.trim().is_empty() => Some(
             if draft.agent_provider == crate::config::AgentProvider::Antigravity {
                 "agy_acp_server.par"
+            } else if draft.agent_provider == crate::config::AgentProvider::Acp {
+                "/absolute/path/to/acp-agent"
             } else {
                 "codex exec --sandbox read-only -"
             },
@@ -1821,6 +1855,15 @@ fn ai_setup_placeholder(draft: &crate::app::AiSetupDraft) -> Option<&'static str
                 crate::config::AgentProvider::Opencode => "Optional provider/model name",
                 crate::config::AgentProvider::Antigravity => {
                     "Optional model ID from your Antigravity account"
+                }
+                crate::config::AgentProvider::Cursor
+                | crate::config::AgentProvider::Grok
+                | crate::config::AgentProvider::Muse
+                | crate::config::AgentProvider::Acp => {
+                    "Optional model ID available to your account"
+                }
+                crate::config::AgentProvider::Pi => {
+                    "Optional provider/model, e.g. anthropic/claude-sonnet-4-5"
                 }
                 crate::config::AgentProvider::Custom => "Optional model name",
             },
@@ -2375,7 +2418,9 @@ mod tests {
         let Some(Overlay::AiSetup(draft)) = &mut app.overlay else {
             panic!("expected picker")
         };
-        draft.available_agents = [true, false, true, false];
+        draft.available_agents = [
+            true, false, true, false, false, false, false, false, false, false,
+        ];
         draft.agent_provider = crate::config::AgentProvider::Codex;
         for width in [42, 80, 120] {
             let mut terminal = Terminal::new(TestBackend::new(width, 28)).unwrap();
@@ -2459,6 +2504,8 @@ mod tests {
             .await;
 
         let mut terminal = Terminal::new(TestBackend::new(42, 24)).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE))
+            .await;
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let output = terminal
             .backend()
@@ -2467,11 +2514,11 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(output.contains("5 Other"));
+        assert!(output.contains("0 Other"));
         let other = app
             .hits
             .iter()
-            .find(|hit| matches!(hit.action, UiAction::AiSetupChoose(4)))
+            .find(|hit| matches!(hit.action, UiAction::AiSetupChoose(9)))
             .expect("Other agent should be clickable")
             .rect;
         app.handle_mouse(MouseEvent {
@@ -2504,13 +2551,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_provider_remains_visible_and_clickable_when_selected_in_a_small_terminal() {
+        use crate::config::AgentProvider;
+        let mut app = App::isolated_test(Settings::default()).await;
+        app.focus = Focus::Ai;
+        app.settings.ai.mode = AiMode::Agent;
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+            .await;
+        for (width, height) in [(24, 16), (32, 20), (42, 24), (80, 28)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for provider in AgentProvider::ALL {
+                let digit = char::from_digit(((provider.index() + 1) % 10) as u32, 10).unwrap();
+                app.handle_key(KeyEvent::new(KeyCode::Char(digit), KeyModifiers::NONE))
+                    .await;
+                terminal.draw(|frame| render(frame, &mut app)).unwrap();
+                let row = app.hits.iter().find(|hit| matches!(hit.action,UiAction::AiSetupChoose(index) if index==provider.index())).expect("selected provider must have a visible mouse target").rect;
+                let text = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .chunks(width as usize)
+                    .nth(row.y as usize)
+                    .unwrap()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(
+                    text.contains(&format!("[{digit} ")),
+                    "{width}x{height} {provider:?}: {text}"
+                );
+                app.handle_mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: row.x,
+                    row: row.y,
+                    modifiers: KeyModifiers::NONE,
+                })
+                .await;
+                assert!(
+                    matches!(&app.overlay,Some(Overlay::AiSetup(draft)) if draft.agent_provider==provider)
+                );
+            }
+        }
+        app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
+            .await;
+        assert!(
+            matches!(&app.overlay,Some(Overlay::AiSetup(draft)) if draft.agent_provider==AgentProvider::Cursor)
+        );
+        app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE))
+            .await;
+        assert!(
+            matches!(&app.overlay,Some(Overlay::AiSetup(draft)) if draft.agent_provider==AgentProvider::Custom)
+        );
+    }
+
+    #[tokio::test]
     async fn ai_setup_shows_muted_examples_only_for_empty_fields() {
         let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Ai;
         app.settings.ai.mode = AiMode::Agent;
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
             .await;
-        app.handle_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE))
             .await;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
