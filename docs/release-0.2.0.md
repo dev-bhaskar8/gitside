@@ -26,8 +26,8 @@ is published. Availability in each package registry is tracked separately below.
 | AUR | [Package](https://aur.archlinux.org/packages/gitside-bin), [publisher](https://github.com/dev-bhaskar8/gitside/actions/runs/41131024871/job/124328052361) | Published 0.2.0-1; the earlier maintenance blocker did not recur |
 | Chocolatey | [Publisher](https://github.com/dev-bhaskar8/gitside/actions/runs/41131024871/job/124328052446) | Upload accepted and .nupkg attached to GitHub; anonymous public feed still returned no listed package |
 | Snap | [Packaging retry](https://github.com/dev-bhaskar8/gitside/actions/runs/41134726622), [store rejection](https://github.com/dev-bhaskar8/gitside/actions/runs/41133657516) | Both architectures compiled with stable Rust; store rejected obsolete Candid credentials. Final retry passed ELF patching, runtime execution and provenance checks on both architectures, and published .snap files/checksums to GitHub; store credentials still require renewal |
-| WinGet | [0.2.0 submission](https://github.com/microsoft/winget-pkgs/pull/466584) | Submitted; Microsoft requires the maintainer's CLA signature before merge, plus package validation and upstream acceptance |
-| Nix | [CI](https://github.com/dev-bhaskar8/gitside/actions/runs/41131020699), [source definition](../flake.nix) | Default 0.2.0 source package built successfully in CI |
+| WinGet | [0.2.0 submission](https://github.com/microsoft/winget-pkgs/pull/466584) | Manifest validation passes after adding schema headers; Microsoft requires the maintainer's CLA signature and upstream review/merge |
+| Nix | [CI](https://github.com/dev-bhaskar8/gitside/actions/runs/41143581336), [source definition](../flake.nix) | Default 0.2.0 source package built successfully in CI, including the new Linux regression test |
 | Website | [Pages deployment](https://github.com/dev-bhaskar8/gitside/actions/runs/41129782931), [live website](https://dev-bhaskar8.github.io/gitside/) | Deployed; homepage and setup documentation returned HTTP 200 and contain the new Google sign-in instructions |
 
 Homebrew, Scoop and WinGet were recovered through the authenticated local GitHub
@@ -85,8 +85,15 @@ that Rust 1.85 cannot compile, despite the older lower bound in the tagged metad
 - GitHub provenance verification passed for the hosted macOS ARM64 archive.
 - Both Snap packages passed an actual local installation and `--version` execution
   on their native Linux runners, followed by attestation and release attachment.
-- One intermediate CI job hit a temporary Linux ETXTBSY error while executing a
-  generated ACP test fixture; its rerun and the latest complete CI run passed.
+- Intermittent Linux ETXTBSY failures in generated agent fixtures are handled by
+  a bounded test-harness launch retry. A Linux regression test holds a writer open
+  to reproduce the failure and checks successful execution after it closes;
+  the Linux suite passes 145 tests, with one live-account test ignored. The fixture
+  preserves the executable name and writable permissions for Nix coreutils.
+  The corrected fixture and full Nix package build passed CI.
+- WinGet's corrected schema declarations passed Microsoft's manifest validation.
+  The attested release manifest bundle was refreshed through the artifact-only
+  package workflow and its checksum and all three schema headers were verified.
 - Homebrew's four native hashes and Scoop's two Windows hashes match the hosted
   release checksums. Both Windows ZIP executable paths match the WinGet manifests.
 - Debian/RPM fixtures and production packages built for both architectures;

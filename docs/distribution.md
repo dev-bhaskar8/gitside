@@ -38,7 +38,8 @@ independent channels, not inclusion in Arch, Nixpkgs, or Homebrew's core reposit
   review and classic-confinement approval remain separate requirements.
 - **WinGet:** [0.2.0 submission](https://github.com/microsoft/winget-pkgs/pull/466584)
   is open. Microsoft's bot requires the maintainer's CLA signature before merge;
-  package validation and upstream acceptance are also required.
+  manifest validation now passes after adding the required schema headers to all
+  three files. Upstream review and acceptance remain required.
 
 See the [0.2.0 release record](release-0.2.0.md) for evidence and next actions.
 PPA, COPR, and other official OS repositories are not currently configured.
