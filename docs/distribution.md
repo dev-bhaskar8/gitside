@@ -61,10 +61,13 @@ also retain manual/release entry points for targeted retries and external releas
 Release and registry reviewer protections remain enabled.
 
 macOS builders are pinned to supported macOS 15 images. If infrastructure breaks
-an existing tag before it is hosted, the release workflow can be dispatched from
-main with `-f tag=vMAJOR.MINOR.PATCH`. It checks out that immutable tag for every
-source build and Cargo publication while using the current workflow orchestration;
-there is no need to move or recreate a release tag.
+an existing tag before it is hosted, dispatch the current release workflow with
+`-f tag=vMAJOR.MINOR.PATCH`. Both publishing environments accept only `v*` tag
+refs, so use a separate orchestration tag such as `v-release-recovery-20261031`
+on the reviewed workflow commit, rather than dispatching from main. This tag
+does not match the version-tag push trigger. The workflow checks out the original
+version tag for every source build and Cargo publication; the release tag never
+moves, and the environment policies and reviewer protections remain unchanged.
 
 Linux packages declare their D-Bus runtime dependency for secure key storage;
 Nix also declares the Git/Python check tools, and CI builds the default Nix package
