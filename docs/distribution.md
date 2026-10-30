@@ -14,7 +14,7 @@ Registry acceptance and store listing remain separate from the GitHub release.
 | --- | --- | --- |
 | Homebrew | `brew install dev-bhaskar8/tap/gitside` | 0.2.0; macOS and Linux, x64/ARM64 |
 | Cargo | `cargo install gitside --locked` | 0.2.0; published and downloaded source archive verified |
-| npm | `npm install --global gitside` | 0.1.2; refreshed credential reached the publisher, but npm requires 2FA-approved publication |
+| npm | `npm install --global gitside` | 0.2.0; staged, promoted and verified through a fresh registry installation |
 | Scoop | `scoop bucket add gitside https://github.com/dev-bhaskar8/scoop-bucket`, then `scoop install gitside` | 0.2.0; Windows x64/ARM64 |
 | AUR | `paru -S gitside-bin` | 0.2.0-1; x64/ARM64 |
 | Nix | `nix run github:dev-bhaskar8/gitside` | 0.2.0 source package; CI builds the default package |
@@ -103,9 +103,10 @@ Registry credentials live in the protected `registry` environment, never in sour
 | Snap | `SNAPCRAFT_STORE_CREDENTIALS` | `ENABLE_SNAP=true` |
 
 Owner-supplied Cargo and npm credentials were updated in the protected environment.
-Cargo 0.2.0 publication then succeeded. npm's retry returned HTTP 403 requiring
-2FA-approved publication; configure trusted publishing or an appropriate granular
-publishing token as described below.
+Cargo 0.2.0 publication then succeeded. npm initially required 2FA-approved
+publication; its replacement stage-only credential staged 0.2.0 successfully,
+and that version is now promoted and publicly installable. Both registry downloads
+were verified against their published checksums and release artifacts.
 
 Homebrew, Scoop and WinGet were recovered using the maintainer's authenticated
 local GitHub session after their CI tokens were rejected. Refresh those three

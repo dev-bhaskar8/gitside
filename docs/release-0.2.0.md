@@ -20,7 +20,7 @@ is published. Availability in each package registry is tracked separately below.
 | GitHub/native archives | [0.2.0 release](https://github.com/dev-bhaskar8/gitside/releases/tag/v0.2.0) | Published six native targets, installers, checksums, source and SBOM; all six binaries passed hosted execution checks |
 | Linux packages | [Release assets](https://github.com/dev-bhaskar8/gitside/releases/tag/v0.2.0) | Published two Debian and two RPM packages with provenance attestations |
 | Cargo | [Registry entry](https://crates.io/crates/gitside/0.2.0), [successful publisher](https://github.com/dev-bhaskar8/gitside/actions/runs/41139047298) | Published 0.2.0 after refreshing the protected credential; downloaded package checksum, release commit and notices verified |
-| npm | [Package](https://www.npmjs.com/package/gitside), [publication retry](https://github.com/dev-bhaskar8/gitside/actions/runs/41131024871/job/124348567573) | Still 0.1.2; refreshed token reached the publisher, but npm returned E403 requiring 2FA-approved publication. Configure trusted publishing or a granular publish token with Bypass 2FA |
+| npm | [Package](https://www.npmjs.com/package/gitside/v/0.2.0), [successful staging](https://github.com/dev-bhaskar8/gitside/actions/runs/41140799791), [public-version verification](https://github.com/dev-bhaskar8/gitside/actions/runs/41141142337) | Published 0.2.0 after staging and promotion; public archive matches the staged release and a fresh npm installation ran successfully |
 | Homebrew | [Tap update](https://github.com/dev-bhaskar8/homebrew-tap/commit/60f1542) | Published 0.2.0 after recovering from rejected CI credentials |
 | Scoop | [Bucket update](https://github.com/dev-bhaskar8/scoop-bucket/commit/728bab3) | Published 0.2.0 for both Windows architectures after recovering from rejected CI credentials |
 | AUR | [Package](https://aur.archlinux.org/packages/gitside-bin), [publisher](https://github.com/dev-bhaskar8/gitside/actions/runs/41131024871/job/124328052361) | Published 0.2.0-1; the earlier maintenance blocker did not recur |
@@ -33,8 +33,9 @@ is published. Availability in each package registry is tracked separately below.
 Homebrew, Scoop and WinGet were recovered through the authenticated local GitHub
 session. Their existing CI tokens still need refreshing before the next automatic
 publication. Owner-supplied Cargo and npm credentials were updated in the protected
-registry environment; the Cargo retry published successfully, while npm now
-requires its 2FA publishing configuration to be completed.
+registry environment. Cargo published successfully. npm used the replacement
+stage-only credential to upload the verified 0.2.0 artifact; it was subsequently
+promoted and is now publicly installable.
 
 ## Publication and recovery
 
@@ -74,8 +75,13 @@ that Rust 1.85 cannot compile, despite the older lower bound in the tagged metad
   deterministic cargo-dist workflow regeneration passed. CI also built Nix.
 - All six published archives passed checksum, executable-version and notice checks
   on their native platforms, before registry publication was approved.
-- The generated npm installer was installed into a disposable local prefix and
-  executed `gitside 0.2.0`; this verifies the installer artifact, not npm acceptance.
+- The generated npm installer and the public npm package were installed into
+  disposable local prefixes and executed `gitside 0.2.0`. The public installation
+  exposes the new Antigravity installation command, and its archive SHA-1 matches
+  the canonical release archive.
+- npm staging accepted the artifact with provenance. The retry recognized the
+  identical already-published version without submitting a duplicate. The publisher
+  also rejects invalid tags, version mismatches and corrupted archive checksums.
 - GitHub provenance verification passed for the hosted macOS ARM64 archive.
 - Both Snap packages passed an actual local installation and `--version` execution
   on their native Linux runners, followed by attestation and release attachment.
@@ -89,4 +95,5 @@ that Rust 1.85 cannot compile, despite the older lower bound in the tagged metad
   After the credential update, publication succeeded and the public download matched
   its registry SHA-256, original release commit and third-party notices.
 
-External acceptance and credential recovery remain separate release follow-ups.
+Cargo and npm publication are complete. Remaining external store acceptance and
+other publisher credential renewals are separate follow-ups.
