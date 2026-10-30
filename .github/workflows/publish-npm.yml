@@ -1,0 +1,60 @@
+name: Publish npm release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable release tag
+        required: true
+        type: string
+      mode:
+        description: Stage for maintainer approval, or publish using permitted credentials
+        required: true
+        default: stage
+        type: choice
+        options: [stage, direct]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publication-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    environment: registry
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.x'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Install staging-capable npm
+        env:
+          NPM_CONFIG_USERCONFIG: /dev/null
+        run: npm install --global npm@11.20.0 --ignore-scripts --no-audit --no-fund
+      - name: Download canonical npm archive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
+          gh release download "$RELEASE_TAG" --dir npm \
+            --pattern gitside-npm-package.tar.gz --pattern sha256.sum
+      - name: Verify and publish npm archive
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_PUBLISH_MODE: ${{ inputs.mode }}
+        run: node scripts/publish-npm.mjs npm/gitside-npm-package.tar.gz "$RELEASE_TAG" npm/sha256.sum > npm-publication.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-publication-${{ inputs.tag }}
+          path: npm-publication.json

@@ -404,6 +404,9 @@ jobs:
 
   publish-npm:
     environment: registry
+    concurrency:
+      group: npm-publication-${{ needs.plan.outputs.tag }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -417,6 +420,9 @@ jobs:
       PLAN: ${{ needs.plan.outputs.val }}
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Fetch npm packages
         uses: actions/download-artifact@v8
         with:
@@ -427,13 +433,18 @@ jobs:
         with:
           node-version: '24.x'
           registry-url: 'https://registry.npmjs.org'
+      - name: Install staging-capable npm
+        env:
+          NPM_CONFIG_USERCONFIG: /dev/null
+        run: npm install --global npm@11.20.0 --ignore-scripts --no-audit --no-fund
       - run: |
           for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith("-npm-package.tar.gz")] | any)'); do
             pkg=$(echo "$release" | jq '.artifacts[] | select(endswith("-npm-package.tar.gz"))' --raw-output)
-            npm publish --access public --provenance "./npm/${pkg}"
+            node scripts/publish-npm.mjs "./npm/${pkg}" "${{ needs.plan.outputs.tag }}" "./npm/sha256.sum"
           done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_PUBLISH_MODE: ${{ vars.NPM_PUBLISH_MODE || 'stage' }}
 
   custom-publish-crate:
     needs:

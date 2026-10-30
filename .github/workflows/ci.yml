@@ -57,6 +57,7 @@ jobs:
       - name: Validate scripts and package templates
         run: |
           shellcheck scripts/*.sh
+          node --check scripts/publish-npm.mjs
           scripts/check-release-metadata.sh
           scripts/test-packaging.sh
           SHELLCHECK_OPTS='--exclude=SC2001,SC2086,SC2129' actionlint

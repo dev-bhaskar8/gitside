@@ -120,6 +120,24 @@ flow, without the retired Candid override.
 
 ### npm publishing authentication
 
+The current token has stage-only access. Both the regular release job and the
+manual npm workflow use `scripts/publish-npm.mjs`; staging is the default mode.
+They verify the hosted archive's SHA-256, package name and release version before
+submission. A matching pending stage is reused on retries, including its archive
+hash and `latest` tag. The workflow summary reports the stage ID for maintainer
+approval; staging does not make the version publicly installable.
+
+After staging, open npm's **Staged Packages**, review `gitside` and its version,
+then approve with 2FA. An authenticated maintainer can alternatively run
+`npm stage approve STAGE_ID`. See npm's [staged publishing commands](https://docs.npmjs.com/cli/v12/commands/npm-stage/).
+
+A targeted retry reuses the existing release without rebuilding native binaries:
+
+```sh
+gh workflow run publish-npm.yml --repo dev-bhaskar8/gitside --ref main \
+  -f tag=v0.2.0 -f mode=stage
+```
+
 The release workflow already uses Node 24, `id-token: write`, and the protected
 `registry` environment. To enable npm's [trusted publishing](https://docs.npmjs.com/trusted-publishers/),
 open the `gitside` package's Settings on npm, select GitHub Actions as the trusted
@@ -132,8 +150,10 @@ publisher, and enter:
 | Workflow filename | `release.yml` |
 | Environment name | `registry` |
 
-Once configured, npm automatically tries GitHub OIDC authentication before its
-token fallback. The existing release command needs no change.
+Once configured, set the repository variable `NPM_PUBLISH_MODE=direct` to let
+regular releases publish using OIDC. npm automatically tries OIDC before its
+token fallback. A manual direct retry uses `-f mode=direct` and needs its own
+`publish-npm.yml` trusted-publisher entry, or a permitted direct-publish token.
 
 For token-based publication, [create a granular token](https://docs.npmjs.com/creating-and-viewing-access-tokens/)
 with read/write **publish and stage** access to `gitside` and **Bypass two-factor
