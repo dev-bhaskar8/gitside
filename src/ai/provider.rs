@@ -723,9 +723,12 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn fixture_launch_waits_for_a_temporary_writer_to_close() {
+        use std::os::unix::fs::PermissionsExt;
+
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("test-agent");
         std::fs::copy(resolve_program("true").unwrap(), &executable).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         let writer = std::fs::OpenOptions::new()
             .write(true)
             .open(&executable)
