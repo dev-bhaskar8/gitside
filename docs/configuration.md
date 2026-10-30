@@ -90,13 +90,16 @@ message using Codex's output file, Claude's JSON result, or OpenCode's JSON
 text events. Progress, reasoning, and tool events do not become commit text.
 The model is optional; leaving it blank keeps the CLI's own default.
 
-Following OpenCode's Claude Agent isolation pattern, Claude's built-in tools,
-hooks, MCP servers, memory, and project settings are disabled for this one-shot
-request while its normal authentication remains available. Codex runs with a
-read-only sandbox; OpenCode uses its Plan agent. Custom commands retain your
-user permissions. All receive a Git-specific prompt based on selected changes.
-Depending
-on the chosen agent, that diff may be sent to its configured provider.
+Generation follows OpenCode's standalone utility-call strategy. Gitside owns
+the commit task and supplies it as the native system prompt, with Git context
+as user input. Claude's built-in tools, hooks, MCP servers, memory, and project
+settings are disabled. Codex uses a temporary replacement instructions file,
+disables shell tools and repository instructions, and runs read-only. OpenCode
+uses a temporary `gitside-commit` agent with tools denied and one step; its
+provider/model configuration is preserved. These overrides apply only to the
+launched process. CLI logins remain available; no new login flow is required.
+Custom commands retain your user permissions and receive the combined prompt.
+Depending on the chosen CLI, the diff may be sent to its configured provider.
 
 ```toml
 [ai]

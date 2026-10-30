@@ -2,10 +2,17 @@
 
 ## OpenCode
 
-Claude process isolation in `src/ai.rs` adapts the environment and base options
-from [OpenCode ClaudeQueryOptions](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/plugin/provider/claude-agent/claude/query-options.ts).
-The upstream TypeScript implementation is ported to Rust for a one-shot CLI
-request. OpenCode is licensed under the following MIT license:
+The standalone text-generation boundary and Claude process options in
+`src/ai/provider.rs` adapt OpenCode's utility-call strategy. Upstream sources
+at commit `bf5d12c588911a35ec56ad991c3b83cf937f424a`:
+
+- [Generate.text](https://github.com/anomalyco/opencode/blob/bf5d12c588911a35ec56ad991c3b83cf937f424a/packages/core/src/generate.ts)
+- [Claude utility calls](https://github.com/anomalyco/opencode/blob/bf5d12c588911a35ec56ad991c3b83cf937f424a/packages/core/src/plugin/provider/claude-agent/language-model/claude-agent-language-model.ts)
+- [Utility system prompt](https://github.com/anomalyco/opencode/blob/bf5d12c588911a35ec56ad991c3b83cf937f424a/packages/core/src/plugin/provider/claude-agent/language-model/system-prompt.ts)
+- [ClaudeQueryOptions](https://github.com/anomalyco/opencode/blob/bf5d12c588911a35ec56ad991c3b83cf937f424a/packages/core/src/plugin/provider/claude-agent/claude/query-options.ts)
+
+The TypeScript strategy is adapted to Rust and native CLI interfaces for
+one-shot commit generation. OpenCode is licensed under the following MIT license:
 
 MIT License
 

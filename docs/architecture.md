@@ -82,15 +82,29 @@ Claude JSON results, and OpenCode JSON text events are normalized into the same
 editable draft result. A snapshot of the starting draft prevents a late result
 from overwriting edits. Provider errors remain errors rather than draft text.
 
-Claude isolation is adapted from OpenCode's
-[query-options implementation](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/plugin/provider/claude-agent/claude/query-options.ts)
-and [Claude Agent specification](https://github.com/anomalyco/opencode/blob/dev/specs/v2/claude-agent-provider.md).
-Gitside ports the applicable one-shot process options into Rust and uses the CLI
-JSON interface rather than adding a Node/Agent SDK runtime. It disables built-in
-tools, settings sources, hooks, and external MCP configuration while preserving
-subscription authentication. OpenCode's ChatGPT OAuth integration is a separate
-provider; Gitside keeps Codex CLI authentication for its Codex adapter. See the
-[third-party notice](third-party-notices.md).
+Generation follows OpenCode's standalone utility strategy: build a system
+prompt and user input, resolve the chosen provider, make one text-generation
+request, and return its text. `src/ai.rs` owns Git context and draft cleanup;
+`src/ai/provider.rs` owns the shared `TextRequest` and provider transports.
+Repository data stays in user input; configured instructions stay in the
+system prompt.
+
+Like OpenCode's utility calls, Claude gets a replacement system prompt and no
+built-in tools, hooks, memory, or external MCP configuration. Codex gets a
+temporary replacement instructions file, disables shell tools and repository
+instruction loading, and retains its read-only sandbox. OpenCode gets a
+process-local `gitside-commit` agent with the task prompt, all tool permissions
+denied, and one step. Its inherited inline JSON/JSONC provider and model
+settings are preserved. Custom generators receive the combined prompt on stdin.
+CLI authentication and model defaults stay with the CLI.
+
+The Rust adaptation follows OpenCode's
+[Generate.text boundary](https://github.com/anomalyco/opencode/blob/bf5d12c588911a35ec56ad991c3b83cf937f424a/packages/core/src/generate.ts),
+[standalone Claude request](https://github.com/anomalyco/opencode/blob/bf5d12c588911a35ec56ad991c3b83cf937f424a/packages/core/src/plugin/provider/claude-agent/language-model/claude-agent-language-model.ts),
+[utility system prompt](https://github.com/anomalyco/opencode/blob/bf5d12c588911a35ec56ad991c3b83cf937f424a/packages/core/src/plugin/provider/claude-agent/language-model/system-prompt.ts),
+and [isolation options](https://github.com/anomalyco/opencode/blob/bf5d12c588911a35ec56ad991c3b83cf937f424a/packages/core/src/plugin/provider/claude-agent/claude/query-options.ts).
+It uses native CLI interfaces without requiring a Node/Agent SDK runtime.
+See the [third-party notice](third-party-notices.md).
 
 The AI setup wizard persists only non-secret settings in the TOML document and
 preserves unrelated configuration. API keys use the native OS credential store

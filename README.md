@@ -104,7 +104,8 @@ gitside /path/to/repository
 Click Generate or press `Ctrl+G` to choose an installed Codex, Claude Code, or
 OpenCode CLI. Gitside reuses that CLI's login and default model, remembers your
 choice, and generates an editable commit draft. No separate API key is required
-for this route. Sign in through the CLI first; installation detection does not
+for this route. Generation follows OpenCode’s standalone text-task approach.
+Sign in through the CLI first; installation detection does not
 verify your account.
 
 Press `Y` to change the CLI, set an optional model or instructions, or explicitly
@@ -195,7 +196,7 @@ model requests. Generation only returns text to the editor. See the detailed
 | Path | Responsibility |
 | --- | --- |
 | `src/app.rs`, `src/ui.rs`, `src/terminal.rs` | Actions, rendering, event loop |
-| `src/ai.rs` | Commit context and coding CLI/API adapters |
+| `src/ai.rs`, `src/ai/provider.rs` | Git context and standalone text-provider adapters |
 | `src/git.rs`, `src/github.rs` | Git and GitHub CLI operations |
 | `src/config.rs`, `src/credentials.rs` | Settings and OS credential storage |
 | `docs/` | Configuration, architecture, platform and distribution guides |
