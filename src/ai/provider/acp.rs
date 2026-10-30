@@ -286,7 +286,11 @@ impl Client {
         }
         #[cfg(unix)]
         command.process_group(0);
-        let mut child = command.spawn().with_context(|| format!("{} ACP runtime was not found; install it and set ai.agent.command if it is not on PATH", settings.agent.provider.label()))?;
+        #[cfg(test)]
+        let spawned = super::spawn_fixture_command(&mut command);
+        #[cfg(not(test))]
+        let spawned = command.spawn();
+        let mut child = spawned.with_context(|| format!("{} ACP runtime was not found; install it and set ai.agent.command if it is not on PATH", settings.agent.provider.label()))?;
         let stdin = child.stdin.take().context("ACP stdin unavailable")?;
         let stdout = BufReader::new(child.stdout.take().context("ACP stdout unavailable")?);
         let mut stderr = BufReader::new(child.stderr.take().context("ACP stderr unavailable")?);

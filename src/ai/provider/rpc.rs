@@ -96,7 +96,11 @@ impl Process {
         }
         #[cfg(unix)]
         command.process_group(0);
-        let mut child = command.spawn().with_context(|| {
+        #[cfg(test)]
+        let spawned = super::spawn_fixture_command(&mut command);
+        #[cfg(not(test))]
+        let spawned = command.spawn();
+        let mut child = spawned.with_context(|| {
             format!(
                 "Could not start {}; install it and sign in first",
                 settings.agent.provider.label()

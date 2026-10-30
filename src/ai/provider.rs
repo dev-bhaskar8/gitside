@@ -36,6 +36,30 @@ impl TextRequest {
     }
 }
 
+#[cfg(test)]
+pub(super) fn spawn_fixture_command(
+    command: &mut Command,
+) -> std::io::Result<tokio::process::Child> {
+    // Parallel tests can fork while another fixture is being written. Its writer
+    // descriptor briefly survives in that child until exec closes CLOEXEC fds,
+    // and Linux rejects execution of the new fixture with ETXTBSY meanwhile.
+    #[cfg(unix)]
+    {
+        let mut retries = 0;
+        loop {
+            match command.spawn() {
+                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && retries < 20 => {
+                    retries += 1;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    command.spawn()
+}
+
 pub(super) async fn generate(
     settings: &AiSettings,
     root: &Path,
@@ -160,9 +184,11 @@ async fn generate_with_agent(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("failed to start {program}"))?;
+    #[cfg(test)]
+    let spawned = spawn_fixture_command(&mut command);
+    #[cfg(not(test))]
+    let spawned = command.spawn();
+    let mut child = spawned.with_context(|| format!("failed to start {program}"))?;
     // Drain output while writing stdin: large prompts and verbose startup output
     // must not deadlock on full OS pipe buffers. Dropping stdin sends EOF.
     let mut stdin = child.stdin.take().context("agent input was unavailable")?;
@@ -693,6 +719,31 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn fixture_launch_waits_for_a_temporary_writer_to_close() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("test-agent");
+        std::fs::copy(resolve_program("true").unwrap(), &executable).unwrap();
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&executable)
+            .unwrap();
+        let mut command = Command::new(&executable);
+        command.kill_on_drop(true);
+        assert_eq!(
+            command.spawn().unwrap_err().raw_os_error(),
+            Some(libc::ETXTBSY)
+        );
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            drop(writer);
+        });
+        let mut child = spawn_fixture_command(&mut command).unwrap();
+        assert!(child.wait().await.unwrap().success());
+        release.join().unwrap();
+    }
     #[test]
     fn claude_verbose_output_uses_the_final_structured_result() {
         let value = parse_claude_response(r#"[{"type":"system"},{"type":"assistant","message":"progress"},{"type":"result","structured_output":{"subject":"Fix parsing","body":""}}]"#).unwrap();
