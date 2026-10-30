@@ -7,36 +7,43 @@ separately from successful builds.
 
 ## Installation matrix
 
-Public channel state was checked on October 31, 2026. Version 0.2.0 is prepared
-in this checkout and has not been published yet.
+Public channel state was checked on October 31, 2026, after publishing 0.2.0.
+Registry acceptance and store listing remain separate from the GitHub release.
 
 | Channel | Install | Verified public state |
 | --- | --- | --- |
-| Homebrew | `brew install dev-bhaskar8/tap/gitside` | 0.1.2; macOS and Linux, x64/ARM64 |
-| Cargo | `cargo install gitside --locked` | 0.1.2; builds from source with current stable Rust |
-| npm | `npm install --global gitside` | 0.1.2; downloads the matching native binary |
-| Scoop | `scoop bucket add gitside https://github.com/dev-bhaskar8/scoop-bucket`, then `scoop install gitside` | 0.1.2; Windows x64/ARM64 |
-| AUR | `paru -S gitside-bin` | 0.1.0-1; last update was blocked by AUR maintenance |
-| Nix | `nix run github:dev-bhaskar8/gitside` | Source package; version follows Cargo.toml; CI checks it |
-| Direct | [GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases/latest) | 0.1.2; six archives, shell/PowerShell installers, .deb/.rpm |
+| Homebrew | `brew install dev-bhaskar8/tap/gitside` | 0.2.0; macOS and Linux, x64/ARM64 |
+| Cargo | `cargo install gitside --locked` | 0.1.2; 0.2.0 upload rejected with HTTP 403 authentication failure |
+| npm | `npm install --global gitside` | 0.1.2; 0.2.0 publication returned a permission/not-found error |
+| Scoop | `scoop bucket add gitside https://github.com/dev-bhaskar8/scoop-bucket`, then `scoop install gitside` | 0.2.0; Windows x64/ARM64 |
+| AUR | `paru -S gitside-bin` | 0.2.0-1; x64/ARM64 |
+| Nix | `nix run github:dev-bhaskar8/gitside` | 0.2.0 source package; CI builds the default package |
+| Direct | [GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases/tag/v0.2.0) | 0.2.0; six archives, shell/PowerShell installers, .deb/.rpm and .nupkg |
 
 The npm package is a native-binary installer. AUR, Nix, and the Homebrew tap are
 independent channels, not inclusion in Arch, Nixpkgs, or Homebrew's core repositories.
 
 ### Configured channels awaiting publication or review
 
-- **Chocolatey:** no public package was returned by its feed during the audit.
-  The last 0.1.2 push returned HTTP 403. Check package ownership, credentials and
-  the original submission's moderation state before retrying a newer version.
-- **Snap:** no public store release is available. The previous upload reported
-  that an earlier upload was still awaiting review. Resolve that queue in the
-  publisher dashboard; classic confinement also needs store approval.
-- **WinGet:** the 0.1.0 and 0.1.2 submissions closed as stale without merging.
-  The workflow prepares a fresh version from Microsoft's current default branch
-  and preserves any existing versions. Availability requires upstream acceptance.
+- **Chocolatey:** the 0.2.0 upload succeeded and its `.nupkg` is attached to the
+  GitHub release. The anonymous Chocolatey feed still returned no public entry.
+- **Snap:** no public store release is available. The initial 0.2.0 builds failed
+  because the pinned Rust 1.85 compiler cannot compile a dependency's newer
+  syntax. Both architectures then built successfully with stable Rust, but the
+  store rejected obsolete Candid credentials. A [final packaging retry](https://github.com/dev-bhaskar8/gitside/actions/runs/41134726622)
+  adds automatic ELF patching, installed-package execution checks and retention
+  of the built snaps before store publication. Refresh SNAPCRAFT_STORE_CREDENTIALS
+  using modern `snapcraft export-login` with SNAPCRAFT_STORE_AUTH unset. Store
+  review and classic-confinement approval remain separate requirements.
+- **WinGet:** [0.2.0 submission](https://github.com/microsoft/winget-pkgs/pull/466584)
+  is open. Microsoft's bot requires the maintainer's CLA signature before merge;
+  package validation and upstream acceptance are also required.
 
-See the [0.2.0 readiness record](release-0.2.0.md) for evidence and next actions.
+See the [0.2.0 release record](release-0.2.0.md) for evidence and next actions.
 PPA, COPR, and other official OS repositories are not currently configured.
+
+Use current stable Rust for source builds. A dependency uses syntax unavailable
+in Rust 1.85, despite the older lower bound in the original 0.2.0 source metadata.
 
 ## Release architecture
 
@@ -94,8 +101,18 @@ Registry credentials live in the protected `registry` environment, never in sour
 | Chocolatey | `CHOCOLATEY_API_KEY` | `ENABLE_CHOCOLATEY=true` |
 | Snap | `SNAPCRAFT_STORE_CREDENTIALS` | `ENABLE_SNAP=true` |
 
-The audit confirmed these secret names and switch values, without reading secret
-values. Their presence does not prove that each store will accept a submission.
+The release confirmed these secret names and switch values without reading secret
+values. Cargo and npm rejected their saved publishing credentials. The Homebrew,
+Scoop, and WinGet GitHub tokens were also rejected; those channels were recovered
+using the maintainer's authenticated local GitHub session. Snap's obsolete Candid
+credentials were also rejected. Refresh all six affected credentials before
+relying on the automatic publishers again. AUR and Chocolatey
+publication succeeded with their configured credentials.
+
+Snap's recipe uses Canonical's [automatic ELF patching](https://ubuntu.com/docs/snapcraft/9/how-to/debugging/use-the-classic-linter/#enable-automatic-elf-file-patching)
+for the core24 loader and library paths. Its publisher uses the current
+[exported-credential authentication](https://ubuntu.com/docs/snapcraft/9/how-to/publishing/authenticate/#export-snapcraft-account-credentials)
+flow, without the retired Candid override.
 
 ## Maintainer release checklist
 

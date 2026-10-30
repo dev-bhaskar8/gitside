@@ -31,6 +31,10 @@
 Prebuilt packages are published for macOS, Linux, and Windows with each stable
 release. Git 2.30+ is required at runtime.
 
+Version 0.2.0 is available through GitHub Releases, Homebrew, Scoop, AUR, and
+the Nix source package. npm and Cargo currently serve 0.1.2.
+See the [channel status](docs/distribution.md).
+
 ### Cross-platform
 
 #### npm
@@ -78,9 +82,10 @@ nix run github:dev-bhaskar8/gitside
 
 ### Direct downloads
 
-Provenance-attested macOS, Linux, and Windows installers, portable archives,
-`.deb`, and `.rpm` packages are available from
+macOS, Linux, and Windows installers, portable archives, `.deb`, and `.rpm`
+packages are available from
 [GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases/latest).
+Native archives and Linux packages carry GitHub provenance attestations.
 See the [installation matrix](docs/distribution.md#installation-matrix) for
 package versions, architecture support, and publication status. Chocolatey,
 WinGet, and Snap are configured distribution targets and have separate store
@@ -108,8 +113,9 @@ Click Generate or press `Ctrl+G` to choose Codex, Claude Code, OpenCode,
 Antigravity, Cursor, Grok Build, Pi, Muse Code, or another installed ACP agent.
 Gitside remembers the choice and uses the CLI's saved login and default model.
 Installation detection checks the executable; provider requests check account access.
-The expanded integrations are part of 0.2.0; build this checkout to try changes
-before its packages are published.
+These integrations ship in 0.2.0. Install through an updated channel or build
+the tagged source; the [installation matrix](docs/distribution.md#installation-matrix)
+tracks each package registry separately.
 
 Antigravity has an integrated setup flow: choose it in Configure, select
 **Install Antigravity**, then **Sign in with Google**. Gitside installs a verified,
