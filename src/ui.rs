@@ -1068,7 +1068,7 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         String::new()
     };
     let body = format!(
-        "Enabled   {enabled}\nMode      {}\nProvider  {}\nStatus    {}{credential}\n\n{setup}\n\nClick Configure to set provider, model, credentials, endpoint, and instructions.\n\nMCP is not required. Output is an editable draft. Staged changes are preferred; otherwise current working changes are used without staging them.",
+        "Enabled   {enabled}\nMode      {}\nProvider  {}\nStatus    {}{credential}\n\n{setup}\n\nChoose Agent to use an installed coding CLI and its existing login. Configure changes the CLI, optional model, or instructions.\n\nMCP is not required. Output is an editable draft. Staged changes are preferred; otherwise current working changes are used without staging them.",
         ai::mode_label(&settings),
         ai::provider_label(&settings),
         ai_panel_readiness(&settings, &app.ai_credential_status),
@@ -1564,6 +1564,16 @@ fn render_ai_setup_overlay(
             };
             let mut lines = Vec::new();
             for (index, provider) in providers.iter().enumerate() {
+                let availability = if draft.mode == AiMode::Agent && index < 3 {
+                    if draft.available_agents[index] {
+                        " · installed"
+                    } else {
+                        " · not found"
+                    }
+                } else {
+                    ""
+                };
+                let provider = format!("{provider}{availability}");
                 lines.push(if index == selected {
                     format!("[{} {provider}]", index + 1)
                 } else {
@@ -1575,6 +1585,14 @@ fn render_ai_setup_overlay(
                         action: UiAction::AiSetupChoose(index),
                     });
                 }
+            }
+            if draft.mode == AiMode::Agent {
+                lines.push("\nUses the CLI's existing login and default model.".into());
+                lines.push(if draft.generate_after_save {
+                    "Enter: save choice and generate · Esc: cancel".into()
+                } else {
+                    "Gitside does not need an API key for coding CLIs.".into()
+                });
             }
             ("Choose a provider", lines.join("\n"))
         }
@@ -1745,6 +1763,12 @@ fn render_ai_setup_overlay(
         render_outlined_button(frame, app, back, back_label, UiAction::AiSetupBack, false);
         let label = if !full {
             "→"
+        } else if draft.generate_after_save
+            && draft.mode == AiMode::Agent
+            && draft.step == crate::app::AiSetupStep::Provider
+            && draft.agent_provider != crate::config::AgentProvider::Custom
+        {
+            "Generate"
         } else if draft.step == crate::app::AiSetupStep::Review {
             "Save"
         } else {
@@ -2320,6 +2344,37 @@ mod tests {
         })
         .await;
         assert!(matches!(app.overlay, Some(Overlay::AiSetup(_))));
+    }
+
+    #[tokio::test]
+    async fn first_generate_picker_shows_cli_availability_and_generate_action() {
+        let mut app = App::isolated_test(Settings::default()).await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL))
+            .await;
+        let Some(Overlay::AiSetup(draft)) = &mut app.overlay else {
+            panic!("expected picker")
+        };
+        draft.available_agents = [true, false, true];
+        draft.agent_provider = crate::config::AgentProvider::Codex;
+        for width in [42, 80, 120] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 28)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let output = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(output.contains("Codex · installed"));
+            assert!(output.contains("Claude Code · not found"));
+            assert!(output.contains("Generate"));
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|hit| matches!(hit.action, UiAction::AiSetupNext))
+            );
+        }
     }
 
     #[tokio::test]

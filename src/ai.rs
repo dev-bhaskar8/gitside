@@ -49,6 +49,22 @@ pub async fn generate(
     if !settings.enabled {
         bail!("commit-message generation is disabled in configuration");
     }
+    tokio::time::timeout(
+        Duration::from_secs(settings.timeout_secs.max(1)),
+        generate_inner(settings, repo, recent, api_key),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!("Generation timed out; check your provider connection or increase ai.timeout_secs")
+    })?
+}
+
+async fn generate_inner(
+    settings: &AiSettings,
+    repo: &GitRepo,
+    recent: &[Commit],
+    api_key: Option<&str>,
+) -> Result<String> {
     let context = GenerationContext::load(repo, recent, settings.max_diff_bytes).await?;
     let generated = match settings.mode {
         AiMode::Local => generate_local(&context, settings.max_files),
@@ -85,6 +101,23 @@ pub fn provider_label(settings: &AiSettings) -> &'static str {
     }
 }
 
+/// Installation detection only; authentication remains owned by each CLI.
+pub fn available_agents(settings: &AiSettings) -> [bool; 3] {
+    [
+        AgentProvider::Codex,
+        AgentProvider::Claude,
+        AgentProvider::Opencode,
+    ]
+    .map(|provider| {
+        let mut candidate = settings.clone();
+        candidate.agent.provider = provider;
+        if settings.agent.provider != provider {
+            candidate.agent.command = None;
+        }
+        executable_available(&agent_program(&candidate))
+    })
+}
+
 pub fn readiness(settings: &AiSettings) -> String {
     if !settings.enabled {
         return "Disabled in configuration".into();
@@ -118,9 +151,9 @@ pub fn readiness(settings: &AiSettings) -> String {
 impl GenerationContext {
     async fn load(repo: &GitRepo, recent: &[Commit], max_diff_bytes: usize) -> Result<Self> {
         let root = repo.root();
-        let cached_names = git_output(root, &["diff", "--cached", "--name-status"]).await?;
+        let cached_names = git_output(root, &["diff", "--cached", "--name-status", "-z"]).await?;
         let (names, stats, diff) = if cached_names.trim().is_empty() {
-            let names = git_output(root, &["diff", "--name-status"]);
+            let names = git_output(root, &["diff", "--name-status", "-z"]);
             let stats = git_output(root, &["diff", "--numstat"]);
             let diff = git_output(root, &["diff", "--no-ext-diff", "--no-color"]);
             let untracked = git_output(root, &["ls-files", "--others", "--exclude-standard", "-z"]);
@@ -146,21 +179,7 @@ impl GenerationContext {
             bail!("make at least one change before generating a commit message");
         }
 
-        let files = names
-            .lines()
-            .filter_map(|line| {
-                let fields = line.split('\t').collect::<Vec<_>>();
-                let status = fields.first()?.chars().next()?;
-                let path = fields.last()?.to_string();
-                let kind = match status {
-                    'A' => FileKind::Added,
-                    'D' => FileKind::Deleted,
-                    'R' => FileKind::Renamed,
-                    _ => FileKind::Other,
-                };
-                Some(FileChange { kind, path })
-            })
-            .collect::<Vec<_>>();
+        let files = parse_changed_files(&names);
         let (additions, deletions) = stats.lines().fold((0, 0), |(add, delete), line| {
             let mut fields = line.split('\t');
             let added = fields
@@ -192,7 +211,7 @@ impl GenerationContext {
         let files = self
             .files
             .iter()
-            .map(|file| format!("- {}", file.path))
+            .map(|file| format!("- {:?}", file.path))
             .collect::<Vec<_>>()
             .join("\n");
         let recent = if self.recent_subjects.is_empty() {
@@ -223,6 +242,32 @@ impl GenerationContext {
     }
 }
 
+fn parse_changed_files(names: &str) -> Vec<FileChange> {
+    let mut fields = names.split_terminator('\0');
+    let mut files = Vec::new();
+    while let Some(status) = fields.next() {
+        let Some(mut path) = fields.next() else { break };
+        // Renames and copies carry both source and destination paths.
+        if status.starts_with(['R', 'C']) {
+            let Some(destination) = fields.next() else {
+                break;
+            };
+            path = destination;
+        }
+        let kind = match status.chars().next() {
+            Some('A') => FileKind::Added,
+            Some('D') => FileKind::Deleted,
+            Some('R') => FileKind::Renamed,
+            _ => FileKind::Other,
+        };
+        files.push(FileChange {
+            kind,
+            path: path.to_owned(),
+        });
+    }
+    files
+}
+
 async fn append_untracked_changes(
     root: &Path,
     untracked: &str,
@@ -232,12 +277,19 @@ async fn append_untracked_changes(
     diff: &mut String,
 ) -> Result<()> {
     for path in untracked.split_terminator('\0') {
-        names.push_str(&format!("A\t{path}\n"));
+        names.push_str(&format!("A\0{path}\0"));
         let full_path = root.join(path);
         let remaining = max_diff_bytes.saturating_sub(diff.len());
         let metadata = tokio::fs::symlink_metadata(&full_path)
             .await
             .with_context(|| format!("failed to inspect untracked file {path}"))?;
+        if remaining == 0 {
+            diff.push_str("\n[Additional untracked content omitted]\n");
+            continue;
+        }
+        if !metadata.is_file() && !metadata.file_type().is_symlink() {
+            continue;
+        }
         let content = if metadata.file_type().is_symlink() {
             tokio::fs::read_link(&full_path)
                 .await
@@ -332,6 +384,9 @@ async fn generate_with_agent(
 ) -> Result<String> {
     let prompt = context.prompt(&settings.instructions);
     let (program, configured_args) = agent_command_parts(settings)?;
+    let output_directory =
+        tempfile::tempdir().context("failed to create agent output directory")?;
+    let final_message = output_directory.path().join("message.txt");
     let mut command = Command::new(&program);
     command.current_dir(root).kill_on_drop(true);
     match settings.agent.provider {
@@ -345,19 +400,30 @@ async fn generate_with_agent(
                 "-C",
             ]);
             command.arg(root);
+            command.arg("--output-last-message").arg(&final_message);
             if let Some(model) = nonempty(settings.agent.model.as_deref()) {
                 command.args(["--model", model]);
             }
             command.args(&settings.agent.args).arg("-");
         }
         AgentProvider::Claude => {
+            isolate_claude(&mut command);
             command.args([
                 "-p",
                 "--permission-mode",
-                "plan",
+                "dontAsk",
                 "--no-session-persistence",
                 "--output-format",
-                "text",
+                "json",
+                "--tools",
+                "",
+                "--setting-sources",
+                "",
+                "--settings",
+                "{\"disableAllHooks\":true}",
+                "--strict-mcp-config",
+                "--mcp-config",
+                "{\"mcpServers\":{}}",
             ]);
             if let Some(model) = nonempty(settings.agent.model.as_deref()) {
                 command.args(["--model", model]);
@@ -365,11 +431,11 @@ async fn generate_with_agent(
             command.args(&settings.agent.args);
         }
         AgentProvider::Opencode => {
-            command.args(["run", "--pure"]);
+            command.args(["run", "--format", "json", "--agent", "plan"]);
             if let Some(model) = nonempty(settings.agent.model.as_deref()) {
                 command.args(["--model", model]);
             }
-            command.args(&settings.agent.args).arg(&prompt);
+            command.args(&settings.agent.args);
         }
         AgentProvider::Custom => {
             command.args(configured_args).args(&settings.agent.args);
@@ -382,20 +448,129 @@ async fn generate_with_agent(
     let mut child = command
         .spawn()
         .with_context(|| format!("failed to start {program}"))?;
-    if settings.agent.provider != AgentProvider::Opencode {
-        child
-            .stdin
-            .take()
-            .context("agent input was unavailable")?
-            .write_all(prompt.as_bytes())
-            .await?;
+    // Drain output while writing stdin: large prompts and verbose startup output
+    // must not deadlock on full OS pipe buffers. Dropping stdin sends EOF.
+    let mut stdin = child.stdin.take().context("agent input was unavailable")?;
+    let input = async {
+        let result = stdin.write_all(prompt.as_bytes()).await;
+        drop(stdin);
+        result
+    };
+    let (input_result, output) = tokio::join!(input, child.wait_with_output());
+    let output = output?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if settings.agent.provider == AgentProvider::Opencode {
+        // OpenCode can report provider errors as JSON even with an empty stderr.
+        let parsed = parse_opencode_response(&stdout);
+        if !output.status.success() {
+            if let Err(error) = parsed {
+                bail!("{program} failed: {error}");
+            }
+        } else {
+            input_result.context("failed to send generation context to agent")?;
+            return parsed;
+        }
     }
-    let output = child.wait_with_output().await?;
+    if settings.agent.provider == AgentProvider::Claude && !stdout.trim().is_empty() {
+        let parsed = parse_claude_response(&stdout);
+        if output.status.success() {
+            input_result.context("failed to send generation context to agent")?;
+            return parsed;
+        }
+        if let Err(error) = parsed {
+            bail!("{program} failed: {error}");
+        }
+    }
     if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        bail!("{program} failed: {}", shorten_subject(error.trim(), 240));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        bail!("{program} failed: {}", shorten_subject(detail, 300));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    input_result.context("failed to send generation context to agent")?;
+    if settings.agent.provider == AgentProvider::Codex {
+        return tokio::fs::read_to_string(&final_message)
+            .await
+            .context("Codex did not produce a final message; check its login and model");
+    }
+    Ok(stdout.into_owned())
+}
+
+// Adapted from OpenCode's ClaudeQueryOptions.ISOLATION_ENV and base options.
+// See docs/third-party-notices.md for the upstream MIT notice and source.
+fn isolate_claude(command: &mut Command) {
+    command.envs([
+        ("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1"),
+        ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+        ("DISABLE_AUTO_COMPACT", "1"),
+        ("CLAUDE_CODE_ENABLE_AWAY_SUMMARY", "0"),
+        ("ENABLE_TOOL_SEARCH", "false"),
+        ("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "1"),
+    ]);
+    // Simple/bare mode skips OAuth. Leave subscription authentication to Claude.
+    command.env_remove("CLAUDE_CODE_SIMPLE");
+    command.env_remove("CLAUDE_CODE_EFFORT_LEVEL");
+    command.env_remove("MCP_TOOL_TIMEOUT");
+}
+
+fn parse_claude_response(output: &str) -> Result<String> {
+    let value: Value = serde_json::from_str(output).context("Claude Code returned invalid JSON")?;
+    if value["is_error"] == true {
+        let errors = value["errors"].as_array().map(|errors| {
+            errors
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
+        });
+        bail!(
+            "Claude Code: {}",
+            shorten_subject(
+                value["result"]
+                    .as_str()
+                    .or(errors.as_deref())
+                    .unwrap_or("generation failed; check Claude Code authentication and model"),
+                300
+            )
+        );
+    }
+    value["result"]
+        .as_str()
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_owned)
+        .context("Claude Code returned no final message")
+}
+
+fn parse_opencode_response(output: &str) -> Result<String> {
+    let mut parts = Vec::new();
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        let event: Value = serde_json::from_str(line).context(
+            "OpenCode returned invalid JSON; use a version supporting run --format json",
+        )?;
+        match event["type"].as_str() {
+            Some("text") => {
+                if let Some(text) = event["part"]["text"].as_str() {
+                    parts.push(text.to_owned());
+                }
+            }
+            Some("error") => {
+                let message = event["error"]["message"]
+                    .as_str()
+                    .or_else(|| event["error"]["data"]["message"].as_str())
+                    .unwrap_or("provider request failed; check OpenCode authentication and model");
+                bail!("OpenCode: {}", shorten_subject(message, 300));
+            }
+            _ => {} // Reasoning, tools and progress are never commit text.
+        }
+    }
+    let message = parts.join("\n");
+    if message.trim().is_empty() {
+        bail!("OpenCode returned no message; check its authentication and selected model");
+    }
+    Ok(message)
 }
 
 async fn generate_with_api(
@@ -456,8 +631,7 @@ async fn generate_with_api(
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.2
+                ]
             }));
             if let Some(key) = key.as_deref() {
                 request = request.bearer_auth(key);
@@ -474,8 +648,7 @@ async fn generate_with_api(
             shorten_subject(&safe_body, 300)
         );
     }
-    parse_api_response(settings.api.provider, &body)
-        .map(|message| redact_secret(message, key.as_deref()))
+    parse_api_response(settings.api.provider, &redact_secret(body, key.as_deref()))
 }
 
 fn redact_secret(value: String, secret: Option<&str>) -> String {
@@ -487,18 +660,45 @@ fn redact_secret(value: String, secret: Option<&str>) -> String {
 
 fn parse_api_response(provider: ApiProvider, body: &str) -> Result<String> {
     let value: Value = serde_json::from_str(body).context("AI API returned invalid JSON")?;
-    let text = match provider {
-        ApiProvider::Anthropic => value["content"]
+    if let Some(error) = value.get("error") {
+        bail!(
+            "AI provider: {}",
+            shorten_subject(error["message"].as_str().unwrap_or("request failed"), 300)
+        );
+    }
+    let text_parts = |parts: &Value| -> String {
+        parts
             .as_array()
-            .and_then(|parts| parts.iter().find(|part| part["type"] == "text"))
-            .and_then(|part| part["text"].as_str()),
-        ApiProvider::Gemini => value["candidates"][0]["content"]["parts"][0]["text"].as_str(),
+            .into_iter()
+            .flatten()
+            .filter(|part| part["thought"] != true)
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let text = match provider {
+        ApiProvider::Anthropic => text_parts(&value["content"]),
+        ApiProvider::Gemini => text_parts(&value["candidates"][0]["content"]["parts"]),
         ApiProvider::Openai | ApiProvider::Openrouter | ApiProvider::Compatible => {
-            value["choices"][0]["message"]["content"].as_str()
+            let message = &value["choices"][0]["message"];
+            if let Some(refusal) = message["refusal"].as_str() {
+                bail!(
+                    "AI provider declined generation: {}",
+                    shorten_subject(refusal, 300)
+                );
+            }
+            message["content"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| text_parts(&message["content"]))
         }
     };
-    text.map(str::to_owned)
-        .ok_or_else(|| anyhow!("AI API response did not contain a commit message"))
+    if text.trim().is_empty() {
+        bail!(
+            "AI API response did not contain a commit message; check the model and provider limits"
+        );
+    }
+    Ok(text)
 }
 
 fn api_endpoint(settings: &AiSettings, model: &str) -> Result<String> {
@@ -558,15 +758,31 @@ fn agent_command_parts(settings: &AiSettings) -> Result<(String, Vec<String>)> {
 fn executable_available(command: &str) -> bool {
     let path = Path::new(command);
     if path.components().count() > 1 {
-        return path.is_file();
+        return is_executable(path);
     }
     env::var_os("PATH").is_some_and(|paths| {
         env::split_paths(&paths).any(|directory| {
             let candidate = directory.join(command);
-            candidate.is_file()
+            is_executable(&candidate)
                 || (cfg!(windows) && directory.join(format!("{command}.exe")).is_file())
         })
     })
+}
+
+fn is_executable(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn normalize_message(value: &str) -> Result<String> {
@@ -597,6 +813,7 @@ async fn git_output(root: &Path, args: &[&str]) -> Result<String> {
         .arg("-C")
         .arg(root)
         .args(args)
+        .kill_on_drop(true)
         .output()
         .await
         .context("Git is required but was not found")?;
@@ -774,6 +991,175 @@ mod tests {
             .unwrap(),
             "Update UI"
         );
+    }
+
+    #[test]
+    fn opencode_events_extract_only_message_text_and_surface_errors() {
+        let output = concat!(
+            "{\"type\":\"step_start\"}\n",
+            "{\"type\":\"reasoning\",\"part\":{\"text\":\"private reasoning\"}}\n",
+            "{\"type\":\"text\",\"part\":{\"text\":\"Fix generation\"}}\n",
+            "{\"type\":\"step_finish\"}\n",
+        );
+        assert_eq!(parse_opencode_response(output).unwrap(), "Fix generation");
+        let error = parse_opencode_response(
+            r#"{"type":"error","error":{"data":{"message":"Authentication required"}}}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Authentication required"));
+        assert!(parse_opencode_response(r#"{"type":"step_finish"}"#).is_err());
+        assert!(parse_opencode_response("terminal banner").is_err());
+    }
+
+    #[test]
+    fn api_responses_join_text_parts_and_exclude_thinking() {
+        assert_eq!(parse_api_response(ApiProvider::Gemini,
+            r#"{"candidates":[{"content":{"parts":[{"thought":true,"text":"reasoning"},{"text":"Fix generation"},{"text":"Preserve drafts."}]}}]}"#
+        ).unwrap(), "Fix generation\nPreserve drafts.");
+        assert_eq!(
+            parse_api_response(
+                ApiProvider::Compatible,
+                r#"{"choices":[{"message":{"content":[{"type":"text","text":"Fix generation"}]}}]}"#
+            )
+            .unwrap(),
+            "Fix generation"
+        );
+        assert!(
+            parse_api_response(
+                ApiProvider::Openai,
+                r#"{"choices":[{"message":{"content":null,"refusal":"Blocked"}}]}"#
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("Blocked")
+        );
+    }
+
+    #[test]
+    fn changed_files_preserve_unusual_names_and_rename_destinations() {
+        let files = parse_changed_files("M\0a\tb\nc.rs\0R100\0old.rs\0new.rs\0");
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "a\tb\nc.rs");
+        assert_eq!(files[1].path, "new.rs");
+        assert_eq!(files[1].kind, FileKind::Renamed);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opencode_adapter_uses_json_and_closes_stdin() {
+        let (directory, repo) = staged_repository().await;
+        let script = directory.path().join("opencode.sh");
+        fs::write(
+            &script,
+            r##"#!/bin/sh
+[ "$1 $2 $3 $4 $5" = 'run --format json --agent plan' ] || exit 2
+input=$(cat)
+case "$input" in *src/ai.rs*) ;; *) exit 3 ;; esac
+printf '%s\n' '{"type":"text","part":{"text":"Fix OpenCode generation"}}'
+"##,
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut settings = AiSettings {
+            enabled: true,
+            mode: AiMode::Agent,
+            ..AiSettings::default()
+        };
+        settings.agent.provider = AgentProvider::Opencode;
+        settings.agent.command = Some(script.to_string_lossy().into_owned());
+        assert_eq!(
+            generate(&settings, &repo, &[], None).await.unwrap(),
+            "Fix OpenCode generation"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_adapter_uses_final_message_file_instead_of_progress_output() {
+        let (directory, repo) = staged_repository().await;
+        let script = directory.path().join("codex.sh");
+        fs::write(
+            &script,
+            r##"#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '--output-last-message' ]; then shift; output=$1; fi
+  shift
+done
+cat >/dev/null
+printf 'Fix Codex generation' > "$output"
+printf 'startup progress and intermediate commentary'
+"##,
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut settings = AiSettings {
+            enabled: true,
+            mode: AiMode::Agent,
+            ..AiSettings::default()
+        };
+        settings.agent.command = Some(script.to_string_lossy().into_owned());
+        assert_eq!(
+            generate(&settings, &repo, &[], None).await.unwrap(),
+            "Fix Codex generation"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_adapter_isolates_tools_and_preserves_login_mode() {
+        let (directory, repo) = staged_repository().await;
+        let script = directory.path().join("claude.sh");
+        fs::write(
+            &script,
+            r##"#!/bin/sh
+[ "$CLAUDE_CODE_DISABLE_CLAUDE_MDS" = 1 ] || exit 2
+[ "$CLAUDE_CODE_DISABLE_AUTO_MEMORY" = 1 ] || exit 3
+[ -z "$CLAUDE_CODE_SIMPLE" ] || exit 4
+[ "$1 $2 $3" = '-p --permission-mode dontAsk' ] || exit 5
+cat >/dev/null
+printf '%s' '{"type":"result","is_error":false,"result":"Fix Claude generation"}'
+"##,
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut settings = AiSettings {
+            enabled: true,
+            mode: AiMode::Agent,
+            ..AiSettings::default()
+        };
+        settings.agent.provider = AgentProvider::Claude;
+        settings.agent.command = Some(script.to_string_lossy().into_owned());
+        assert_eq!(
+            generate(&settings, &repo, &[], None).await.unwrap(),
+            "Fix Claude generation"
+        );
+        assert!(
+            parse_claude_response(r#"{"is_error":true,"result":"Please log in"}"#)
+                .unwrap_err()
+                .to_string()
+                .contains("Please log in")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hanging_agents_hit_the_generation_deadline() {
+        let (directory, repo) = staged_repository().await;
+        let script = directory.path().join("hang.sh");
+        fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut settings = AiSettings {
+            enabled: true,
+            mode: AiMode::Agent,
+            timeout_secs: 1,
+            ..AiSettings::default()
+        };
+        settings.agent.provider = AgentProvider::Custom;
+        settings.agent.command = Some(script.to_string_lossy().into_owned());
+        let started = std::time::Instant::now();
+        let error = generate(&settings, &repo, &[], None).await.unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     async fn staged_repository() -> (TempDir, GitRepo) {

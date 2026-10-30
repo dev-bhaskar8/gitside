@@ -101,11 +101,17 @@ gitside /path/to/repository
 
 ### AI commit drafts (optional)
 
-Press `Y` to open the AI panel, choose Local, Agent, or API, then configure it
-without editing TOML. `Ctrl+G` or the Generate button creates an editable,
-Git-focused draft from staged changes (or the current working tree when nothing
-is staged). Gitside never stages, commits, pushes, or changes branches during
-generation. See the [AI configuration guide](docs/configuration.md#commit-message-generation).
+Click Generate or press `Ctrl+G` to choose an installed Codex, Claude Code, or
+OpenCode CLI. Gitside reuses that CLI's login and default model, remembers your
+choice, and generates an editable commit draft. No separate API key is required
+for this route. Sign in through the CLI first; installation detection does not
+verify your account.
+
+Press `Y` to change the CLI, set an optional model or instructions, or explicitly
+choose offline rules or a direct API. Generation uses staged changes, falling
+back to the working tree when nothing is staged. It times out after 120 seconds
+and preserves drafts edited while waiting. See the
+[AI configuration guide](docs/configuration.md#commit-message-generation).
 
 ## Same-repository benchmark
 
@@ -180,6 +186,20 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+The architecture keeps Git and AI work behind asynchronous adapters. The TUI
+owns input, rendering, and editable drafts; coding CLIs own authentication and
+model requests. Generation only returns text to the editor. See the detailed
+[architecture](docs/architecture.md).
+
+| Path | Responsibility |
+| --- | --- |
+| `src/app.rs`, `src/ui.rs`, `src/terminal.rs` | Actions, rendering, event loop |
+| `src/ai.rs` | Commit context and coding CLI/API adapters |
+| `src/git.rs`, `src/github.rs` | Git and GitHub CLI operations |
+| `src/config.rs`, `src/credentials.rs` | Settings and OS credential storage |
+| `docs/` | Configuration, architecture, platform and distribution guides |
+| `scripts/`, `packaging/` | Installers, package manifests and release checks |
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Security
 issues should follow [SECURITY.md](SECURITY.md).

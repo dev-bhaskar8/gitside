@@ -70,6 +70,28 @@ read-only working-tree fallback when it is empty; direct API input is
 byte-bounded, credentials come from the OS credential store or an
 environment fallback, and failures preserve the user's current draft.
 
+The first Generate action opens an installed-CLI picker. Choosing a built-in
+CLI saves the provider and continues generation with its own model and login.
+Detection checks executability without reading credentials or calling a model.
+Configuration remains available for optional overrides and explicit offline/API
+modes. Switching providers drops incompatible executable/argument overrides.
+
+The adapter drains stdout/stderr concurrently with stdin writes, closes stdin
+at EOF, and applies a configurable total deadline. Codex final-message files,
+Claude JSON results, and OpenCode JSON text events are normalized into the same
+editable draft result. A snapshot of the starting draft prevents a late result
+from overwriting edits. Provider errors remain errors rather than draft text.
+
+Claude isolation is adapted from OpenCode's
+[query-options implementation](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/plugin/provider/claude-agent/claude/query-options.ts)
+and [Claude Agent specification](https://github.com/anomalyco/opencode/blob/dev/specs/v2/claude-agent-provider.md).
+Gitside ports the applicable one-shot process options into Rust and uses the CLI
+JSON interface rather than adding a Node/Agent SDK runtime. It disables built-in
+tools, settings sources, hooks, and external MCP configuration while preserving
+subscription authentication. OpenCode's ChatGPT OAuth integration is a separate
+provider; Gitside keeps Codex CLI authentication for its Codex adapter. See the
+[third-party notice](third-party-notices.md).
+
 The AI setup wizard persists only non-secret settings in the TOML document and
 preserves unrelated configuration. API keys use the native OS credential store
 and are redacted from overlays, diagnostics, errors, and serialization. When a

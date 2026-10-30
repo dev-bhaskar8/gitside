@@ -46,7 +46,14 @@ git config --global difftool.vscode.cmd 'code --wait --diff "$LOCAL" "$REMOTE"'
 Generation is opt-in and always creates an editable draft. It never stages
 files, creates a repository, switches branches, commits, or pushes. Every mode
 prefers staged changes and falls back to current unstaged and untracked changes
-when the index is empty. Enable one of the following modes:
+when the index is empty.
+
+On first Generate (`Ctrl+G`), choose a coding CLI from the picker. Installed
+CLIs are labelled; installation detection does not verify authentication.
+Press Enter to save your selection and generate with its existing login and
+model defaults. There is no Gitside API-key setup for this route. If no supported
+CLI is installed, install and sign in to one, reopen the picker, or use `Y` to
+explicitly select offline rules or a direct API.
 
 The AI panel is always available in the normal `Tab` sequence, just like
 Stashes and Worktrees. From that panel, press `e` to enable generation for the
@@ -78,8 +85,17 @@ max_diff_bytes = 32000
 ### Existing agent
 
 This mode invokes an already authenticated Codex, Claude Code, or OpenCode CLI
-non-interactively. The built-in adapters request non-mutating operation and
-provide a Git-specific system prompt based on the selected changes. Depending
+non-interactively. Gitside supplies the diff on stdin and extracts the final
+message using Codex's output file, Claude's JSON result, or OpenCode's JSON
+text events. Progress, reasoning, and tool events do not become commit text.
+The model is optional; leaving it blank keeps the CLI's own default.
+
+Following OpenCode's Claude Agent isolation pattern, Claude's built-in tools,
+hooks, MCP servers, memory, and project settings are disabled for this one-shot
+request while its normal authentication remains available. Codex runs with a
+read-only sandbox; OpenCode uses its Plan agent. Custom commands retain your
+user permissions. All receive a Git-specific prompt based on selected changes.
+Depending
 on the chosen agent, that diff may be sent to its configured provider.
 
 ```toml
@@ -87,6 +103,7 @@ on the chosen agent, that diff may be sent to its configured provider.
 enabled = true
 mode = "agent"
 instructions = "Use conventional commit subjects."
+timeout_secs = 120
 
 [ai.agent]
 provider = "codex" # codex, claude, opencode, or custom
@@ -106,6 +123,12 @@ provider = "custom"
 command = "/path/to/commit-message-generator"
 args = []
 ```
+
+Generation has a total deadline (`ai.timeout_secs`, default 120 seconds),
+and the directly launched process is killed if the request times out. Errors
+preserve the current draft. Successful output is discarded if you changed the
+draft or switched repositories while waiting. Provider switching clears the
+previous CLI's custom executable and extra arguments.
 
 MCP is not needed for this direction of control: Gitside initiates generation,
 so it calls the agent's non-interactive CLI. Agents can continue controlling

@@ -20,6 +20,7 @@ include = [
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
+    "docs/third-party-notices.md",
 ]
 
 [[bin]]

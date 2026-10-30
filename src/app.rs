@@ -135,6 +135,8 @@ pub struct AiSetupDraft {
     pub mode: AiMode,
     pub step: AiSetupStep,
     pub agent_provider: AgentProvider,
+    pub available_agents: [bool; 3],
+    pub generate_after_save: bool,
     pub api_provider: ApiProvider,
     pub command: String,
     pub model: String,
@@ -190,6 +192,8 @@ impl AiSetupDraft {
             mode,
             step: AiSetupStep::Provider,
             agent_provider: settings.agent.provider,
+            available_agents: ai::available_agents(settings),
+            generate_after_save: false,
             api_provider: settings.api.provider,
             command: settings.agent.command.clone().unwrap_or_default(),
             model: match mode {
@@ -371,10 +375,12 @@ enum BackgroundResult {
     },
     CommitMessage {
         repo_index: usize,
+        original_draft: String,
         result: Result<String>,
     },
     AiSetup {
         settings: AiSettings,
+        generate_after_save: bool,
         result: Result<CredentialStatus>,
     },
     AiCredentialRemoved {
@@ -854,8 +860,14 @@ impl App {
                     "Publishing failed; repository refresh also failed: {refresh_error:#}"
                 ))),
             },
-            Ok(BackgroundResult::CommitMessage { repo_index, result }) => match result {
-                Ok(message) if repo_index == self.active_repo => {
+            Ok(BackgroundResult::CommitMessage {
+                repo_index,
+                original_draft,
+                result,
+            }) => match result {
+                Ok(message)
+                    if repo_index == self.active_repo && self.commit_message == original_draft =>
+                {
                     self.ai_generation_state = AiGenerationState::Idle;
                     self.commit_message = message;
                     self.text_cursor = self.commit_message.len();
@@ -867,16 +879,24 @@ impl App {
                 Ok(_) => {
                     self.ai_generation_state = AiGenerationState::Idle;
                     self.status_line =
-                        "Generated message discarded because the repository changed".into();
+                        "Generated message discarded because the repository or draft changed"
+                            .into();
                 }
                 Err(error) => {
                     self.ai_generation_state = AiGenerationState::Idle;
                     self.report_error(error);
                 }
             },
-            Ok(BackgroundResult::AiSetup { settings, result }) => match result {
+            Ok(BackgroundResult::AiSetup {
+                settings,
+                generate_after_save,
+                result,
+            }) => match result {
                 Ok(status) => {
                     self.settings.ai = settings;
+                    if generate_after_save {
+                        self.ai_generation_state = AiGenerationState::Queued;
+                    }
                     self.ai_credential_status = status;
                     self.status_line = if self.ai_credential_status == CredentialStatus::SessionOnly
                     {
@@ -1800,6 +1820,21 @@ impl App {
         };
         match draft.step {
             AiSetupStep::Provider => {
+                if draft.generate_after_save
+                    && draft.mode == AiMode::Agent
+                    && draft.agent_provider != AgentProvider::Custom
+                {
+                    let index = setup_provider_index(&draft);
+                    if !draft.available_agents[index] {
+                        self.status_line =
+                            "Install this CLI and sign in, or select an installed CLI".into();
+                        self.overlay = Some(Overlay::AiSetup(draft));
+                        return;
+                    }
+                    self.overlay = Some(Overlay::AiSetup(draft));
+                    self.save_ai_setup();
+                    return;
+                }
                 draft.step = if draft.mode == AiMode::Agent
                     && draft.agent_provider == AgentProvider::Custom
                 {
@@ -2455,14 +2490,28 @@ impl App {
             return;
         }
         if !self.settings.ai.enabled {
-            if self.settings.ai.mode == AiMode::Local {
-                self.settings.ai.enabled = true;
-                self.persist_ai_settings("Smart Local enabled");
+            let mode = if self.settings.ai.mode == AiMode::Local {
+                AiMode::Agent
             } else {
-                self.status_line = "Complete AI setup before generating".into();
-                self.open_ai_setup(self.settings.ai.mode);
-                return;
+                self.settings.ai.mode
+            };
+            self.open_ai_setup(mode);
+            if let Some(Overlay::AiSetup(draft)) = &mut self.overlay {
+                draft.generate_after_save = true;
+                if self.settings.ai.mode == AiMode::Local
+                    && self.settings.ai.agent.command.is_none()
+                {
+                    if let Some(index) = draft
+                        .available_agents
+                        .iter()
+                        .position(|available| *available)
+                    {
+                        set_setup_provider(draft, index);
+                    }
+                }
             }
+            self.status_line = "Choose a coding CLI to generate with its existing login".into();
+            return;
         }
         if self.settings.ai.mode == AiMode::Api
             && (self
@@ -2499,6 +2548,7 @@ impl App {
         let recent = self.active().history.clone();
         let settings = self.settings.ai.clone();
         let credentials = self.credentials.clone();
+        let original_draft = self.commit_message.clone();
         self.busy = true;
         self.ai_generation_state = AiGenerationState::Generating(Instant::now());
         self.status_line = format!("Generating with {}…", ai::mode_label(&settings));
@@ -2512,6 +2562,7 @@ impl App {
                     Err(error) => {
                         return BackgroundResult::CommitMessage {
                             repo_index,
+                            original_draft,
                             result: Err(error),
                         };
                     }
@@ -2521,6 +2572,7 @@ impl App {
             };
             BackgroundResult::CommitMessage {
                 repo_index,
+                original_draft,
                 result: ai::generate(
                     &settings,
                     &repo,
@@ -2573,6 +2625,10 @@ impl App {
         settings.ai.instructions = draft.instructions.trim().into();
         match draft.mode {
             AiMode::Agent => {
+                if settings.ai.agent.provider != draft.agent_provider {
+                    settings.ai.agent.command = None;
+                    settings.ai.agent.args.clear();
+                }
                 settings.ai.agent.provider = draft.agent_provider;
                 if draft.agent_provider == AgentProvider::Custom {
                     settings.ai.agent.command = nonempty_owned(draft.command);
@@ -2592,6 +2648,7 @@ impl App {
             }
             AiMode::Local => {}
         }
+        let generate_after_save = draft.generate_after_save;
         let ai_settings = settings.ai.clone();
         let provider = draft.api_provider;
         let secret = (!draft.api_key.is_empty())
@@ -2616,6 +2673,7 @@ impl App {
             };
             BackgroundResult::AiSetup {
                 settings: ai_settings,
+                generate_after_save,
                 result,
             }
         }));
@@ -3752,6 +3810,7 @@ fn set_setup_provider(draft: &mut AiSetupDraft, index: usize) {
             if draft.agent_provider != provider {
                 draft.agent_provider = provider;
                 draft.model.clear();
+                draft.command.clear();
             }
         }
         AiMode::Api => {
@@ -4415,6 +4474,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn first_generate_opens_cli_picker_without_enabling_local_rules() {
+        let mut app = App::isolated_test(Settings::default()).await;
+        app.queue_commit_message_generation();
+        assert!(!app.settings.ai.enabled);
+        assert!(app.background_task.is_none());
+        let Some(Overlay::AiSetup(draft)) = &mut app.overlay else {
+            panic!("expected CLI picker")
+        };
+        assert_eq!(draft.mode, AiMode::Agent);
+        assert!(draft.generate_after_save);
+        // Installation detection never claims the user is authenticated.
+        draft.available_agents = [false; 3];
+        draft.agent_provider = AgentProvider::Codex;
+        app.advance_ai_setup().await;
+        assert!(app.status_line.contains("Install this CLI"));
+        assert!(app.background_task.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn first_generate_saves_cli_choice_and_continues_to_an_editable_draft() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("codex.sh");
+        fs::write(
+            &script,
+            r##"#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '--output-last-message' ]; then shift; output=$1; fi
+  shift
+done
+cat >/dev/null
+printf 'Add feature' > "$output"
+"##,
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut settings = Settings {
+            config_path: Some(directory.path().join("config.toml")),
+            ..Settings::default()
+        };
+        settings.ai.agent.command = Some(script.to_string_lossy().into_owned());
+        let mut app = App::isolated_test(settings).await;
+        let root = app.active().repo.root().to_owned();
+        fs::write(root.join("feature.rs"), "pub fn feature() {}\n").unwrap();
+        // Refresh the status snapshot before invoking Generate.
+        app.queue_refresh(false);
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+        app.poll_background().await;
+        app.queue_commit_message_generation();
+        app.advance_ai_setup().await;
+        for _ in 0..2 {
+            while !app
+                .background_task
+                .as_ref()
+                .is_some_and(JoinHandle::is_finished)
+            {
+                tokio::task::yield_now().await;
+            }
+            app.poll_background().await;
+        }
+        assert_eq!(app.commit_message, "Add feature");
+        assert_eq!(app.settings.ai.mode, AiMode::Agent);
+        assert!(app.settings.ai.enabled);
+        assert_eq!(app.focus, Focus::Commit);
+    }
+
+    #[tokio::test]
+    async fn successful_generation_preserves_edits_made_while_waiting() {
+        let mut app = App::isolated_test(Settings::default()).await;
+        app.commit_message = "My updated draft".into();
+        app.busy = true;
+        app.ai_generation_state = AiGenerationState::Generating(Instant::now());
+        app.background_task = Some(tokio::spawn(async {
+            BackgroundResult::CommitMessage {
+                repo_index: 0,
+                original_draft: "Old draft".into(),
+                result: Ok("Generated draft".into()),
+            }
+        }));
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+        app.poll_background().await;
+        assert_eq!(app.commit_message, "My updated draft");
+        assert_eq!(app.ai_generation_state, AiGenerationState::Idle);
+        assert!(!app.busy);
+    }
+
+    #[tokio::test]
     async fn failed_generation_preserves_the_existing_draft() {
         let mut app = App::isolated_test(Settings::default()).await;
         app.commit_message = "Keep my draft".into();
@@ -4422,6 +4581,7 @@ mod tests {
         app.background_task = Some(tokio::spawn(async {
             BackgroundResult::CommitMessage {
                 repo_index: 0,
+                original_draft: "Keep my draft".into(),
                 result: Err(anyhow::anyhow!("generator unavailable")),
             }
         }));
@@ -4696,6 +4856,37 @@ mod tests {
         let saved = fs::read_to_string(path).unwrap();
         assert!(saved.contains("Use short subjects"));
         assert!(!saved.to_ascii_lowercase().contains("api_key ="));
+    }
+
+    #[tokio::test]
+    async fn switching_cli_provider_clears_previous_executable_and_arguments() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut settings = Settings {
+            config_path: Some(directory.path().join("config.toml")),
+            ..Settings::default()
+        };
+        settings.ai.mode = AiMode::Agent;
+        settings.ai.agent.command = Some("old-codex-wrapper".into());
+        settings.ai.agent.args = vec!["--old-flag".into()];
+        let mut app = App::isolated_test(settings).await;
+        app.open_ai_setup(AiMode::Agent);
+        let Some(Overlay::AiSetup(draft)) = &mut app.overlay else {
+            panic!("expected setup")
+        };
+        set_setup_provider(draft, 1);
+        draft.step = AiSetupStep::Review;
+        app.save_ai_setup();
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+        app.poll_background().await;
+        assert_eq!(app.settings.ai.agent.provider, AgentProvider::Claude);
+        assert!(app.settings.ai.agent.command.is_none());
+        assert!(app.settings.ai.agent.args.is_empty());
     }
 
     #[tokio::test]
