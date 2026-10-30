@@ -13,8 +13,8 @@ Registry acceptance and store listing remain separate from the GitHub release.
 | Channel | Install | Verified public state |
 | --- | --- | --- |
 | Homebrew | `brew install dev-bhaskar8/tap/gitside` | 0.2.0; macOS and Linux, x64/ARM64 |
-| Cargo | `cargo install gitside --locked` | 0.1.2; 0.2.0 upload rejected with HTTP 403 authentication failure |
-| npm | `npm install --global gitside` | 0.1.2; 0.2.0 publication returned a permission/not-found error |
+| Cargo | `cargo install gitside --locked` | 0.2.0; published and downloaded source archive verified |
+| npm | `npm install --global gitside` | 0.1.2; refreshed credential reached the publisher, but npm requires 2FA-approved publication |
 | Scoop | `scoop bucket add gitside https://github.com/dev-bhaskar8/scoop-bucket`, then `scoop install gitside` | 0.2.0; Windows x64/ARM64 |
 | AUR | `paru -S gitside-bin` | 0.2.0-1; x64/ARM64 |
 | Nix | `nix run github:dev-bhaskar8/gitside` | 0.2.0 source package; CI builds the default package |
@@ -102,18 +102,42 @@ Registry credentials live in the protected `registry` environment, never in sour
 | Chocolatey | `CHOCOLATEY_API_KEY` | `ENABLE_CHOCOLATEY=true` |
 | Snap | `SNAPCRAFT_STORE_CREDENTIALS` | `ENABLE_SNAP=true` |
 
-The release confirmed these secret names and switch values without reading secret
-values. Cargo and npm rejected their saved publishing credentials. The Homebrew,
-Scoop, and WinGet GitHub tokens were also rejected; those channels were recovered
-using the maintainer's authenticated local GitHub session. Snap's obsolete Candid
-credentials were also rejected. Refresh all six affected credentials before
-relying on the automatic publishers again. AUR and Chocolatey
-publication succeeded with their configured credentials.
+Owner-supplied Cargo and npm credentials were updated in the protected environment.
+Cargo 0.2.0 publication then succeeded. npm's retry returned HTTP 403 requiring
+2FA-approved publication; configure trusted publishing or an appropriate granular
+publishing token as described below.
+
+Homebrew, Scoop and WinGet were recovered using the maintainer's authenticated
+local GitHub session after their CI tokens were rejected. Refresh those three
+GitHub tokens and Snap's obsolete store credentials before relying on their
+automatic publishers again. AUR and Chocolatey publication succeeded with their
+configured credentials.
 
 Snap's recipe uses Canonical's [automatic ELF patching](https://ubuntu.com/docs/snapcraft/9/how-to/debugging/use-the-classic-linter/#enable-automatic-elf-file-patching)
 for the core24 loader and library paths. Its publisher uses the current
 [exported-credential authentication](https://ubuntu.com/docs/snapcraft/9/how-to/publishing/authenticate/#export-snapcraft-account-credentials)
 flow, without the retired Candid override.
+
+### npm publishing authentication
+
+The release workflow already uses Node 24, `id-token: write`, and the protected
+`registry` environment. To enable npm's [trusted publishing](https://docs.npmjs.com/trusted-publishers/),
+open the `gitside` package's Settings on npm, select GitHub Actions as the trusted
+publisher, and enter:
+
+| Field | Value |
+| --- | --- |
+| Organization or user | `dev-bhaskar8` |
+| Repository | `gitside` |
+| Workflow filename | `release.yml` |
+| Environment name | `registry` |
+
+Once configured, npm automatically tries GitHub OIDC authentication before its
+token fallback. The existing release command needs no change.
+
+For token-based publication, [create a granular token](https://docs.npmjs.com/creating-and-viewing-access-tokens/)
+with read/write **publish and stage** access to `gitside` and **Bypass two-factor
+authentication** enabled, then replace `NPM_TOKEN` in the protected environment.
 
 ## Maintainer release checklist
 

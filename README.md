@@ -31,8 +31,8 @@
 Prebuilt packages are published for macOS, Linux, and Windows with each stable
 release. Git 2.30+ is required at runtime.
 
-Version 0.2.0 is available through GitHub Releases, Homebrew, Scoop, AUR, and
-the Nix source package. npm and Cargo currently serve 0.1.2.
+Version 0.2.0 is available through Cargo, GitHub Releases, Homebrew, Scoop, AUR,
+and the Nix source package. npm currently serves 0.1.2.
 See the [channel status](docs/distribution.md).
 
 ### Cross-platform

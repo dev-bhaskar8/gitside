@@ -19,8 +19,8 @@ is published. Availability in each package registry is tracked separately below.
 | --- | --- | --- |
 | GitHub/native archives | [0.2.0 release](https://github.com/dev-bhaskar8/gitside/releases/tag/v0.2.0) | Published six native targets, installers, checksums, source and SBOM; all six binaries passed hosted execution checks |
 | Linux packages | [Release assets](https://github.com/dev-bhaskar8/gitside/releases/tag/v0.2.0) | Published two Debian and two RPM packages with provenance attestations |
-| Cargo | [Registry entry](https://crates.io/crates/gitside), [publisher failure](https://github.com/dev-bhaskar8/gitside/actions/runs/41131024871/job/124327624358) | Still 0.1.2; 0.2.0 compiled and packaged, but upload returned HTTP 403 authentication failure; refresh CARGO_REGISTRY_TOKEN |
-| npm | [Package](https://www.npmjs.com/package/gitside), [publisher failure](https://github.com/dev-bhaskar8/gitside/actions/runs/41131024871/job/124327624264) | Still 0.1.2; 0.2.0 publication returned E404 permission/not-found; refresh NPM_TOKEN or provide an authenticated local npm session |
+| Cargo | [Registry entry](https://crates.io/crates/gitside/0.2.0), [successful publisher](https://github.com/dev-bhaskar8/gitside/actions/runs/41139047298) | Published 0.2.0 after refreshing the protected credential; downloaded package checksum, release commit and notices verified |
+| npm | [Package](https://www.npmjs.com/package/gitside), [publication retry](https://github.com/dev-bhaskar8/gitside/actions/runs/41131024871/job/124348567573) | Still 0.1.2; refreshed token reached the publisher, but npm returned E403 requiring 2FA-approved publication. Configure trusted publishing or a granular publish token with Bypass 2FA |
 | Homebrew | [Tap update](https://github.com/dev-bhaskar8/homebrew-tap/commit/60f1542) | Published 0.2.0 after recovering from rejected CI credentials |
 | Scoop | [Bucket update](https://github.com/dev-bhaskar8/scoop-bucket/commit/728bab3) | Published 0.2.0 for both Windows architectures after recovering from rejected CI credentials |
 | AUR | [Package](https://aur.archlinux.org/packages/gitside-bin), [publisher](https://github.com/dev-bhaskar8/gitside/actions/runs/41131024871/job/124328052361) | Published 0.2.0-1; the earlier maintenance blocker did not recur |
@@ -32,7 +32,9 @@ is published. Availability in each package registry is tracked separately below.
 
 Homebrew, Scoop and WinGet were recovered through the authenticated local GitHub
 session. Their existing CI tokens still need refreshing before the next automatic
-publication. No credential values were printed or copied into new secrets.
+publication. Owner-supplied Cargo and npm credentials were updated in the protected
+registry environment; the Cargo retry published successfully, while npm now
+requires its 2FA publishing configuration to be completed.
 
 ## Publication and recovery
 
@@ -83,7 +85,8 @@ that Rust 1.85 cannot compile, despite the older lower bound in the tagged metad
   release checksums. Both Windows ZIP executable paths match the WinGet manifests.
 - Debian/RPM fixtures and production packages built for both architectures;
   fixtures validate version, architecture, D-Bus dependency and third-party notices.
-- Cargo source packaging compiled successfully locally, in CI and in the publisher
-  before the registry rejected its credential.
+- Cargo source packaging compiled successfully locally, in CI and in the publisher.
+  After the credential update, publication succeeded and the public download matched
+  its registry SHA-256, original release commit and third-party notices.
 
 External acceptance and credential recovery remain separate release follow-ups.
