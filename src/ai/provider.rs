@@ -726,7 +726,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = tempfile::tempdir().unwrap();
-        let executable = directory.path().join("test-agent");
+        // Nix coreutils dispatches by executable name even after copying.
+        let executable = directory.path().join("true");
         std::fs::copy(resolve_program("true").unwrap(), &executable).unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         let writer = std::fs::OpenOptions::new()
