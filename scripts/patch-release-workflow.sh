@@ -8,6 +8,8 @@ path = ARGV.fetch(0)
 source = File.read(path)
 
 replacements = {
+  "on:\n  pull_request:" => "on:\n  workflow_dispatch:\n    inputs:\n      tag:\n        description: Existing stable release tag to build without moving it\n        required: true\n        type: string\n  pull_request:",
+  "github.ref_name" => "(inputs.tag || github.ref_name)",
   "  host:\n    needs:" => "  host:\n    environment: release\n    needs:",
   "  publish-homebrew-formula:\n    needs:" => "  publish-homebrew-formula:\n    environment: registry\n    needs:",
   "  publish-npm:\n    needs:" => "  publish-npm:\n    environment: registry\n    permissions:\n      contents: read\n      id-token: write\n    needs:",
@@ -27,9 +29,38 @@ replacements = {
 
 replacements.each do |from, to|
   count = source.scan(from).length
-  abort "expected one release workflow match for #{from.inspect}, found #{count}" unless count == 1
-  source = source.sub(from, to)
+  expected = from == "github.ref_name" ? 3 : 1
+  abort "expected #{expected} release workflow matches for #{from.inspect}, found #{count}" unless count == expected
+  source = source.gsub(from, to)
 end
+
+# A manual recovery uses current orchestration with the immutable tagged source.
+checkout = "          persist-credentials: false\n          submodules: recursive"
+abort "expected five release source checkouts" unless source.scan(checkout).length == 5
+source = source.gsub(checkout, "          ref: ${{ inputs.tag || github.ref }}\n" + checkout)
+
+plan_env = "    env:\n      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}"
+abort "missing plan environment" unless source.include?(plan_env)
+source = source.sub(plan_env, "    env:\n      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}\n      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}")
+plan_command = /          dist \$\{\{ .*? \}\} --output-format=json > plan-dist-manifest.json/
+abort "missing release planning command" unless source.scan(plan_command).length == 1
+source = source.sub(plan_command, <<~BASH.lines.map { |line| "          #{line}" }.join.chomp)
+  plan_args=(plan)
+  if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
+    if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+      echo "Expected a version tag, got: $RELEASE_TAG" >&2
+      exit 1
+    fi
+    git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}"
+    plan_args=(host --steps=create "--tag=$RELEASE_TAG")
+  fi
+  dist "${plan_args[@]}" --output-format=json > plan-dist-manifest.json
+BASH
+
+# Old tags may still plan macOS 14. Use a supported equivalent during recovery.
+runner = '    runs-on: ${{ matrix.runner }}'
+abort "missing native artifact runner" unless source.scan(runner).length == 1
+source = source.sub(runner, "    runs-on: ${{ matrix.runner == 'macos-14' && 'macos-15' || matrix.runner }}")
 
 # A GITHUB_TOKEN-created release cannot trigger release:published workflows.
 # Call verification and package publication directly, keeping both protections.

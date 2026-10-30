@@ -20,6 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ fromJson(inputs.plan || '{}').announcement_tag || github.ref }}
           persist-credentials: false
       - name: Install Linux credential-store dependencies
         run: |

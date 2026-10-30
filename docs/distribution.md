@@ -60,6 +60,12 @@ not trigger another `release: published` workflow. Package and smoke workflows
 also retain manual/release entry points for targeted retries and external releases.
 Release and registry reviewer protections remain enabled.
 
+macOS builders are pinned to supported macOS 15 images. If infrastructure breaks
+an existing tag before it is hosted, the release workflow can be dispatched from
+main with `-f tag=vMAJOR.MINOR.PATCH`. It checks out that immutable tag for every
+source build and Cargo publication while using the current workflow orchestration;
+there is no need to move or recreate a release tag.
+
 Linux packages declare their D-Bus runtime dependency for secure key storage;
 Nix also declares the Git/Python check tools, and CI builds the default Nix package
 rather than only evaluating the flake.

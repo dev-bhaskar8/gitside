@@ -36,6 +36,11 @@ pr-run-mode = "plan"
 
 allow-dirty = ["ci"]
 
+# Avoid retired cargo-dist default runner images.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
+x86_64-apple-darwin = "macos-15-intel"
+
 # CLI runtime dependencies are not inferred from Rust linkage on every host.
 [dist.dependencies.homebrew]
 git = { version = "*", stage = ["run"] }
