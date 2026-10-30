@@ -200,3 +200,15 @@ label changes in place. If publishing has no target remote but authenticated
 GitHub CLI support is available, that same action enters the repository publish
 flow. This adds the missing workflow without increasing the toolbar's control
 count.
+
+## Distribution boundary
+
+Cargo.toml defines the product version; Cargo.lock and Snap must agree, while
+Nix reads that version directly. The pinned cargo-dist configuration produces
+six native archives and generated installers with third-party notices. An exact
+regeneration check keeps the protected workflow reproducible after local patches.
+Hosted binaries are executed by a directly called platform workflow before
+registry publishers can run; package jobs verify canonical checksums before
+rendering downstream manifests or repackaging Linux binaries. External store
+review and submission status are tracked separately from artifact validity in
+[the distribution guide](distribution.md).

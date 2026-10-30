@@ -1,12 +1,17 @@
 name: Platform smoke tests
 
 on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Hosted release tag to validate before publication
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
         description: Release tag to test
         required: true
-        default: v0.1.2
         type: string
   release:
     types: [published]
@@ -15,11 +20,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: platform-smoke-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+  group: platform-smoke-${{ inputs.tag || github.event.release.tag_name }}
   cancel-in-progress: true
 
 env:
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+  RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
 
 jobs:
   runtime:
@@ -155,10 +160,17 @@ jobs:
               *.tar.xz)
                 tar_listing="$(tar -tJf "$archive")"
                 grep -Eq '(^|/)gitside$' <<<"$tar_listing"
+                # The adapted AI code and notices first ship in 0.2.0.
+                if [[ "$RELEASE_TAG" != v0.0.* && "$RELEASE_TAG" != v0.1.* ]]; then
+                  grep -Eq '(^|/)third-party-notices.md$' <<<"$tar_listing"
+                fi
                 ;;
               *.zip)
                 zip_listing="$(unzip -Z1 "$archive")"
                 grep -Eq '(^|/)gitside\.exe$' <<<"$zip_listing"
+                if [[ "$RELEASE_TAG" != v0.0.* && "$RELEASE_TAG" != v0.1.* ]]; then
+                  grep -Eq '(^|/)third-party-notices.md$' <<<"$zip_listing"
+                fi
                 ;;
             esac
           done

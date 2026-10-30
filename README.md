@@ -47,7 +47,9 @@ The npm package installs the matching native binary.
 cargo install gitside --locked
 ```
 
-Cargo builds Gitside from source and requires Rust 1.85 or newer.
+Cargo builds Gitside from source and requires Rust 1.85 or newer. Linux builds
+also need `pkg-config` and D-Bus development headers (`libdbus-1-dev` on Debian/
+Ubuntu, `dbus-devel` on Fedora).
 
 ### macOS and Linux
 
@@ -57,15 +59,6 @@ brew install dev-bhaskar8/tap/gitside
 ```
 ### Windows
 
-#### Chocolatey
-
-```powershell
-choco install gitside
-```
-
-The first Chocolatey version is currently in automated moderation review; use
-the direct Windows installer below until that review completes.
-
 #### Scoop
 
 ```powershell
@@ -73,15 +66,25 @@ scoop bucket add gitside https://github.com/dev-bhaskar8/scoop-bucket
 scoop install gitside
 ```
 
+### Arch Linux and Nix
+
+```sh
+# Arch User Repository
+paru -S gitside-bin
+
+# Run the source package with Nix
+nix run github:dev-bhaskar8/gitside
+```
+
 ### Direct downloads
 
 Provenance-attested macOS, Linux, and Windows installers, portable archives,
 `.deb`, and `.rpm` packages are available from
 [GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases/latest).
-Chocolatey’s first version is in automated moderation review; use the direct
-Windows installer until that review completes. See the
-[installation matrix](docs/distribution.md#installation-matrix) for package
-and architecture details.
+See the [installation matrix](docs/distribution.md#installation-matrix) for
+package versions, architecture support, and publication status. Chocolatey,
+WinGet, and Snap are configured distribution targets and have separate store
+approval or account requirements.
 
 Pass a repository path from anywhere:
 
@@ -102,19 +105,32 @@ gitside /path/to/repository
 ### AI commit drafts (optional)
 
 Click Generate or press `Ctrl+G` to choose Codex, Claude Code, OpenCode,
-Antigravity, Cursor, Grok Build, Pi, Muse Code, or another installed ACP agent. Gitside remembers your choice and returns an
-editable commit draft using T3 Code’s shared structured generation approach.
-The coding CLIs reuse their existing login and model default;
-installation detection does not verify your account.
+Antigravity, Cursor, Grok Build, Pi, Muse Code, or another installed ACP agent.
+Gitside remembers the choice and uses the CLI's saved login and default model.
+Installation detection checks the executable; provider requests check account access.
+The expanded integrations are part of 0.2.0; build this checkout to try changes
+before its packages are published.
 
 Antigravity has an integrated setup flow: choose it in Configure, select
 **Install Antigravity**, then **Sign in with Google**. Gitside installs a verified,
 compatible runtime, opens Google sign-in, and loads your account's models. Its
 saved sign-in is separate from `agy` and the IDE. No separate API key is required
-for these account-based routes. Cursor uses `cursor-agent` (`agent login`),
-Grok uses `grok login`, Pi uses `pi` then `/login`, and Muse uses `muse login`.
-Compatible ACP agents can be configured with an executable, arguments, and an
-optional advertised authentication method.
+for these account-based routes.
+
+| Provider | Sign in before generating |
+| --- | --- |
+| Codex | `codex login` |
+| Claude Code | `claude auth login` |
+| OpenCode | `opencode auth login` |
+| Cursor | Install Cursor CLI (`cursor-agent`), then `agent login` |
+| Grok Build | `grok login` |
+| Pi | Start `pi`, then `/login` |
+| Muse Code | `muse login` |
+| Antigravity | Configure → Install Antigravity → Sign in with Google |
+
+Other ACP agents accept an executable, arguments, and an optional advertised
+authentication method. Offline rules, trusted custom commands, and direct
+OpenAI, Anthropic, Gemini, OpenRouter, or compatible APIs remain available.
 
 Press `Y` to change the CLI, set an optional model or instructions, or explicitly
 choose offline rules or a direct API. Generation uses staged changes, falling
@@ -137,7 +153,9 @@ quit with `q`.
 | `lazygit` 0.63.1 | 0.27 s | 30 MiB | 18.6 MB | 5/5 clean exits |
 | `tig` 2.6.1 | 0.15 s | 3.5 MiB | 0.7 MB | 5/5 clean exits |
 
-This is an interactive launch comparison, not a full-history stress test.
+These are historical 0.1.2 measurements from August 3, 2026; they have not been
+rerun for the 0.2.0 AI changes. This is an interactive launch comparison, not a
+full-history stress test.
 Gitside loads a bounded history page initially and fetches more commits as you
 scroll, so a 900k-commit repository should be benchmarked separately before
 drawing conclusions about large-repository performance.
@@ -190,10 +208,21 @@ Cryptocurrency transfers cannot be reversed. See [support details](docs/support.
 
 ## Development
 
+Build and install the current checkout locally:
+
+```sh
+cargo install --locked --path . --force
+```
+
+Before preparing a release:
+
 ```sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo test --locked
+scripts/check-release-metadata.sh
+scripts/test-packaging.sh
+scripts/check-release-workflow.sh
 ```
 
 The architecture keeps Git and AI work behind asynchronous adapters. The TUI

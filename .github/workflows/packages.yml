@@ -1,6 +1,12 @@
 name: Publish package managers
 
 on:
+  workflow_call:
+    inputs:
+      plan:
+        description: Serialized cargo-dist release plan
+        required: true
+        type: string
   release:
     types: [published]
   workflow_dispatch:
@@ -31,8 +37,11 @@ permissions:
   attestations: write
   id-token: write
 
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag || fromJson(inputs.plan || '{}').announcement_tag }}
+
 concurrency:
-  group: package-managers-${{ github.event.release.tag_name || inputs.tag }}
+  group: package-managers-${{ github.event.release.tag_name || inputs.tag || fromJson(inputs.plan || '{}').announcement_tag }}
   cancel-in-progress: false
 
 jobs:
@@ -41,7 +50,6 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
       SOURCE_REF: ${{ inputs.source_ref || '' }}
     steps:
       - uses: actions/checkout@v7
@@ -49,7 +57,7 @@ jobs:
           # A manual retry can rebuild package metadata from a corrective fix
           # on main while still attaching it to the selected stable release.
           # Release events keep using the immutable tag.
-          ref: ${{ inputs.source_ref || github.event.release.tag_name || inputs.tag }}
+          ref: ${{ inputs.source_ref || env.RELEASE_TAG }}
           persist-credentials: false
       - name: Validate release version
         shell: bash
@@ -69,6 +77,8 @@ jobs:
             --pattern 'sha256.sum' \
             --pattern 'gitside-*-unknown-linux-gnu.tar.xz' \
             --pattern 'gitside-*-pc-windows-msvc.zip'
+      - name: Verify canonical release assets
+        run: scripts/verify-release-assets.sh target/package-assets
       - name: Install nfpm
         env:
           GOBIN: ${{ runner.temp }}/bin
@@ -112,7 +122,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: package-publication-${{ github.event.release.tag_name || inputs.tag }}
+          name: package-publication-${{ env.RELEASE_TAG }}
           path: package-publication
       - uses: actions/checkout@v7
         with:
@@ -126,7 +136,7 @@ jobs:
           git config user.name dev-bhaskar8
           git config user.email vaas.ygg@gmail.com
           git add bucket/gitside.json
-          git diff --cached --quiet || git commit -m "gitside ${{ github.event.release.tag_name || inputs.tag }}"
+          git diff --cached --quiet || git commit -m "gitside ${{ env.RELEASE_TAG }}"
           git push
 
   chocolatey:
@@ -137,7 +147,6 @@ jobs:
     environment: registry
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -162,7 +171,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: package-publication-${{ github.event.release.tag_name || inputs.tag }}
+          name: package-publication-${{ env.RELEASE_TAG }}
           path: package-publication
       - name: Configure AUR SSH access
         env:
@@ -182,7 +191,7 @@ jobs:
           git config user.name dev-bhaskar8
           git config user.email vaas.ygg@gmail.com
           git add PKGBUILD .SRCINFO
-          git diff --cached --quiet || git commit -m "gitside ${{ github.event.release.tag_name || inputs.tag }}"
+          git diff --cached --quiet || git commit -m "gitside ${{ env.RELEASE_TAG }}"
           git push
 
   winget:
@@ -193,7 +202,6 @@ jobs:
     environment: registry
     env:
       GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
-      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -210,15 +218,19 @@ jobs:
           cd winget-pkgs
           git sparse-checkout init --cone
           git sparse-checkout set manifests/d/DevBhaskar8/Gitside
-          git checkout master
-          git checkout -B "$branch"
-          rm -rf manifests/d/DevBhaskar8/Gitside
-          mkdir -p manifests/d/DevBhaskar8
-          cp -R ../package-publication/manifests/winget/d/DevBhaskar8/Gitside manifests/d/DevBhaskar8/
+          git remote add upstream https://github.com/microsoft/winget-pkgs.git
+          git fetch --depth=1 upstream master
+          git checkout -B "$branch" FETCH_HEAD
+          package_dir=manifests/d/DevBhaskar8/Gitside
+          mkdir -p "$package_dir"
+          rm -rf "${package_dir:?}/${version:?}"
+          cp -R "../package-publication/manifests/winget/d/DevBhaskar8/Gitside/$version" "$package_dir/"
           git config user.name dev-bhaskar8
           git config user.email vaas.ygg@gmail.com
           git add manifests/d/DevBhaskar8/Gitside
-          git commit -m "New package: DevBhaskar8.Gitside version $version" || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Add DevBhaskar8.Gitside version $version"
+          fi
           git push --force-with-lease origin "$branch"
           existing=$(gh api --method GET repos/microsoft/winget-pkgs/pulls \
             -f head="dev-bhaskar8:$branch" -f state=open \
@@ -248,12 +260,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.source_ref || github.event.release.tag_name || inputs.tag }}
+          ref: ${{ inputs.source_ref || env.RELEASE_TAG }}
           persist-credentials: false
-      - name: Ensure Snap DBus build dependency
+      - name: Verify Snap source version
         run: |
-          grep -qxF '      - libdbus-1-dev' snap/snapcraft.yaml || \
-            sed -i '/      - pkg-config/a\      - libdbus-1-dev' snap/snapcraft.yaml
+          version=$(cargo metadata --locked --no-deps --format-version=1 | jq -r '.packages[] | select(.name == "gitside") | .version')
+          test "$RELEASE_TAG" = "v$version"
+          scripts/check-release-metadata.sh
       - name: Build snap
         id: build
         uses: snapcore/action-build@b391f430cb2650fd359ed4d2cfe88b2c481800e0

@@ -6,7 +6,7 @@ pkgdesc='VS Code-inspired source control panel for the terminal'
 arch=('x86_64' 'aarch64')
 url='https://dev-bhaskar8.github.io/gitside/'
 license=('MIT')
-depends=('git')
+depends=('git' 'dbus')
 provides=('gitside')
 conflicts=('gitside')
 source_x86_64=("gitside-${pkgver}-x86_64.tar.xz::https://github.com/dev-bhaskar8/gitside/releases/download/v${pkgver}/gitside-x86_64-unknown-linux-gnu.tar.xz")
@@ -24,5 +24,13 @@ package() {
   local archive_root="$srcdir/gitside-$target"
   install -Dm755 "$archive_root/gitside" "$pkgdir/usr/bin/gitside"
   install -Dm644 "$archive_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  if [ -f "$archive_root/third-party-notices.md" ]; then
+    install -Dm644 "$archive_root/third-party-notices.md" "$pkgdir/usr/share/licenses/$pkgname/third-party-notices.md"
+  else
+    case "$pkgver" in
+      0.0.*|0.1.*) ;; # Older releases predate the adapted AI integrations.
+      *) printf 'Missing third-party-notices.md in release archive\n' >&2; return 1 ;;
+    esac
+  fi
   install -Dm644 "$archive_root/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

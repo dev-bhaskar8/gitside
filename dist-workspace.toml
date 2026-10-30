@@ -22,13 +22,21 @@ source-tarball = true
 cargo-cyclonedx = true
 # Emit individual and unified SHA-256 checksums.
 checksum = "sha256"
+# Carry the notices for adapted OpenCode/T3 code in every native archive.
+include = ["docs/third-party-notices.md"]
 # Attach GitHub's OIDC-backed provenance to release artifacts.
 github-attestations = true
 # Package-manager publications happen only after protected hosting succeeds.
-publish-jobs = ["homebrew", "npm", "./publish-crate"]
+publish-jobs = ["homebrew", "npm", "./publish-crate", "./packages"]
 tap = "dev-bhaskar8/homebrew-tap"
 publish-prereleases = false
 pr-run-mode = "plan"
 # The generated workflow is deterministically patched with protected environments
 # and current npm provenance settings by scripts/patch-release-workflow.sh.
+
 allow-dirty = ["ci"]
+
+# CLI runtime dependencies are not inferred from Rust linkage on every host.
+[dist.dependencies.homebrew]
+git = { version = "*", stage = ["run"] }
+dbus = { version = "*", stage = ["run"], targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] }

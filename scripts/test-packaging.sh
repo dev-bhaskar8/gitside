@@ -13,6 +13,8 @@ gitside-x86_64-unknown-linux-gnu.tar.xz
 gitside-aarch64-unknown-linux-gnu.tar.xz'
 
 : > "$assets/sha256.sum"
+version=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name == "gitside") | .version')
+tag=v$version
 index=1
 printf '%s\n' "$artifacts" | while IFS= read -r artifact; do
   checksum=$(printf '%064d' "$index")
@@ -20,8 +22,8 @@ printf '%s\n' "$artifacts" | while IFS= read -r artifact; do
   index=$((index + 1))
 done
 
-RELEASE_DATE=2026-08-02 scripts/render-package-manifests.sh v0.1.2 "$assets" "$output"
-if scripts/render-package-manifests.sh v0.1.2-rc.1 "$assets" "$output/prerelease" >/dev/null 2>&1; then
+RELEASE_DATE=2026-10-31 scripts/render-package-manifests.sh "$tag" "$assets" "$output"
+if scripts/render-package-manifests.sh "$tag-rc.1" "$assets" "$output/prerelease" >/dev/null 2>&1; then
   echo 'prerelease tag unexpectedly passed the stable-only gate' >&2
   exit 1
 fi
@@ -31,9 +33,9 @@ if rg -n '__[A-Z0-9_]+__' "$output"; then
   exit 1
 fi
 
-jq -e '.version == "0.1.2" and .bin == "gitside.exe"' "$output/scoop/gitside.json" >/dev/null
+jq -e --arg version "$version" '.version == $version and .bin == "gitside.exe"' "$output/scoop/gitside.json" >/dev/null
 ruby -e 'require "yaml"; ARGV.each { |path| Psych.parse_file(path) }' \
-  "$output"/winget/d/DevBhaskar8/Gitside/0.1.2/*.yaml
+  "$output"/winget/d/DevBhaskar8/Gitside/"$version"/*.yaml
 test -s "$output/chocolatey/gitside.nuspec"
 rg -q '<packageSourceUrl>https://github.com/dev-bhaskar8/gitside/tree/main/packaging/chocolatey</packageSourceUrl>' \
   "$output/chocolatey/gitside.nuspec"
@@ -51,7 +53,7 @@ aur_src=$work_dir/aur-src
 aur_pkg=$work_dir/aur-pkg
 mkdir -p "$aur_src/gitside-x86_64-unknown-linux-gnu" "$aur_pkg"
 printf '#!/bin/sh\nexit 0\n' > "$aur_src/gitside-x86_64-unknown-linux-gnu/gitside"
-cp LICENSE README.md "$aur_src/gitside-x86_64-unknown-linux-gnu/"
+cp LICENSE README.md docs/third-party-notices.md "$aur_src/gitside-x86_64-unknown-linux-gnu/"
 (
   CARCH=x86_64
   srcdir=$aur_src
@@ -79,5 +81,64 @@ cp LICENSE README.md "$aur_src/gitside-x86_64-unknown-linux-gnu/"
 test -x "$aur_pkg/usr/bin/gitside"
 test -s "$aur_pkg/usr/share/licenses/gitside-bin/LICENSE"
 test -s "$aur_pkg/usr/share/doc/gitside-bin/README.md"
+test -s "$aur_pkg/usr/share/licenses/gitside-bin/third-party-notices.md"
+
+# Exercise the checksum gate against real file bytes, including corruption.
+verified=$work_dir/verified
+mkdir -p "$verified"
+: > "$verified/sha256.sum"
+while IFS= read -r artifact; do
+  printf 'release fixture for %s\n' "$artifact" > "$verified/$artifact"
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$verified/$artifact" | awk '{print $1}')
+  else
+    actual=$(shasum -a 256 "$verified/$artifact" | awk '{print $1}')
+  fi
+  printf '%s  %s\n' "$actual" "$artifact" >> "$verified/sha256.sum"
+done <<< "$artifacts"
+scripts/verify-release-assets.sh "$verified"
+printf 'corruption' >> "$verified/gitside-x86_64-unknown-linux-gnu.tar.xz"
+if scripts/verify-release-assets.sh "$verified" >/dev/null 2>&1; then
+  echo 'corrupted native asset passed verification' >&2
+  exit 1
+fi
+duplicate_checksum=$(head -n 1 "$assets/sha256.sum")
+printf '%s\n' "$duplicate_checksum" >> "$assets/sha256.sum"
+if scripts/render-package-manifests.sh "$tag" "$assets" "$output/duplicate" >/dev/null 2>&1; then
+  echo 'duplicate checksum passed manifest rendering' >&2
+  exit 1
+fi
+
+# Build real package containers from disposable fixture binaries. Nothing from
+# this directory is a distributable release artifact.
+if command -v nfpm >/dev/null 2>&1; then
+  linux_assets=$work_dir/linux-assets
+  mkdir -p "$linux_assets"
+  for arch in x86_64 aarch64; do
+    archive_root=gitside-$arch-unknown-linux-gnu
+    mkdir -p "$work_dir/$archive_root"
+    printf '#!/bin/sh\nexit 0\n' > "$work_dir/$archive_root/gitside"
+    chmod 755 "$work_dir/$archive_root/gitside"
+    cp LICENSE README.md docs/third-party-notices.md "$work_dir/$archive_root/"
+    tar -cJf "$linux_assets/$archive_root.tar.xz" -C "$work_dir" "$archive_root"
+  done
+  scripts/build-linux-packages.sh "$tag" "$linux_assets" "$work_dir/native-packages"
+  for arch in amd64 arm64; do
+    deb=$work_dir/native-packages/gitside_${version}_$arch.deb
+    members=$(ar -t "$deb")
+    control=$(printf '%s\n' "$members" | grep '^control.tar.')
+    data=$(printf '%s\n' "$members" | grep '^data.tar.')
+    ar -p "$deb" "$control" > "$work_dir/$arch-$control"
+    ar -p "$deb" "$data" > "$work_dir/$arch-$data"
+    tar -xOf "$work_dir/$arch-$control" ./control > "$work_dir/$arch-control"
+    grep -q "^Version: $version$" "$work_dir/$arch-control"
+    grep -q "^Architecture: $arch$" "$work_dir/$arch-control"
+    grep -q '^Depends:.*libdbus-1-3' "$work_dir/$arch-control"
+    listing=$(tar -tf "$work_dir/$arch-$data")
+    grep -Eq '(^|/)usr/share/licenses/gitside/third-party-notices.md$' <<< "$listing"
+  done
+  test -s "$work_dir/native-packages/gitside-$version-1.x86_64.rpm"
+  test -s "$work_dir/native-packages/gitside-$version-1.aarch64.rpm"
+fi
 
 printf 'Package templates rendered and validated successfully.\n'

@@ -11,6 +11,15 @@ homepage: https://dev-bhaskar8.github.io/gitside/
 license: MIT
 depends:
   - git
+overrides:
+  deb:
+    depends:
+      - git
+      - libdbus-1-3
+  rpm:
+    depends:
+      - git
+      - dbus-libs
 contents:
   - src: __BINARY__
     dst: /usr/bin/gitside
@@ -18,5 +27,7 @@ contents:
       mode: 0755
   - src: LICENSE
     dst: /usr/share/licenses/gitside/LICENSE
+  - src: docs/third-party-notices.md
+    dst: /usr/share/licenses/gitside/third-party-notices.md
   - src: README.md
     dst: /usr/share/doc/gitside/README.md

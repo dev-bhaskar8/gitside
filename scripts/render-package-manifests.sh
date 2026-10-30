@@ -17,8 +17,9 @@ test -f "$checksums"
 checksum() {
   artifact=$1
   value=$(awk -v artifact="$artifact" '$2 == artifact || $2 == "*" artifact { print $1 }' "$checksums")
-  test -n "$value" || {
-    echo "missing checksum for $artifact" >&2
+  printf '%s\n' "$value" | grep -Eq '^[a-fA-F0-9]{64}$' &&
+    test "$(printf '%s\n' "$value" | wc -l | tr -d ' ')" = 1 || {
+    echo "missing, duplicate, or invalid checksum for $artifact" >&2
     exit 1
   }
   printf '%s' "$value"

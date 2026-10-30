@@ -18,12 +18,19 @@ cargo build
 cargo run -- /path/to/a/test/repository
 ```
 
+Linux source builds need the D-Bus development headers used by secure API-key
+storage. On Debian/Ubuntu, install `pkg-config libdbus-1-dev`; on Fedora, install
+`pkgconf-pkg-config dbus-devel`. Git and Python 3 are needed by integration tests.
+
 Before opening a pull request, run:
 
 ```sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo test --locked
+scripts/check-release-metadata.sh
+scripts/test-packaging.sh
+scripts/check-release-workflow.sh
 ```
 
 Pull requests should explain the user-visible problem, the chosen interaction,
@@ -40,3 +47,10 @@ changes when possible.
 
 By contributing, you agree that your contribution is licensed under the MIT
 License included with this repository.
+
+## Packaging and releases
+
+Read [Packages and releases](docs/distribution.md) before preparing a release.
+Every native archive must carry the third-party notices, and all package versions
+must match Cargo.toml. Release builds verify six target binaries before protected
+registry publication. Store reviews are tracked separately from successful builds.

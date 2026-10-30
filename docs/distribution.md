@@ -1,97 +1,126 @@
 # Packages and releases
 
-GitHub Releases is the source of truth for every Gitside package. A stable tag
-builds the six native targets, records SHA-256 checksums, generates a CycloneDX
-SBOM, and attaches GitHub OIDC provenance before any registry publication runs.
+GitHub Releases hosts Gitside's native artifacts and checksums. The same tagged
+source feeds Cargo, npm, Homebrew, Scoop, AUR, Windows package manifests, native
+Linux packages, Snap, and the Nix source package. Store availability is tracked
+separately from successful builds.
 
 ## Installation matrix
 
-The commands below are the currently available installation channels. Chocolatey
-is published but its first version is still in moderation review; use the direct
-Windows installer until it is accepted.
+Public channel state was checked on October 31, 2026. Version 0.2.0 is prepared
+in this checkout and has not been published yet.
 
-| Channel | Command | Platforms |
+| Channel | Install | Verified public state |
 | --- | --- | --- |
-| Homebrew | `brew install dev-bhaskar8/tap/gitside` | macOS, Linux |
-| Cargo | `cargo install gitside --locked` | Rust-supported systems |
-| Scoop | `scoop bucket add gitside https://github.com/dev-bhaskar8/scoop-bucket && scoop install gitside` | Windows x64, ARM64 |
-| Chocolatey | `choco install gitside` | Windows x64, ARM64 (pending first-version review) |
-| npm | `npm install --global gitside` | macOS, Linux, Windows |
-| Nix | `nix run github:dev-bhaskar8/gitside` | macOS, Linux |
-| Direct | Download an installer or archive from [GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases) | macOS, Linux, Windows |
+| Homebrew | `brew install dev-bhaskar8/tap/gitside` | 0.1.2; macOS and Linux, x64/ARM64 |
+| Cargo | `cargo install gitside --locked` | 0.1.2; builds from source with Rust 1.85+ |
+| npm | `npm install --global gitside` | 0.1.2; downloads the matching native binary |
+| Scoop | `scoop bucket add gitside https://github.com/dev-bhaskar8/scoop-bucket`, then `scoop install gitside` | 0.1.2; Windows x64/ARM64 |
+| AUR | `paru -S gitside-bin` | 0.1.0-1; last update was blocked by AUR maintenance |
+| Nix | `nix run github:dev-bhaskar8/gitside` | Source package; version follows Cargo.toml; CI checks it |
+| Direct | [GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases/latest) | 0.1.2; six archives, shell/PowerShell installers, .deb/.rpm |
 
-The npm package is a thin native-binary installer, not a JavaScript rewrite.
-Debian and RPM packages are attached directly to each release. PPA, COPR, and
-official operating-system repositories are submitted only after the first
-stable package has been exercised in the independent channels above.
+The npm package is a native-binary installer. AUR, Nix, and the Homebrew tap are
+independent channels, not inclusion in Arch, Nixpkgs, or Homebrew's core repositories.
 
-## Supported release targets
+### Configured channels awaiting publication or review
 
-- Apple silicon and Intel macOS
-- GNU Linux on x86-64 and ARM64
-- Windows MSVC on x86-64 and ARM64
+- **Chocolatey:** no public package was returned by its feed during the audit.
+  The last 0.1.2 push returned HTTP 403. Check package ownership, credentials and
+  the original submission's moderation state before retrying a newer version.
+- **Snap:** no public store release is available. The previous upload reported
+  that an earlier upload was still awaiting review. Resolve that queue in the
+  publisher dashboard; classic confinement also needs store approval.
+- **WinGet:** the 0.1.0 and 0.1.2 submissions closed as stale without merging.
+  The workflow prepares a fresh version from Microsoft's current default branch
+  and preserves any existing versions. Availability requires upstream acceptance.
 
-Other platforms can install from source with `cargo install gitside --locked`.
+See the [0.2.0 readiness record](release-0.2.0.md) for evidence and next actions.
+PPA, COPR, and other official OS repositories are not currently configured.
 
 ## Release architecture
 
-1. `cargo-dist` builds immutable native artifacts from a `vMAJOR.MINOR.PATCH` tag.
-2. The protected `release` environment requires approval before hosting them.
-3. GitHub records checksums, dependency SBOMs, and build provenance.
-4. The protected `registry` environment publishes crates.io, npm, Homebrew,
-   Scoop, and Chocolatey metadata from those same artifacts.
-5. `.deb` and `.rpm` packages and rendered registry manifests are attached to
-   the release so every downstream package can be audited or reproduced.
+The six native targets are Apple Silicon/Intel macOS, GNU Linux x64/ARM64, and
+Windows MSVC x64/ARM64. Other Rust-supported hosts can build from source.
 
-The source repository never stores registry credentials. GitHub environment
-secrets provide the minimum token required by each publisher.
+1. A stable `vMAJOR.MINOR.PATCH` tag starts cargo-dist 0.32.0.
+2. Local and global build jobs produce native archives, installers, SHA-256
+   checksums, a CycloneDX SBOM, and GitHub provenance attestations.
+3. The protected `release` environment gates hosting on GitHub Releases.
+4. A directly called reusable workflow downloads and executes all six hosted
+   binaries, checks their versions/checksums, and verifies archive notices.
+5. After verification, the protected `registry` environment gates Cargo, npm,
+   Homebrew, Scoop, AUR, Chocolatey, Snap and WinGet publication/submission jobs.
+6. The package workflow verifies its downloaded native archives, builds .deb/.rpm
+   packages, renders registry manifests, and attaches packages and attestations.
+   A Nix source build is checked in CI; the website deploys from main separately.
 
-## Maintainer release checklist
+The direct workflow calls matter: a release created using `GITHUB_TOKEN` does
+not trigger another `release: published` workflow. Package and smoke workflows
+also retain manual/release entry points for targeted retries and external releases.
+Release and registry reviewer protections remain enabled.
 
-The core release can publish after reserving `gitside` on crates.io and npm,
-creating the Homebrew tap and Scoop bucket, and adding these secrets to the
-`registry` GitHub environment:
+Linux packages declare their D-Bus runtime dependency for secure key storage;
+Nix also declares the Git/Python check tools, and CI builds the default Nix package
+rather than only evaluating the flake.
 
-- `CARGO_REGISTRY_TOKEN`
-- `NPM_TOKEN`
-- `HOMEBREW_TAP_TOKEN`
-- `SCOOP_BUCKET_TOKEN`
+Native archives and package installers include `third-party-notices.md` for the
+adapted OpenCode and T3 Code code. Cargo includes it in the source package; AUR,
+Debian/RPM, Nix, and Snap install it in their license directories. Google's
+Antigravity runtime is downloaded only when requested by an end user and is
+not bundled in any Gitside package.
 
-Chocolatey requires a protected registry credential. Add it and enable its
-repository Actions variable:
+## Credentials and channel switches
+
+Registry credentials live in the protected `registry` environment, never in source.
 
 | Publisher | Environment secret | Repository variable |
 | --- | --- | --- |
+| Cargo | `CARGO_REGISTRY_TOKEN` | — |
+| npm | `NPM_TOKEN` | — |
+| Homebrew | `HOMEBREW_TAP_TOKEN` | — |
+| Scoop | `SCOOP_BUCKET_TOKEN` | — |
+| WinGet | `WINGET_TOKEN` | — |
+| AUR | `AUR_SSH_PRIVATE_KEY` | `ENABLE_AUR=true` |
 | Chocolatey | `CHOCOLATEY_API_KEY` | `ENABLE_CHOCOLATEY=true` |
+| Snap | `SNAPCRAFT_STORE_CREDENTIALS` | `ENABLE_SNAP=true` |
 
-For example, after configuring Chocolatey:
+The audit confirmed these secret names and switch values, without reading secret
+values. Their presence does not prove that each store will accept a submission.
+
+## Maintainer release checklist
+
+1. Update Cargo.toml, Cargo.lock, the Snap version and CHANGELOG.md. The Nix
+   version is derived from Cargo.toml. Keep benchmark measurements dated rather
+   than relabelling older measurements as the new release.
+2. Update README.md, website documentation, provider setup and release notes.
+3. Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+   `cargo test --locked`, and `cargo package --locked`.
+4. Run `scripts/check-release-metadata.sh`, `scripts/test-packaging.sh`,
+   `shellcheck scripts/*.sh`, and
+   `SHELLCHECK_OPTS='--exclude=SC2001,SC2086,SC2129' actionlint`.
+5. Run `scripts/check-release-workflow.sh` and inspect
+   `dist plan --tag vMAJOR.MINOR.PATCH --output-format=json`.
+6. Commit locally, review the candidate, and obtain explicit remote-push
+   authorization before publishing the branch/tag when working under AGENTS.md.
+7. Publish the stable tag. Review and approve the protected `release` deployment;
+   inspect the hosted artifacts and six native verification jobs, then approve
+   `registry` publication. Do not disable either protection to unblock a release.
+8. Verify each public channel before announcing that it is available. A successful
+   store submission can still require moderation or a separate upstream merge.
+
+## Targeted retries
+
+The manual package workflow reuses the selected GitHub release's canonical native
+artifacts. `source_ref` selects corrected packaging metadata; omitting it uses the
+tagged source. For example, after the candidate has been published:
 
 ```sh
-gh variable set ENABLE_CHOCOLATEY --body true
-gh workflow run packages.yml --ref main -f tag=v0.1.2 -f source_ref=main -f target=all
+gh workflow run packages.yml --ref main \
+  -f tag=v0.2.0 -f source_ref=main -f target=aur
 ```
 
-The manual run safely reuses the existing release. Scoop publication is
-idempotent.
-
-When a package's first version is still in Chocolatey moderation, publish that
-same version again after fixing it instead of trying to push a newer version:
-
-```sh
-gh workflow run packages.yml --ref main -f tag=v0.1.0 -f source_ref=main -f target=chocolatey
-```
-
-Then:
-
-1. Update `CHANGELOG.md` and keep all published package versions identical.
-2. Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-   `cargo test --locked`, `cargo package --locked`, and
-   `scripts/test-packaging.sh`.
-3. Run `scripts/check-release-workflow.sh` to reproduce and compare the
-   protected release workflow.
-4. Push `vMAJOR.MINOR.PATCH`. Review the release plan and approve `release`.
-5. Inspect the hosted checksums and attestations, then approve `registry`.
-6. Verify each install command in the table before announcing the release.
-
-Publishing is intentionally not automatic from `main`: a stable tag and two
-explicit environment approvals are required.
+Other targets are `scoop`, `chocolatey`, `winget`, `snap`, and `all`. Resolve external
+store blockers before retrying them. Scoop and AUR updates skip an unchanged
+manifest; WinGet submissions retain prior versions. Do not treat a submission
+attempt as a successful public release.

@@ -324,11 +324,22 @@ jobs:
           fi
           gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" "${prerelease_args[@]}" --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
 
+  verify-release:
+    needs:
+      - plan
+      - host
+    uses: ./.github/workflows/platform-smoke.yml
+    with:
+      tag: ${{ needs.plan.outputs.tag }}
+    permissions:
+      contents: read
+
   publish-homebrew-formula:
     environment: registry
     needs:
       - plan
       - host
+      - verify-release
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -367,7 +378,7 @@ jobs:
             brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict --fix "Formula/${filename}" || true
 
             git add "Formula/${filename}"
-            git commit -m "${name} ${version}"
+            git diff --cached --quiet || git commit -m "${name} ${version}"
           done
           git push
 
@@ -379,6 +390,7 @@ jobs:
     needs:
       - plan
       - host
+      - verify-release
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -407,6 +419,7 @@ jobs:
     needs:
       - plan
       - host
+      - verify-release
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
     uses: ./.github/workflows/publish-crate.yml
     with:
@@ -418,6 +431,23 @@ jobs:
       "id-token": "write"
       "packages": "write"
 
+  custom-packages:
+    needs:
+      - plan
+      - host
+      - verify-release
+    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
+    uses: ./.github/workflows/packages.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit
+    # publish jobs get escalated permissions
+    permissions:
+      "contents": "write"
+      "id-token": "write"
+      attestations: write
+      "packages": "write"
+
   announce:
     needs:
       - plan
@@ -425,10 +455,11 @@ jobs:
       - publish-homebrew-formula
       - publish-npm
       - custom-publish-crate
+      - custom-packages
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' && (needs.publish-homebrew-formula.result == 'skipped' || needs.publish-homebrew-formula.result == 'success') && (needs.publish-npm.result == 'skipped' || needs.publish-npm.result == 'success') && (needs.custom-publish-crate.result == 'skipped' || needs.custom-publish-crate.result == 'success') }}
+    if: ${{ always() && needs.host.result == 'success' && (needs.publish-homebrew-formula.result == 'skipped' || needs.publish-homebrew-formula.result == 'success') && (needs.publish-npm.result == 'skipped' || needs.publish-npm.result == 'success') && (needs.custom-publish-crate.result == 'skipped' || needs.custom-publish-crate.result == 'success') && (needs.custom-packages.result == 'skipped' || needs.custom-packages.result == 'success') }}
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
