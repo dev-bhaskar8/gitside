@@ -42,7 +42,7 @@ SOFTWARE.
 The structured commit-generation prompt, schema, cleanup, Codex/Claude invocation
 patterns, and dedicated Antigravity helper are adapted to Rust from T3 Code at
 commit `bf270e74e4c6144fc65648186e879d8bfdb411ed`. The ACP transport is implemented for this app’s single-request
-flow; this does not import T3’s full chat orchestrator or runtime installer.
+flow; this does not import T3’s full chat orchestrator.
 
 - [textGenerationPrompts.ts](https://github.com/pingdotgg/t3code/blob/bf270e74e4c6144fc65648186e879d8bfdb411ed/packages/provider-core/src/server/textGenerationPrompts.ts)
 - [textGenerationOperations.ts](https://github.com/pingdotgg/t3code/blob/bf270e74e4c6144fc65648186e879d8bfdb411ed/packages/provider-core/src/server/textGenerationOperations.ts)
@@ -67,6 +67,16 @@ Additional provider flows were reviewed and ported from commit
 Cursor uses its documented native ACP interface instead of T3's JavaScript SDK.
 The generic ACP adapter implements installed-agent compatibility; it does not
 copy T3's registry distribution or provider maintenance machinery.
+
+The managed installer, compatible release metadata, and connection-flow design
+also adapt these sources at `9b1d351ba0f63f527f884ffb3f2e394f50388764`:
+
+- [AntigravityInstallation.ts](https://github.com/pingdotgg/t3code/blob/9b1d351ba0f63f527f884ffb3f2e394f50388764/apps/server/src/provider/AntigravityInstallation.ts)
+- [antigravityRelease.ts](https://github.com/pingdotgg/t3code/blob/9b1d351ba0f63f527f884ffb3f2e394f50388764/apps/server/src/provider/antigravityRelease.ts)
+- [AntigravityAuth.ts](https://github.com/pingdotgg/t3code/blob/9b1d351ba0f63f527f884ffb3f2e394f50388764/apps/server/src/provider/AntigravityAuth.ts)
+
+The Google runtime itself is proprietary, downloaded directly from Google when
+requested, and remains subject to Google's terms. No Google binary is vendored.
 
 MIT License
 

@@ -39,6 +39,7 @@ ratatui = "0.29"
 secrecy = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 shell-words = "1.1"
 tempfile = "3.16"
 tokio = { version = "1.43", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
@@ -48,6 +49,7 @@ unicode-width = "0.2"
 unicode-segmentation = "1.12"
 uuid = { version = "1", features = ["v7"] }
 zeroize = "1.8"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

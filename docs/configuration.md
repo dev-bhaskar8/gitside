@@ -126,7 +126,7 @@ All eight named providers in [T3 Code's provider list](https://github.com/pingdo
 | Codex | `codex` | `codex login` |
 | Claude Code | `claude` | `claude auth login` |
 | OpenCode | `opencode` | `opencode auth login` |
-| Antigravity | Official Google ACP runtime | `gitside antigravity-login`, after runtime setup below |
+| Antigravity | Managed official Google ACP runtime | Configure → Install Antigravity → Sign in with Google |
 | Cursor | `cursor-agent` | `agent login` |
 | Grok Build | `grok` | `grok login` |
 | Pi | `pi` | Start `pi`, then `/login` |
@@ -179,8 +179,9 @@ The adapter rejects tools, approvals, and questions, so an agent that requires
 those for a text-only request will fail with a clear error. This is compatibility
 with installed ACP agents, not T3's registry installer or a claim that every
 registry entry has been tested. T3 itself currently disables commit generation
-for generic registry agents. Gitside does not install/update provider runtimes,
-manage their accounts, or import T3's chat/session orchestration.
+for generic registry agents. Gitside manages Antigravity's runtime and personal
+Google sign-in; other providers use their own installers and account setup.
+T3's full chat/session orchestration is outside this commit-generation flow.
 
 For a custom generator, set `provider = "custom"` and `command` to a trusted
 command line. It runs with your user permissions, receives the generation
@@ -211,21 +212,41 @@ Antigravity uses Google’s official **ACP runtime**, as in T3 Code. Its sign-in
 separate from the Antigravity IDE and `agy` CLI; Gitside does not copy their tokens.
 Gitside supplies an ACP v1 client using its own client identity.
 
-1. Download your platform’s archive from the
-   [official ACP Registry entry](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json).
-   Verify its SHA-256 using the registry value and extract the complete archive;
-   keep `agy_acp_server.par` (Windows: `agy_acp_server.exe`) and the
-   `localharness_external` helper together. Make both files executable on macOS
-   and Linux.
-2. In `Y` → Agent → Configure, choose **Antigravity**, enter the ACP executable’s
-   absolute path, and save. You can also place the executable on `PATH`.
-3. From a normal terminal, run `gitside antigravity-login`. Open the Google link
-   printed by that command and wait for the success message. If you use a custom
-   config file, run `gitside --config /path/config.toml antigravity-login`.
-4. Generate a commit draft. Leave the model blank for the runtime default, or
-   enter a model ID advertised to Gitside by the runtime. Availability depends on
-   Google’s account and client eligibility. Gitside reports unavailable
-   selections instead of silently switching models.
+1. Open **Y → Agent → Configure**, choose **Antigravity**, and continue to
+   **Connect Antigravity**. First-time Generate also routes here if setup is needed.
+2. Select **Install Antigravity**. The managed installer downloads the pinned
+   Google runtime for your platform, checks the exact archive size and SHA-256,
+   extracts the matching executable/harness pair, validates native ACP startup,
+   and activates it atomically. Existing completed installs remain available if
+   installation fails. This follows T3 Code's installation strategy and its
+   compatible release pin (currently 1.4.1); it does not blindly install the
+   registry's newest version. No executable path or PATH change is needed.
+3. Choose **Sign in with Google** for an existing runtime. A new installation
+   continues directly to sign-in. The browser opens automatically; if it fails,
+   choose **Open browser** or open the displayed link manually. Stay in setup
+   until Gitside confirms account access. Escape or Back cancels the owned
+   setup process; failed sign-in can be retried there.
+4. Select an advertised model with Up/Down, type its ID, or leave it blank for
+   the account default. Save setup. If setup started from Generate, a successful
+   connection saves the choice and resumes generation with the default model.
+   The Google runtime retains the login for future requests. Expired sign-in
+   returns to this connection step, preserving the current commit draft.
+
+The runtime is stored in the platform local data directory under
+`gitside/runtimes/antigravity/versions/<archive-sha256>`, with an atomic active
+release record. Only a completed, correctly sized executable/harness pair is
+discovered as installed. The credential profile is stored separately.
+
+For terminal setup, `gitside antigravity-install` installs the managed runtime
+and `gitside antigravity-login` signs in (installing automatically if needed).
+A custom config can be supplied before the command with `--config /path/config.toml`.
+CLI sign-in prints the Google URL; the in-app flow opens it automatically.
+
+A manual runtime is still supported. Press **p** or choose **Custom path** in
+the connection step, then enter the ACP executable's absolute path. Keep its
+matching `localharness_external` helper beside it and make both executable.
+An explicit path overrides managed discovery. Press **i** or **Install managed**
+to return to Gitside's verified release. Manual installs remain your responsibility.
 
 ```toml
 [ai]
@@ -234,7 +255,7 @@ mode = "agent"
 
 [ai.agent]
 provider = "antigravity"
-command = "/absolute/path/to/agy_acp_server.par"
+# command = "/absolute/path/to/agy_acp_server.par" # optional manual override
 # model = "a-model-id-available-to-your-account"
 # antigravity_home = "/optional/private/gitside-antigravity-profile"
 ```
@@ -243,7 +264,8 @@ The default profile is under the platform’s local data directory at
 `gitside/antigravity`. Google’s runtime owns credential storage there. Gitside
 uses a private profile, removes ambient Google credential overrides from its
 child process, and keeps runtime extraction in a temporary directory. Generation
-does not open a login browser; an expired login asks you to run the login command.
+opens a browser only during an explicitly requested connection. An expired login
+routes the TUI back to Connect Antigravity; CLI errors still name the login command.
 
 The helper runs in a temporary workspace, advertises no client filesystem or
 terminal access, rejects tool/permission/input requests and tool-call updates,
@@ -253,10 +275,10 @@ Processes and owned temporary session files are cleaned up afterward. These
 checks do not create a native filesystem sandbox; Gitside does not offer
 Antigravity as a general coding agent.
 
-The runtime must be installed separately. Gitside neither bundles nor updates
-Google’s proprietary binaries. This integration supports Google personal-account
-sign-in; enterprise/Vertex setup and managed runtime installation are outside
-this commit-drafting flow.
+Google's proprietary executable is downloaded from Google on demand and is not
+bundled into Gitside. Its release pin follows T3's tested compatibility metadata.
+This flow supports personal Google sign-in; enterprise, API-key and Vertex
+account modes are not exposed by Gitside. It does not import another app's tokens.
 
 ### Direct API
 

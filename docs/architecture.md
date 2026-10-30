@@ -108,8 +108,8 @@ A canonical temporary workspace keeps native session metadata consistent on
 symlinked paths such as macOS `/var`. Cleanup removes only session files whose
 metadata proves ownership by that workspace. Child processes are killed on drop;
 on Unix the dedicated process group includes the native harness. The protocol
-checks are not a native sandbox. The runtime remains a separately installed,
-Google-owned executable rather than a vendored dependency.
+checks are not a native sandbox. The runtime remains a Google-owned executable
+downloaded on demand rather than a bundled dependency.
 
 The same ACP client serves Cursor, Grok Build, and configured ACP agents. Small
 provider branches select native launch/auth behavior; Google alone owns the
@@ -133,6 +133,26 @@ only text generation, not a full coding-agent session.
 keyboard navigation and mouse targets. The ten-row picker follows selection
 when space is tight. Existing TOML provider names remain valid; changing provider
 clears the old executable override and arguments.
+
+`src/ai/provider/antigravity_install.rs` adapts T3's managed installation boundary.
+Its pinned release metadata records the archive URL, SHA-256 and exact archive
+and member sizes. Downloads are streamed and bounded. ZIP extraction accepts
+only the executable/harness pair, with no extra paths, symlinks or duplicates.
+Extraction owns a private staging directory across blocking work and cancellation.
+A temporary credential profile verifies the native client identity, version,
+ACP protocol and Google auth method before publishing a completed version.
+Activation swaps an active-release record atomically; discovery accepts only
+completed, correctly sized executable pairs. Explicit manual paths take priority.
+
+The setup wizard owns a Connection step for Antigravity. Installation and OAuth
+run through the existing background-task boundary. Typed progress events carry
+status and a validated Google URL to the owner overlay. A separate bounded
+browser-launch task keeps rendering responsive. Cancellation aborts both tasks
+and drops the ACP client, killing its process group. Only a successful native
+session creation confirms access and supplies account model IDs; no OAuth tokens
+enter application settings, logs or debug output. CLI setup uses the same backend.
+Generation resumes after successful first-time setup, and expired login returns
+to this connection step while retaining the user's draft.
 
 See the [configuration guide](configuration.md#google-antigravity) for installation
 and sign-in, and the [third-party notices](third-party-notices.md) for pinned T3

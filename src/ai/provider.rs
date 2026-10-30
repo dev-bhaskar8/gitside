@@ -1,4 +1,5 @@
 pub(crate) mod acp;
+pub(crate) mod antigravity_install;
 mod rpc;
 
 // Provider adapters for T3-style structured commit generation.
@@ -617,6 +618,9 @@ pub(super) fn agent_program(settings: &AiSettings) -> String {
             AgentProvider::Muse => "muse".into(),
             AgentProvider::Acp => "acp-agent".into(),
             AgentProvider::Antigravity => {
+                if let Some(path) = antigravity_install::installed() {
+                    return path.to_string_lossy().into_owned();
+                }
                 if cfg!(windows) {
                     "agy_acp_server.exe".into()
                 } else {

@@ -52,12 +52,20 @@ press `D` to display them on demand.
   needed, sign in using the runtime's own setup before generation.
 - **A provider is below the visible picker rows:** use arrows, Page Up/Down,
   or the mouse wheel; `1`–`9` select entries and `0` selects Other.
-- **Antigravity runtime missing:** `agy` is a different executable. Install the
-  official ACP archive and configure `agy_acp_server.par` (Windows: `.exe`), with
-  its matching harness alongside it.
-- **Antigravity needs sign-in:** run `gitside antigravity-login` after saving the
-  runtime path in AI setup. This login is separate from the IDE/CLI. For a custom
-  configuration file, pass `--config` before the login subcommand.
+- **Antigravity runtime missing:** open Configure → Antigravity and choose
+  Install Antigravity. The app installs and discovers the verified ACP runtime;
+  `agy` is a separate executable. Terminal setup is also available through
+  `gitside antigravity-install`.
+- **Antigravity needs sign-in:** use Sign in with Google in Connect Antigravity.
+  Open browser reopens the validated Google link. Escape cancels a stuck attempt;
+  retry from setup. CLI users can run `gitside antigravity-login`.
+- **Custom runtime is missing or incompatible:** press **i** in Connect Antigravity
+  to install and select the managed release, or **p** to correct the manual path.
+  Keep the executable and its matching native harness together.
+- **Antigravity installation fails:** the installer checks pinned archive/member
+  sizes, SHA-256 and native startup before activation. A failed or cancelled
+  installation does not activate incomplete files. Check free disk space, network
+  access to `dl.google.com`, and support for the host OS/architecture, then retry.
 - **Antigravity model unavailable:** clear the model override to use the account’s
   default or select a model ID available to that Google account.
 - **Generation times out:** check the provider connection or increase

@@ -130,6 +130,8 @@ pub struct Cli {
 pub enum CliCommand {
     /// Sign in to the Antigravity ACP runtime used for commit generation.
     AntigravityLogin,
+    /// Install the verified Antigravity ACP runtime managed by Gitside.
+    AntigravityInstall,
     #[command(name = "__antigravity-browser", hide = true)]
     AntigravityBrowser { url: String },
     /// Initialize a Git repository and open it.

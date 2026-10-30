@@ -1055,7 +1055,7 @@ fn render_ai(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 "Uses `opencode run`. Configure it with `opencode auth login`."
             }
             crate::config::AgentProvider::Antigravity => {
-                "Uses Google's Antigravity ACP runtime. Sign in with `gitside antigravity-login`; this is separate from agy/IDE sign-in."
+                "Install Antigravity and sign in with Google through Configure. Gitside manages the runtime and remembers your account; agy/IDE sign-in is separate."
             }
             crate::config::AgentProvider::Cursor => {
                 "Uses Cursor CLI. Install cursor-agent and sign in with `agent login`."
@@ -1611,6 +1611,52 @@ fn render_ai_setup_overlay(
             }
             ("Choose a provider", lines.join("\n"))
         }
+        crate::app::AiSetupStep::Connection => {
+            let installed =
+                draft.available_agents[crate::config::AgentProvider::Antigravity.index()];
+            let body = if draft.connection_running {
+                let status = if draft.connection_status.is_empty() {
+                    "Connecting Antigravity…"
+                } else {
+                    &draft.connection_status
+                };
+                let hint = if draft.authorization_url.is_none()
+                    && draft
+                        .connection_started
+                        .is_some_and(|started| started.elapsed().as_secs() >= 30)
+                {
+                    "\nStill waiting. Check this machine's connection to Google."
+                } else {
+                    ""
+                };
+                format!(
+                    "{status}{hint}\n\n{}\n\nEsc cancels sign-in and stops its runtime.",
+                    draft
+                        .authorization_url
+                        .as_deref()
+                        .unwrap_or("The Google sign-in page will open when ready.")
+                )
+            } else {
+                let status = if draft.connection_status.is_empty() {
+                    if installed {
+                        "Runtime installed. Sign in with Google to verify access and load your models."
+                    } else {
+                        "Install Google's verified Antigravity runtime, then sign in with Google. Gitside handles the download and setup."
+                    }
+                } else {
+                    &draft.connection_status
+                };
+                format!(
+                    "{status}\n\nThis sign-in is separate from agy and the IDE.\n\ni: install managed runtime · p: custom executable path\nEnter: {}",
+                    if installed {
+                        "sign in with Google"
+                    } else {
+                        "install and sign in"
+                    }
+                )
+            };
+            ("Connect Antigravity", body)
+        }
         crate::app::AiSetupStep::Command => (
             if draft.agent_provider == crate::config::AgentProvider::Antigravity {
                 "Antigravity ACP executable path (optional if on PATH)"
@@ -1627,7 +1673,15 @@ fn render_ai_setup_overlay(
             } else {
                 "Model (optional)"
             },
-            cursor_marked(&draft.model, app.text_cursor),
+            if draft.discovered_models.is_empty() {
+                cursor_marked(&draft.model, app.text_cursor)
+            } else {
+                format!(
+                    "{}\n\n↑/↓: choose an account model or the default\nAvailable: {}",
+                    cursor_marked(&draft.model, app.text_cursor),
+                    draft.discovered_models.join(", ")
+                )
+            },
         ),
         crate::app::AiSetupStep::ApiKey => (
             "API key (leave empty to keep the current source)",
@@ -1700,7 +1754,13 @@ fn render_ai_setup_overlay(
         inner.x,
         inner.y,
         inner.width,
-        inner.height.saturating_sub(1),
+        inner.height.saturating_sub(
+            if draft.step == crate::app::AiSetupStep::Connection && !draft.connection_running {
+                2
+            } else {
+                1
+            },
+        ),
     );
     let placeholder = ai_setup_placeholder(&draft)
         .map(|value| truncate_to_width(value, content_area.width.saturating_sub(1) as usize));
@@ -1800,6 +1860,46 @@ fn render_ai_setup_overlay(
         live.max_scroll = max_scroll;
     }
 
+    if draft.step == crate::app::AiSetupStep::Connection
+        && !draft.connection_running
+        && inner.height >= 4
+    {
+        let y = inner.bottom().saturating_sub(2);
+        let install_label = if inner.width >= 44 {
+            "Install managed [i]"
+        } else if inner.width >= 28 {
+            "Install [i]"
+        } else {
+            "Install"
+        };
+        let width = outlined_button_width(install_label, inner.width >= 28).min(inner.width);
+        render_outlined_button(
+            frame,
+            app,
+            Rect::new(inner.x, y, width, 1),
+            install_label,
+            UiAction::AiInstallAntigravity,
+            false,
+        );
+        let path_label = if inner.width >= 44 {
+            "Custom path [p]"
+        } else if inner.width >= 28 {
+            "Path [p]"
+        } else {
+            "Path"
+        };
+        let path_width = outlined_button_width(path_label, inner.width >= 28).min(inner.width);
+        if width + path_width < inner.width {
+            render_outlined_button(
+                frame,
+                app,
+                Rect::new(inner.right() - path_width, y, path_width, 1),
+                path_label,
+                UiAction::AiAntigravityPath,
+                false,
+            );
+        }
+    }
     if inner.height >= 2 {
         let y = inner.bottom().saturating_sub(1);
         let full = inner.width >= 20;
@@ -1809,6 +1909,24 @@ fn render_ai_setup_overlay(
         render_outlined_button(frame, app, back, back_label, UiAction::AiSetupBack, false);
         let label = if !full {
             "→"
+        } else if draft.step == crate::app::AiSetupStep::Connection {
+            if draft.connection_running {
+                if draft.authorization_url.is_some() {
+                    "Open browser"
+                } else {
+                    "Waiting…"
+                }
+            } else if draft.available_agents[crate::config::AgentProvider::Antigravity.index()] {
+                if inner.width >= 44 {
+                    "Sign in with Google"
+                } else {
+                    "Sign in"
+                }
+            } else if inner.width >= 44 {
+                "Install Antigravity"
+            } else {
+                "Install"
+            }
         } else if draft.generate_after_save
             && draft.mode == AiMode::Agent
             && draft.step == crate::app::AiSetupStep::Provider
@@ -1827,7 +1945,11 @@ fn render_ai_setup_overlay(
             app,
             next,
             label,
-            if draft.step == crate::app::AiSetupStep::Review {
+            if draft.step == crate::app::AiSetupStep::Connection
+                && draft.authorization_url.is_some()
+            {
+                UiAction::AiOpenSignIn
+            } else if draft.step == crate::app::AiSetupStep::Review {
                 UiAction::AiSetupSave
             } else {
                 UiAction::AiSetupNext
@@ -1848,34 +1970,38 @@ fn ai_setup_placeholder(draft: &crate::app::AiSetupDraft) -> Option<&'static str
                 "codex exec --sandbox read-only -"
             },
         ),
-        crate::app::AiSetupStep::Model if draft.model.trim().is_empty() => Some(match draft.mode {
-            AiMode::Agent => match draft.agent_provider {
-                crate::config::AgentProvider::Codex => "Optional, e.g. gpt-5",
-                crate::config::AgentProvider::Claude => "Optional, e.g. sonnet",
-                crate::config::AgentProvider::Opencode => "Optional provider/model name",
-                crate::config::AgentProvider::Antigravity => {
-                    "Optional model ID from your Antigravity account"
-                }
-                crate::config::AgentProvider::Cursor
-                | crate::config::AgentProvider::Grok
-                | crate::config::AgentProvider::Muse
-                | crate::config::AgentProvider::Acp => {
-                    "Optional model ID available to your account"
-                }
-                crate::config::AgentProvider::Pi => {
-                    "Optional provider/model, e.g. anthropic/claude-sonnet-4-5"
-                }
-                crate::config::AgentProvider::Custom => "Optional model name",
-            },
-            AiMode::Api => match draft.api_provider {
-                crate::config::ApiProvider::Openai => "e.g. gpt-4.1-mini",
-                crate::config::ApiProvider::Anthropic => "e.g. claude-sonnet-4-5",
-                crate::config::ApiProvider::Gemini => "e.g. gemini-2.5-flash",
-                crate::config::ApiProvider::Openrouter => "e.g. openai/gpt-4.1-mini",
-                crate::config::ApiProvider::Compatible => "Model name expected by the service",
-            },
-            AiMode::Local => "Optional model name",
-        }),
+        crate::app::AiSetupStep::Model
+            if draft.model.trim().is_empty() && draft.discovered_models.is_empty() =>
+        {
+            Some(match draft.mode {
+                AiMode::Agent => match draft.agent_provider {
+                    crate::config::AgentProvider::Codex => "Optional, e.g. gpt-5",
+                    crate::config::AgentProvider::Claude => "Optional, e.g. sonnet",
+                    crate::config::AgentProvider::Opencode => "Optional provider/model name",
+                    crate::config::AgentProvider::Antigravity => {
+                        "Optional model ID from your Antigravity account"
+                    }
+                    crate::config::AgentProvider::Cursor
+                    | crate::config::AgentProvider::Grok
+                    | crate::config::AgentProvider::Muse
+                    | crate::config::AgentProvider::Acp => {
+                        "Optional model ID available to your account"
+                    }
+                    crate::config::AgentProvider::Pi => {
+                        "Optional provider/model, e.g. anthropic/claude-sonnet-4-5"
+                    }
+                    crate::config::AgentProvider::Custom => "Optional model name",
+                },
+                AiMode::Api => match draft.api_provider {
+                    crate::config::ApiProvider::Openai => "e.g. gpt-4.1-mini",
+                    crate::config::ApiProvider::Anthropic => "e.g. claude-sonnet-4-5",
+                    crate::config::ApiProvider::Gemini => "e.g. gemini-2.5-flash",
+                    crate::config::ApiProvider::Openrouter => "e.g. openai/gpt-4.1-mini",
+                    crate::config::ApiProvider::Compatible => "Model name expected by the service",
+                },
+                AiMode::Local => "Optional model name",
+            })
+        }
         crate::app::AiSetupStep::ApiKey if draft.secret_is_empty() => {
             Some("Leave empty to keep the existing or environment key")
         }
@@ -2444,7 +2570,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn antigravity_picker_row_stays_aligned_and_opens_runtime_path_setup() {
+    async fn antigravity_picker_row_stays_aligned_and_opens_connection_setup() {
         let mut app = App::isolated_test(Settings::default()).await;
         app.focus = Focus::Ai;
         app.settings.ai.mode = AiMode::Agent;
@@ -2491,8 +2617,58 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
         assert!(
-            matches!(&app.overlay, Some(Overlay::AiSetup(draft)) if draft.agent_provider == crate::config::AgentProvider::Antigravity && draft.step == crate::app::AiSetupStep::Command)
+            matches!(&app.overlay, Some(Overlay::AiSetup(draft)) if draft.agent_provider == crate::config::AgentProvider::Antigravity && draft.step == crate::app::AiSetupStep::Connection)
         );
+    }
+
+    #[tokio::test]
+    async fn antigravity_connection_buttons_work_in_narrow_terminals() {
+        let mut app = App::isolated_test(Settings::default()).await;
+        app.focus = Focus::Ai;
+        app.settings.ai.mode = AiMode::Agent;
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        for (width, height) in [(24, 16), (32, 20), (42, 24), (80, 28)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|hit| matches!(hit.action, UiAction::AiInstallAntigravity))
+            );
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|hit| matches!(hit.action, UiAction::AiSetupNext))
+            );
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|hit| matches!(hit.action, UiAction::AiAntigravityPath)),
+                "Path button at {width}x{height}"
+            );
+            let Some(Overlay::AiSetup(draft)) = &mut app.overlay else {
+                panic!()
+            };
+            draft.connection_running = true;
+            draft.authorization_url =
+                Some("https://accounts.google.com/o/oauth2/v2/auth?state=test".into());
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|hit| matches!(hit.action, UiAction::AiOpenSignIn))
+            );
+            let Some(Overlay::AiSetup(draft)) = &mut app.overlay else {
+                panic!()
+            };
+            draft.connection_running = false;
+            draft.authorization_url = None;
+        }
     }
 
     #[tokio::test]

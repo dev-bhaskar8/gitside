@@ -1,6 +1,7 @@
 //! ACP text helpers adapted from T3 Code (MIT), plus Cursor's official ACP interface.
 //! ACP transport, temporary workspace, no tools, bounded output, owned cleanup.
 use super::{TextRequest, agent_program, resolve_program};
+use crate::ai::AntigravityEvent;
 use crate::config::{AgentProvider, AiSettings};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -56,17 +57,85 @@ pub(super) async fn generate(settings: &AiSettings, request: &TextRequest) -> Re
 }
 
 pub(crate) async fn login(settings: &AiSettings) -> Result<()> {
+    connect(settings, None).await?;
+    println!("Signed in to Antigravity for Gitside.");
+    Ok(())
+}
+
+pub(crate) async fn connect(
+    settings: &AiSettings,
+    events: Option<mpsc::UnboundedSender<AntigravityEvent>>,
+) -> Result<Vec<String>> {
     let mut settings = settings.clone();
     if settings.agent.provider != AgentProvider::Antigravity {
         settings.agent.command = None;
         settings.agent.args.clear();
     }
     settings.agent.provider = AgentProvider::Antigravity;
+    super::antigravity_install::ensure(&settings, events.as_ref()).await?;
     let mut client = Client::spawn(&settings, true).await?;
+    client.auth_events = events;
     let result = tokio::time::timeout(Duration::from_secs(300), client.run(None, None)).await;
     client.stop().await;
-    result.context("Antigravity sign-in timed out; run gitside antigravity-login again")??;
-    println!("Signed in to Antigravity for Gitside.");
+    result.context("Antigravity sign-in timed out; start sign-in again")??;
+    Ok(std::mem::take(&mut client.models))
+}
+
+pub(super) async fn verify_runtime(executable: &Path, version: &str) -> Result<()> {
+    let profile = tempfile::tempdir()?;
+    let mut settings = AiSettings::default();
+    settings.agent.provider = AgentProvider::Antigravity;
+    settings.agent.command = Some(executable.to_string_lossy().into_owned());
+    settings.agent.antigravity_home = Some(profile.path().to_owned());
+    let mut client = Client::spawn(&settings, false).await?;
+    let result = tokio::time::timeout(Duration::from_secs(90), client.request("initialize", json!({"protocolVersion":1,
+        "clientInfo":{"name":"gitside","version":env!("CARGO_PKG_VERSION")},
+        "clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}
+    }))).await;
+    client.stop().await;
+    let initialized = result.context("Antigravity startup verification timed out")??;
+    if initialized["protocolVersion"] != 1
+        || initialized["agentInfo"]["name"] != "antigravity-acp"
+        || initialized["agentInfo"]["version"] != version
+        || !initialized["authMethods"]
+            .as_array()
+            .is_some_and(|methods| {
+                methods
+                    .iter()
+                    .any(|method| method["id"] == "oauth-personal")
+            })
+    {
+        bail!("The downloaded runtime did not identify as the expected Antigravity release");
+    }
+    Ok(())
+}
+
+pub(crate) async fn open_signin_page(url: &str) -> Result<()> {
+    validate_authorization_url(url)?;
+    let mut command = if cfg!(target_os = "macos") {
+        Command::new("open")
+    } else if cfg!(windows) {
+        let mut command = Command::new("rundll32.exe");
+        command.arg("url.dll,FileProtocolHandler");
+        command
+    } else {
+        Command::new("xdg-open")
+    };
+    let status = tokio::time::timeout(
+        Duration::from_secs(10),
+        command
+            .arg(url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .status(),
+    )
+    .await
+    .context("Browser launch timed out; open the sign-in URL manually")??;
+    if !status.success() {
+        bail!("Could not open the browser; open the sign-in URL manually");
+    }
     Ok(())
 }
 
@@ -87,6 +156,8 @@ struct Client {
     output: String,
     next_id: u64,
     signing_in: bool,
+    auth_events: Option<mpsc::UnboundedSender<AntigravityEvent>>,
+    models: Vec<String>,
 }
 
 impl Client {
@@ -248,6 +319,8 @@ impl Client {
             output: String::new(),
             next_id: 1,
             signing_in,
+            auth_events: None,
+            models: Vec::new(),
         })
     }
 
@@ -288,6 +361,7 @@ impl Client {
             .with_context(|| format!("{} returned an invalid session ID", self.label()))?
             .to_owned();
         self.session = Some(session.clone());
+        self.models = advertised_models(&created);
         if request.is_none() {
             return Ok(String::new());
         }
@@ -462,16 +536,16 @@ impl Client {
         } else {
             line.trim_start_matches(AUTH_PREFIX).to_owned()
         };
-        let parsed = reqwest::Url::parse(&url).context("invalid Antigravity sign-in URL")?;
-        if parsed.scheme() != "https"
-            || parsed.host_str() != Some("accounts.google.com")
-            || parsed.path() != "/o/oauth2/v2/auth"
-        {
-            bail!("Antigravity returned an unexpected sign-in URL");
+        validate_authorization_url(&url)?;
+        if let Some(events) = &self.auth_events {
+            events
+                .send(AntigravityEvent::AuthorizationUrl(url))
+                .context("Sign-in was cancelled")?;
+        } else {
+            println!(
+                "Open this Google sign-in link in your browser:\n{url}\nWaiting for Google sign-in…"
+            );
         }
-        println!(
-            "Open this Google sign-in link in your browser:\n{url}\nWaiting for Google sign-in…"
-        );
         Ok(())
     }
 
@@ -564,6 +638,60 @@ pub(super) async fn read_line(
             .trim_end_matches(['\r', '\n'])
             .to_owned(),
     ))
+}
+
+fn validate_authorization_url(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url).context("invalid Antigravity sign-in URL")?;
+    if url.len() > 16_384
+        || parsed.scheme() != "https"
+        || parsed.host_str() != Some("accounts.google.com")
+        || parsed.path() != "/o/oauth2/v2/auth"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port().is_some()
+    {
+        bail!("Antigravity returned an unexpected sign-in URL");
+    }
+    Ok(())
+}
+fn advertised_models(created: &Value) -> Vec<String> {
+    fn collect(options: &Value, values: &mut Vec<String>) {
+        for option in options.as_array().into_iter().flatten().take(256) {
+            if let Some(value) = option["value"].as_str().filter(|value| {
+                !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+            }) {
+                if !values.iter().any(|entry| entry == value) && values.len() < 256 {
+                    values.push(value.to_owned());
+                }
+            }
+            if values.len() < 256 {
+                collect(&option["options"], values);
+            }
+        }
+    }
+    let mut models = Vec::new();
+    if let Some(option) = created["configOptions"]
+        .as_array()
+        .and_then(|options| options.iter().find(|option| option["id"] == "model"))
+    {
+        collect(&option["options"], &mut models);
+    }
+    for model in created["models"]["availableModels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(256)
+    {
+        if let Some(id) = model["modelId"]
+            .as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
+        {
+            if !models.iter().any(|entry| entry == id) && models.len() < 256 {
+                models.push(id.to_owned());
+            }
+        }
+    }
+    models
 }
 
 fn valid_session_id(id: &str) -> bool {
@@ -742,11 +870,13 @@ for line in sys.stdin:
  if method=='initialize':
   assert request['params']['clientInfo']['name']=='gitside'
   assert request['params']['clientCapabilities']['terminal'] is False
-  result={'protocolVersion':1}
+  result={'protocolVersion':1,'agentInfo':{'name':'antigravity-acp','version':'1.4.1'},'authMethods':[{'id':'oauth-personal'}]}
  elif method=='authenticate':
   assert request['params']['methodId']=='oauth-personal'
   if mode=='hang':
    time.sleep(30)
+  if mode=='auth-success':
+   print('Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/v2/auth?client_id=test',flush=True)
   if mode=='auth':
    print('Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/v2/auth?client_id=test',flush=True)
    time.sleep(30)
@@ -779,6 +909,13 @@ for line in sys.stdin:
 "##.replace("MODE", &serde_json::to_string(mode).unwrap());
         tokio::fs::write(&script, source).await.unwrap();
         tokio::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .await
+            .unwrap();
+        let harness = directory.path().join("localharness_external");
+        tokio::fs::write(&harness, "#!/bin/sh\nexit 0\n")
+            .await
+            .unwrap();
+        tokio::fs::set_permissions(&harness, std::fs::Permissions::from_mode(0o700))
             .await
             .unwrap();
         let mut settings = AiSettings {
@@ -832,6 +969,41 @@ for line in sys.stdin:
             let error = generate(&settings, &task()).await.unwrap_err();
             assert!(error.to_string().contains(expected), "{mode}: {error:#}");
         }
+    }
+
+    #[test]
+    fn browser_urls_are_limited_to_the_google_authorization_endpoint() {
+        assert!(
+            validate_authorization_url("https://accounts.google.com/o/oauth2/v2/auth?state=test")
+                .is_ok()
+        );
+        for url in [
+            "http://accounts.google.com/o/oauth2/v2/auth",
+            "https://evil.example/o/oauth2/v2/auth",
+            "https://accounts.google.com@evil.example/o/oauth2/v2/auth",
+            "https://user@accounts.google.com/o/oauth2/v2/auth",
+            "https://accounts.google.com:444/o/oauth2/v2/auth",
+            "file:///tmp/auth",
+        ] {
+            assert!(validate_authorization_url(url).is_err());
+        }
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn setup_verifies_runtime_and_delivers_signin_progress_without_printing_credentials() {
+        let (_directory, settings) = fixture("auth-success").await;
+        verify_runtime(
+            Path::new(settings.agent.command.as_deref().unwrap()),
+            "1.4.1",
+        )
+        .await
+        .unwrap();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let models = connect(&settings, Some(sender)).await.unwrap();
+        assert_eq!(models, vec!["test-model"]);
+        assert!(
+            matches!(receiver.try_recv(),Ok(AntigravityEvent::AuthorizationUrl(url)) if url.starts_with("https://accounts.google.com/"))
+        );
     }
 
     #[cfg(unix)]

@@ -107,9 +107,11 @@ editable commit draft using T3 Code’s shared structured generation approach.
 The coding CLIs reuse their existing login and model default;
 installation detection does not verify your account.
 
-Antigravity uses a separate Gitside profile: install the official ACP runtime,
-configure its path, then run `gitside antigravity-login`. No separate API key is
-required for these account-based routes. Cursor uses `cursor-agent` (`agent login`),
+Antigravity has an integrated setup flow: choose it in Configure, select
+**Install Antigravity**, then **Sign in with Google**. Gitside installs a verified,
+compatible runtime, opens Google sign-in, and loads your account's models. Its
+saved sign-in is separate from `agy` and the IDE. No separate API key is required
+for these account-based routes. Cursor uses `cursor-agent` (`agent login`),
 Grok uses `grok login`, Pi uses `pi` then `/login`, and Muse uses `muse login`.
 Compatible ACP agents can be configured with an executable, arguments, and an
 optional advertised authentication method.
@@ -204,6 +206,7 @@ model requests. Generation only returns text to the editor. See the detailed
 | `src/app.rs`, `src/ui.rs`, `src/terminal.rs` | Actions, rendering, event loop |
 | `src/ai.rs`, `src/ai/commit.rs` | Git context, shared commit schema, and message cleanup |
 | `src/ai/provider.rs`, `src/ai/provider/acp.rs`, `src/ai/provider/rpc.rs` | CLI/API adapters, ACP sessions, Pi RPC, and Muse MSP |
+| `src/ai/provider/antigravity_install.rs` | Verified managed runtime installation and automatic discovery |
 | `src/git.rs`, `src/github.rs` | Git and GitHub CLI operations |
 | `src/config.rs`, `src/credentials.rs` | Settings and OS credential storage |
 | `docs/` | Configuration, architecture, platform and distribution guides |

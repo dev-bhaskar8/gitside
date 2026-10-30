@@ -67,6 +67,9 @@ pub enum UiAction {
     AiSetupNext,
     AiSetupBack,
     AiSetupSave,
+    AiOpenSignIn,
+    AiAntigravityPath,
+    AiInstallAntigravity,
     RemoveAiCredential,
     ConfirmGitHubVisibility(GitHubVisibility),
 }
@@ -122,6 +125,7 @@ pub enum Overlay {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiSetupStep {
     Provider,
+    Connection,
     Command,
     Model,
     ApiKey,
@@ -145,6 +149,12 @@ pub struct AiSetupDraft {
     pub instructions: String,
     pub scroll: u16,
     pub max_scroll: u16,
+    pub connection_running: bool,
+    pub connection_status: String,
+    pub authorization_url: Option<String>,
+    pub discovered_models: Vec<String>,
+    pub connection_started: Option<Instant>,
+    use_managed_antigravity: bool,
 }
 
 impl std::fmt::Debug for AiSetupDraft {
@@ -167,6 +177,16 @@ impl std::fmt::Debug for AiSetupDraft {
 }
 
 impl AiSetupDraft {
+    fn editable(&self) -> bool {
+        matches!(
+            self.step,
+            AiSetupStep::Command
+                | AiSetupStep::Model
+                | AiSetupStep::ApiKey
+                | AiSetupStep::Endpoint
+                | AiSetupStep::Instructions
+        )
+    }
     pub fn secret_is_empty(&self) -> bool {
         self.api_key.is_empty()
     }
@@ -206,6 +226,12 @@ impl AiSetupDraft {
             instructions: settings.instructions.clone(),
             scroll: 0,
             max_scroll: 0,
+            connection_running: false,
+            connection_status: String::new(),
+            authorization_url: None,
+            discovered_models: Vec::new(),
+            connection_started: None,
+            use_managed_antigravity: false,
         }
     }
 }
@@ -303,6 +329,8 @@ pub struct App {
     pub hits: Vec<HitRegion>,
     last_click: Option<(u16, u16, Instant)>,
     background_task: Option<JoinHandle<BackgroundResult>>,
+    antigravity_events: Option<tokio::sync::mpsc::UnboundedReceiver<ai::AntigravityEvent>>,
+    antigravity_browser: Option<JoinHandle<Result<()>>>,
     pub ai_generation_state: AiGenerationState,
     pub button_activity: Option<(ButtonActivity, Instant)>,
     pub change_activity: Option<ChangeActivity>,
@@ -315,6 +343,9 @@ pub struct App {
 }
 
 enum BackgroundResult {
+    AntigravityConnection {
+        result: Result<Vec<String>>,
+    },
     Remote {
         repo_index: usize,
         label: &'static str,
@@ -491,6 +522,8 @@ impl App {
             hits: Vec::new(),
             last_click: None,
             background_task: None,
+            antigravity_events: None,
+            antigravity_browser: None,
             ai_generation_state: AiGenerationState::Idle,
             button_activity: None,
             change_activity: None,
@@ -596,6 +629,7 @@ impl App {
     }
 
     pub async fn poll_background(&mut self) -> bool {
+        self.poll_antigravity_events().await;
         if !self
             .background_task
             .as_ref()
@@ -610,6 +644,38 @@ impl App {
         self.button_activity = None;
         self.change_activity = None;
         match task.await {
+            Ok(BackgroundResult::AntigravityConnection { result }) => {
+                self.antigravity_events = None;
+                if let Some(browser) = self.antigravity_browser.take() {
+                    browser.abort();
+                }
+                let mut generate = false;
+                if let Some(Overlay::AiSetup(draft)) = &mut self.overlay {
+                    if draft.step == AiSetupStep::Connection {
+                        draft.connection_running = false;
+                        draft.authorization_url = None;
+                        draft.connection_started = None;
+                        match result {
+                            Ok(models) => {
+                                draft.connection_status = "Connected to Google".into();
+                                draft.available_agents[AgentProvider::Antigravity.index()] = true;
+                                draft.discovered_models = models;
+                                generate = draft.generate_after_save;
+                                draft.step = AiSetupStep::Model;
+                                self.status_line =
+                                    "Antigravity connected; account models loaded".into();
+                            }
+                            Err(error) => {
+                                draft.connection_status = format!("{error:#}");
+                                self.status_line = "Antigravity connection failed; retry or choose another provider".into();
+                            }
+                        }
+                    }
+                }
+                if generate {
+                    self.save_ai_setup();
+                }
+            }
             Ok(BackgroundResult::Remote {
                 repo_index,
                 label,
@@ -884,7 +950,24 @@ impl App {
                 }
                 Err(error) => {
                     self.ai_generation_state = AiGenerationState::Idle;
-                    self.report_error(error);
+                    let message = format!("{error:#}");
+                    if self.settings.ai.mode == AiMode::Agent
+                        && self.settings.ai.agent.provider == AgentProvider::Antigravity
+                        && (message.contains("sign-in")
+                            || message.contains("Sign in")
+                            || message.contains("antigravity-login"))
+                    {
+                        let mut draft =
+                            AiSetupDraft::from_settings(&self.settings.ai, AiMode::Agent);
+                        draft.step = AiSetupStep::Connection;
+                        draft.generate_after_save = true;
+                        draft.connection_status =
+                            "Your Google session needs sign-in. Connect to continue.".into();
+                        self.overlay = Some(Overlay::AiSetup(draft));
+                        self.status_line = "Connect Antigravity to continue generation".into();
+                    } else {
+                        self.report_error(error);
+                    }
                 }
             },
             Ok(BackgroundResult::AiSetup {
@@ -944,6 +1027,7 @@ impl App {
 
     pub async fn handle_key(&mut self, key: KeyEvent) -> EventOutcome {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.cancel_antigravity_connection();
             return EventOutcome::Quit;
         }
         if let Some(overlay) = self.overlay.clone() {
@@ -1246,9 +1330,7 @@ impl App {
             Some(Overlay::Search { value }) => {
                 insert_str_at_text_cursor(value, &mut self.text_cursor, &single_line_paste(pasted));
             }
-            Some(Overlay::AiSetup(draft))
-                if draft.step != AiSetupStep::Provider && draft.step != AiSetupStep::Review =>
-            {
+            Some(Overlay::AiSetup(draft)) if draft.editable() => {
                 let pasted = if draft.step == AiSetupStep::Instructions {
                     multiline_paste(pasted)
                 } else if draft.step == AiSetupStep::ApiKey {
@@ -1609,6 +1691,17 @@ impl App {
     }
 
     async fn perform_ui_action(&mut self, action: UiAction) {
+        if self.antigravity_events.is_some()
+            && !matches!(
+                action,
+                UiAction::AiSetupNext
+                    | UiAction::AiOpenSignIn
+                    | UiAction::AiSetupBack
+                    | UiAction::CloseOverlay
+            )
+        {
+            self.cancel_antigravity_connection();
+        }
         match action {
             UiAction::Focus(Focus::GitHub) => self.focus_github(),
             UiAction::Focus(focus) => {
@@ -1655,7 +1748,10 @@ impl App {
             UiAction::StageAll => self.run_stage_all().await,
             UiAction::UnstageAll => self.run_unstage_all().await,
             UiAction::ToggleHelp => self.open_help(),
-            UiAction::CloseOverlay => self.overlay = None,
+            UiAction::CloseOverlay => {
+                self.cancel_antigravity_connection();
+                self.overlay = None;
+            }
             UiAction::PublishGitHub => self.begin_publish_github(),
             UiAction::GenerateCommitMessage => self.queue_commit_message_generation(),
             UiAction::ToggleAiEnabled => self.toggle_ai_enabled(),
@@ -1665,6 +1761,16 @@ impl App {
             UiAction::AiSetupNext => self.advance_ai_setup().await,
             UiAction::AiSetupBack => self.retreat_ai_setup(),
             UiAction::AiSetupSave => self.save_ai_setup(),
+            UiAction::AiOpenSignIn => self.open_antigravity_browser(),
+            UiAction::AiInstallAntigravity => self.start_antigravity_connection(true),
+            UiAction::AiAntigravityPath => {
+                self.cancel_antigravity_connection();
+                if let Some(Overlay::AiSetup(draft)) = &mut self.overlay {
+                    draft.step = AiSetupStep::Command;
+                    draft.use_managed_antigravity = false;
+                    self.text_cursor = draft.command.len();
+                }
+            }
             UiAction::RemoveAiCredential => self.remove_ai_credential(),
             UiAction::ConfirmGitHubVisibility(visibility) => {
                 if let Some(Overlay::GitHubVisibility { name, .. }) = self.overlay.take() {
@@ -1714,7 +1820,46 @@ impl App {
 
     async fn handle_ai_setup_key(&mut self, key: KeyEvent, mut draft: AiSetupDraft) {
         match key.code {
-            KeyCode::Esc => self.overlay = None,
+            KeyCode::Esc => {
+                self.cancel_antigravity_connection();
+                self.overlay = None;
+            }
+            KeyCode::Char('i')
+                if draft.step == AiSetupStep::Connection && !draft.connection_running =>
+            {
+                self.overlay = Some(Overlay::AiSetup(draft));
+                self.start_antigravity_connection(true);
+            }
+            KeyCode::Char('p')
+                if draft.step == AiSetupStep::Connection && !draft.connection_running =>
+            {
+                draft.step = AiSetupStep::Command;
+                draft.use_managed_antigravity = false;
+                self.text_cursor = draft.command.len();
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
+            KeyCode::Up | KeyCode::Down
+                if draft.step == AiSetupStep::Model && !draft.discovered_models.is_empty() =>
+            {
+                let count = draft.discovered_models.len() + 1;
+                let current = draft
+                    .discovered_models
+                    .iter()
+                    .position(|model| model == &draft.model)
+                    .map_or(0, |index| index + 1);
+                let next = if key.code == KeyCode::Down {
+                    (current + 1) % count
+                } else {
+                    (current + count - 1) % count
+                };
+                draft.model = if next == 0 {
+                    String::new()
+                } else {
+                    draft.discovered_models[next - 1].clone()
+                };
+                self.text_cursor = draft.model.len();
+                self.overlay = Some(Overlay::AiSetup(draft));
+            }
             KeyCode::PageUp | KeyCode::PageDown if draft.step == AiSetupStep::Provider => {
                 let current = setup_provider_index(&draft);
                 let index = if key.code == KeyCode::PageUp {
@@ -1769,19 +1914,19 @@ impl App {
                 set_setup_provider(&mut draft, (current + 1) % count);
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
-            KeyCode::Left if draft.step != AiSetupStep::Review => {
+            KeyCode::Left if draft.editable() => {
                 move_text_cursor_left(ai_setup_input(&draft), &mut self.text_cursor);
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
-            KeyCode::Right if draft.step != AiSetupStep::Review => {
+            KeyCode::Right if draft.editable() => {
                 move_text_cursor_right(ai_setup_input(&draft), &mut self.text_cursor);
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
-            KeyCode::Home if draft.step != AiSetupStep::Provider => {
+            KeyCode::Home if draft.editable() => {
                 self.text_cursor = 0;
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
-            KeyCode::End if draft.step != AiSetupStep::Provider => {
+            KeyCode::End if draft.editable() => {
                 self.text_cursor = ai_setup_input(&draft).len();
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
@@ -1792,30 +1937,23 @@ impl App {
                 }
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
-            KeyCode::Backspace
-                if draft.step != AiSetupStep::Provider && draft.step != AiSetupStep::Review =>
-            {
+            KeyCode::Backspace if draft.editable() => {
                 backspace_at_text_cursor(ai_setup_input_mut(&mut draft), &mut self.text_cursor);
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
-            KeyCode::Delete
-                if draft.step != AiSetupStep::Provider && draft.step != AiSetupStep::Review =>
-            {
+            KeyCode::Delete if draft.editable() => {
                 delete_at_text_cursor(ai_setup_input_mut(&mut draft), &mut self.text_cursor);
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
             KeyCode::Char('a')
-                if draft.step != AiSetupStep::Provider
-                    && draft.step != AiSetupStep::Review
-                    && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                if draft.editable() && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
                 ai_setup_input_mut(&mut draft).clear();
                 self.text_cursor = 0;
                 self.overlay = Some(Overlay::AiSetup(draft));
             }
             KeyCode::Char(character)
-                if draft.step != AiSetupStep::Provider
-                    && draft.step != AiSetupStep::Review
+                if draft.editable()
                     && !key
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
@@ -1839,13 +1977,142 @@ impl App {
         }
     }
 
+    fn cancel_antigravity_connection(&mut self) {
+        if self.antigravity_events.take().is_some() {
+            if let Some(task) = self.background_task.take() {
+                task.abort();
+            }
+            self.busy = false;
+        }
+        if let Some(task) = self.antigravity_browser.take() {
+            task.abort();
+        }
+        if let Some(Overlay::AiSetup(draft)) = &mut self.overlay {
+            draft.connection_running = false;
+            draft.authorization_url = None;
+            draft.connection_started = None;
+        }
+    }
+
+    fn start_antigravity_connection(&mut self, install: bool) {
+        if self.antigravity_events.is_some() {
+            self.open_antigravity_browser();
+            return;
+        }
+        if self.background_task.is_some() {
+            self.status_line = "Wait for the current operation before connecting".into();
+            return;
+        }
+        let Some(Overlay::AiSetup(draft)) = &mut self.overlay else {
+            return;
+        };
+        if draft.step != AiSetupStep::Connection
+            || draft.agent_provider != AgentProvider::Antigravity
+        {
+            return;
+        }
+        let mut settings = self.settings.ai.clone();
+        if settings.agent.provider != AgentProvider::Antigravity {
+            settings.agent.args.clear();
+        }
+        settings.agent.provider = AgentProvider::Antigravity;
+        if install {
+            draft.command.clear();
+            draft.use_managed_antigravity = true;
+            settings.agent.args.clear();
+        }
+        settings.agent.command = nonempty_owned(draft.command.clone());
+        draft.connection_running = true;
+        draft.connection_started = Some(Instant::now());
+        draft.connection_status = "Preparing Antigravity…".into();
+        draft.authorization_url = None;
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        self.antigravity_events = Some(receiver);
+        self.busy = true;
+        self.status_line = "Connecting Antigravity… Esc cancels".into();
+        self.background_task = Some(tokio::spawn(async move {
+            let result = async {
+                if install {
+                    ai::antigravity_install(Some(&sender)).await?;
+                }
+                ai::antigravity_connect(&settings, Some(sender)).await
+            }
+            .await;
+            BackgroundResult::AntigravityConnection { result }
+        }));
+    }
+
+    fn open_antigravity_browser(&mut self) {
+        if self.antigravity_browser.is_some() {
+            return;
+        }
+        if let Some(Overlay::AiSetup(draft)) = &self.overlay {
+            if draft.step == AiSetupStep::Connection && draft.connection_running {
+                if let Some(url) = draft.authorization_url.clone() {
+                    self.antigravity_browser = Some(tokio::spawn(async move {
+                        ai::antigravity_open_signin(&url).await
+                    }));
+                }
+            }
+        }
+    }
+
+    async fn poll_antigravity_events(&mut self) {
+        let mut events = Vec::new();
+        if let Some(receiver) = &mut self.antigravity_events {
+            while let Ok(event) = receiver.try_recv() {
+                events.push(event);
+                if events.len() >= 64 {
+                    break;
+                }
+            }
+        }
+        let mut open_browser = false;
+        if let Some(Overlay::AiSetup(draft)) = &mut self.overlay {
+            if draft.step == AiSetupStep::Connection && draft.connection_running {
+                for event in events {
+                    match event {
+                        ai::AntigravityEvent::Status(message) => draft.connection_status = message,
+                        ai::AntigravityEvent::AuthorizationUrl(url) => {
+                            if draft.authorization_url.as_ref() != Some(&url) {
+                                draft.authorization_url = Some(url);
+                                draft.connection_status = "Complete Google sign-in in your browser. Waiting for account access…".into();
+                                open_browser = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if open_browser && !cfg!(test) {
+            self.open_antigravity_browser();
+        }
+        if self
+            .antigravity_browser
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            if let Some(task) = self.antigravity_browser.take() {
+                if !matches!(task.await, Ok(Ok(()))) {
+                    if let Some(Overlay::AiSetup(draft)) = &mut self.overlay {
+                        draft.connection_status = "Could not open the browser. Open the sign-in link below, or press Enter to retry.".into();
+                    }
+                }
+            }
+        }
+    }
+
     async fn advance_ai_setup(&mut self) {
         let Some(Overlay::AiSetup(mut draft)) = self.overlay.take() else {
             return;
         };
         match draft.step {
             AiSetupStep::Provider => {
-                if draft.generate_after_save
+                if draft.mode == AiMode::Agent && draft.agent_provider == AgentProvider::Antigravity
+                {
+                    draft.step = AiSetupStep::Connection;
+                    draft.connection_status.clear();
+                } else if draft.generate_after_save
                     && draft.mode == AiMode::Agent
                     && !draft.agent_provider.needs_command()
                 {
@@ -1860,15 +2127,23 @@ impl App {
                     self.save_ai_setup();
                     return;
                 }
-                draft.step = if draft.mode == AiMode::Agent
-                    && matches!(
-                        draft.agent_provider,
-                        AgentProvider::Custom | AgentProvider::Acp | AgentProvider::Antigravity
-                    ) {
-                    AiSetupStep::Command
-                } else {
-                    AiSetupStep::Model
-                };
+                if draft.step != AiSetupStep::Connection {
+                    draft.step = if draft.mode == AiMode::Agent
+                        && matches!(
+                            draft.agent_provider,
+                            AgentProvider::Custom | AgentProvider::Acp | AgentProvider::Antigravity
+                        ) {
+                        AiSetupStep::Command
+                    } else {
+                        AiSetupStep::Model
+                    };
+                }
+            }
+            AiSetupStep::Connection => {
+                let install = !draft.available_agents[AgentProvider::Antigravity.index()];
+                self.overlay = Some(Overlay::AiSetup(draft));
+                self.start_antigravity_connection(install);
+                return;
             }
             AiSetupStep::Command => {
                 if draft.agent_provider.needs_command() && draft.command.trim().is_empty() {
@@ -1876,7 +2151,9 @@ impl App {
                     self.overlay = Some(Overlay::AiSetup(draft));
                     return;
                 }
-                draft.step = if draft.agent_provider != AgentProvider::Custom {
+                draft.step = if draft.agent_provider == AgentProvider::Antigravity {
+                    AiSetupStep::Connection
+                } else if draft.agent_provider != AgentProvider::Custom {
                     AiSetupStep::Model
                 } else {
                     AiSetupStep::Instructions
@@ -1924,6 +2201,7 @@ impl App {
     }
 
     fn retreat_ai_setup(&mut self) {
+        self.cancel_antigravity_connection();
         let Some(Overlay::AiSetup(mut draft)) = self.overlay.take() else {
             return;
         };
@@ -1934,12 +2212,13 @@ impl App {
             }
             AiSetupStep::Model
                 if draft.mode == AiMode::Agent
-                    && matches!(
-                        draft.agent_provider,
-                        AgentProvider::Antigravity | AgentProvider::Acp
-                    ) =>
+                    && matches!(draft.agent_provider, AgentProvider::Acp) =>
             {
                 AiSetupStep::Command
+            }
+            AiSetupStep::Connection => AiSetupStep::Provider,
+            AiSetupStep::Model if draft.agent_provider == AgentProvider::Antigravity => {
+                AiSetupStep::Connection
             }
             AiSetupStep::Command | AiSetupStep::Model => AiSetupStep::Provider,
             AiSetupStep::ApiKey => AiSetupStep::Model,
@@ -2574,6 +2853,18 @@ impl App {
             self.open_ai_setup(AiMode::Api);
             return;
         }
+        if self.settings.ai.mode == AiMode::Agent
+            && self.settings.ai.agent.provider == AgentProvider::Antigravity
+            && !ai::available_agents(&self.settings.ai)[AgentProvider::Antigravity.index()]
+        {
+            let mut draft = AiSetupDraft::from_settings(&self.settings.ai, AiMode::Agent);
+            draft.step = AiSetupStep::Connection;
+            draft.generate_after_save = true;
+            self.overlay = Some(Overlay::AiSetup(draft));
+            self.status_line =
+                "Install Antigravity and connect your Google account to generate".into();
+            return;
+        }
         if self.background_task.is_some() {
             self.ai_generation_state = AiGenerationState::Queued;
             self.status_line = "Generate queued until the current operation finishes…".into();
@@ -2670,6 +2961,11 @@ impl App {
                     settings.ai.agent.args.clear();
                 }
                 settings.ai.agent.provider = draft.agent_provider;
+                if draft.agent_provider == AgentProvider::Antigravity
+                    && draft.use_managed_antigravity
+                {
+                    settings.ai.agent.args.clear();
+                }
                 if draft.agent_provider == AgentProvider::Custom {
                     settings.ai.agent.command = nonempty_owned(draft.command);
                     settings.ai.agent.model = None;
@@ -3847,6 +4143,9 @@ fn set_setup_provider(draft: &mut AiSetupDraft, index: usize) {
                 draft.agent_provider = provider;
                 draft.model.clear();
                 draft.command.clear();
+                draft.discovered_models.clear();
+                draft.authorization_url = None;
+                draft.connection_status.clear();
             }
         }
         AiMode::Api => {
@@ -3873,9 +4172,10 @@ fn ai_setup_input_mut(draft: &mut AiSetupDraft) -> &mut String {
         AiSetupStep::Model => &mut draft.model,
         AiSetupStep::ApiKey => &mut draft.api_key,
         AiSetupStep::Endpoint => &mut draft.endpoint,
-        AiSetupStep::Instructions | AiSetupStep::Provider | AiSetupStep::Review => {
-            &mut draft.instructions
-        }
+        AiSetupStep::Instructions
+        | AiSetupStep::Provider
+        | AiSetupStep::Connection
+        | AiSetupStep::Review => &mut draft.instructions,
     }
 }
 
@@ -3885,9 +4185,10 @@ fn ai_setup_input(draft: &AiSetupDraft) -> &String {
         AiSetupStep::Model => &draft.model,
         AiSetupStep::ApiKey => &draft.api_key,
         AiSetupStep::Endpoint => &draft.endpoint,
-        AiSetupStep::Instructions | AiSetupStep::Provider | AiSetupStep::Review => {
-            &draft.instructions
-        }
+        AiSetupStep::Instructions
+        | AiSetupStep::Provider
+        | AiSetupStep::Connection
+        | AiSetupStep::Review => &draft.instructions,
     }
 }
 
@@ -4940,11 +5241,24 @@ printf '%s' '{"subject":"Add feature","body":""}' > "$output"
         let Some(Overlay::AiSetup(draft)) = &mut app.overlay else {
             panic!("expected setup")
         };
-        assert_eq!(draft.step, AiSetupStep::Command);
+        assert_eq!(draft.step, AiSetupStep::Connection);
+        draft.step = AiSetupStep::Command;
         draft.command = "/opt/antigravity/agy_acp_server.par".into();
         app.advance_ai_setup().await;
         let Some(Overlay::AiSetup(draft)) = &mut app.overlay else {
             panic!("expected setup")
+        };
+        assert_eq!(draft.step, AiSetupStep::Connection);
+        draft.connection_running = true;
+        app.background_task = Some(tokio::spawn(async {
+            BackgroundResult::AntigravityConnection {
+                result: Ok(vec!["account-model-id".into()]),
+            }
+        }));
+        tokio::task::yield_now().await;
+        app.poll_background().await;
+        let Some(Overlay::AiSetup(draft)) = &mut app.overlay else {
+            panic!("expected models")
         };
         assert_eq!(draft.step, AiSetupStep::Model);
         draft.model = "account-model-id".into();
@@ -4967,6 +5281,89 @@ printf '%s' '{"subject":"Add feature","body":""}' > "$output"
         assert_eq!(
             app.settings.ai.agent.model.as_deref(),
             Some("account-model-id")
+        );
+    }
+
+    #[tokio::test]
+    async fn antigravity_setup_reports_auth_progress_and_cancels_owned_work() {
+        let mut app = App::isolated_test(Settings::default()).await;
+        app.open_ai_setup(AiMode::Agent);
+        app.choose_ai_setup_provider(AgentProvider::Antigravity.index());
+        app.advance_ai_setup().await;
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        app.antigravity_events = Some(receiver);
+        app.background_task = Some(tokio::spawn(std::future::pending()));
+        let handle = app.background_task.as_ref().unwrap().abort_handle();
+        app.busy = true;
+        let Some(Overlay::AiSetup(draft)) = &mut app.overlay else {
+            panic!()
+        };
+        draft.connection_running = true;
+        sender
+            .send(ai::AntigravityEvent::AuthorizationUrl(
+                "https://accounts.google.com/o/oauth2/v2/auth?state=private-test".into(),
+            ))
+            .unwrap();
+        app.poll_background().await;
+        let Some(Overlay::AiSetup(draft)) = &app.overlay else {
+            panic!()
+        };
+        assert!(draft.authorization_url.is_some());
+        assert!(!format!("{draft:?}").contains("private-test"));
+        app.handle_paste("unexpected input");
+        assert!(
+            matches!(&app.overlay,Some(Overlay::AiSetup(draft)) if draft.instructions.is_empty())
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        tokio::task::yield_now().await;
+        assert!(handle.is_finished());
+        assert!(sender.is_closed());
+        assert!(!app.busy && app.overlay.is_none());
+        assert!(app.antigravity_browser.is_none());
+    }
+
+    #[tokio::test]
+    async fn antigravity_connection_failure_preserves_setup_and_existing_draft() {
+        let mut app = App::isolated_test(Settings::default()).await;
+        app.commit_message = "Keep this draft".into();
+        app.open_ai_setup(AiMode::Agent);
+        app.choose_ai_setup_provider(AgentProvider::Antigravity.index());
+        app.advance_ai_setup().await;
+        app.background_task = Some(tokio::spawn(async {
+            BackgroundResult::AntigravityConnection {
+                result: Err(anyhow::anyhow!("Google denied access")),
+            }
+        }));
+        tokio::task::yield_now().await;
+        app.poll_background().await;
+        assert_eq!(app.commit_message, "Keep this draft");
+        assert!(!app.settings.ai.enabled);
+        assert!(
+            matches!(&app.overlay,Some(Overlay::AiSetup(draft)) if draft.step==AiSetupStep::Connection && !draft.connection_running && draft.connection_status.contains("denied access"))
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_antigravity_login_routes_to_in_app_connection() {
+        let mut settings = Settings::default();
+        settings.ai.enabled = true;
+        settings.ai.mode = AiMode::Agent;
+        settings.ai.agent.provider = AgentProvider::Antigravity;
+        let mut app = App::isolated_test(settings).await;
+        app.commit_message = "Keep this draft".into();
+        app.background_task = Some(tokio::spawn(async {
+            BackgroundResult::CommitMessage {
+                repo_index: 0,
+                original_draft: "Keep this draft".into(),
+                result: Err(anyhow::anyhow!("Antigravity needs sign-in")),
+            }
+        }));
+        tokio::task::yield_now().await;
+        app.poll_background().await;
+        assert_eq!(app.commit_message, "Keep this draft");
+        assert!(
+            matches!(&app.overlay,Some(Overlay::AiSetup(draft)) if draft.step==AiSetupStep::Connection && draft.generate_after_save)
         );
     }
 

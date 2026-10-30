@@ -1,7 +1,15 @@
 mod commit;
 mod provider;
 
+pub(crate) use provider::acp::connect as antigravity_connect;
 pub(crate) use provider::acp::login as antigravity_login;
+pub(crate) use provider::acp::open_signin_page as antigravity_open_signin;
+pub(crate) use provider::antigravity_install::install as antigravity_install;
+
+pub(crate) enum AntigravityEvent {
+    Status(String),
+    AuthorizationUrl(String),
+}
 
 use std::{env, path::Path, time::Duration};
 

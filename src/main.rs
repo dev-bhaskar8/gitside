@@ -24,6 +24,11 @@ async fn main() -> Result<()> {
     let mut cli = Cli::parse();
     if let Some(command) = cli.command.take() {
         match command {
+            CliCommand::AntigravityInstall => {
+                let path = ai::antigravity_install(None).await?;
+                println!("Installed Antigravity: {}", path.display());
+                return Ok(());
+            }
             CliCommand::AntigravityLogin => {
                 let settings = config::Settings::load(cli.config.as_deref())?.merge_cli(&cli);
                 return ai::antigravity_login(&settings.ai).await;
@@ -48,7 +53,9 @@ async fn main() -> Result<()> {
 
 async fn run_setup_command(command: CliCommand) -> Result<PathBuf> {
     match command {
-        CliCommand::AntigravityLogin | CliCommand::AntigravityBrowser { .. } => {
+        CliCommand::AntigravityInstall
+        | CliCommand::AntigravityLogin
+        | CliCommand::AntigravityBrowser { .. } => {
             bail!("authentication commands do not initialize a repository")
         }
         CliCommand::Init { path } => {
