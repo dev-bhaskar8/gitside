@@ -1,14 +1,19 @@
-//! Provider adapters for a standalone text request, following OpenCode's
-//! Generate.text and Claude utility-call boundaries. Git context stays in ai.rs.
+pub(crate) mod antigravity;
+
+// Provider adapters for T3-style structured commit generation.
+// Shared prompt/decoding lives in ai/commit.rs; Git context stays in ai.rs.
 
 use std::{env, path::Path, process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, anyhow, bail};
 use reqwest::Client;
 use serde_json::{Value, json};
-use tokio::{io::AsyncWriteExt, process::Command};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    process::Command,
+};
 
-use super::{nonempty, shorten_subject};
+use super::{commit, nonempty, shorten_subject};
 use crate::config::{AgentProvider, AiMode, AiSettings, ApiProvider};
 
 /// Host instructions and repository data travel separately wherever supported.
@@ -19,7 +24,7 @@ pub(super) struct TextRequest {
 }
 
 impl TextRequest {
-    fn combined_prompt(&self) -> String {
+    pub(super) fn combined_prompt(&self) -> String {
         format!("{}\n\n{}", self.system, self.prompt)
     }
 }
@@ -42,17 +47,23 @@ async fn generate_with_agent(
     root: &Path,
     request: &TextRequest,
 ) -> Result<String> {
+    if settings.agent.provider == AgentProvider::Antigravity {
+        return antigravity::generate(settings, request).await;
+    }
     let prompt = request.combined_prompt();
     let (program, configured_args) = agent_command_parts(settings)?;
     let output_directory =
         tempfile::tempdir().context("failed to create agent output directory")?;
     let final_message = output_directory.path().join("message.txt");
+    let schema_file = output_directory.path().join("schema.json");
+    let schema = commit::schema().to_string();
+    tokio::fs::write(&schema_file, &schema).await?;
     let mut command = Command::new(&program);
     command.current_dir(root).kill_on_drop(true);
     match settings.agent.provider {
         AgentProvider::Codex => {
+            command.arg("exec").args(&settings.agent.args);
             command.args([
-                "exec",
                 "--ephemeral",
                 "--sandbox",
                 "read-only",
@@ -61,6 +72,13 @@ async fn generate_with_agent(
             ]);
             command.arg(root);
             command.arg("--output-last-message").arg(&final_message);
+            command.arg("--output-schema").arg(&schema_file);
+            command.args([
+                "--config",
+                "features.plugins=false",
+                "--config",
+                "features.apps=false",
+            ]);
             let system_file = output_directory.path().join("instructions.md");
             tokio::fs::write(&system_file, &request.system).await?;
             let path = toml::Value::String(system_file.to_string_lossy().into_owned());
@@ -70,7 +88,12 @@ async fn generate_with_agent(
             if let Some(model) = nonempty(settings.agent.model.as_deref()) {
                 command.args(["--model", model]);
             }
-            command.args(&settings.agent.args).arg("-");
+            if let Some(overrides) =
+                codex_mcp_override(&program, root, &settings.agent.args).await?
+            {
+                command.args(["--config", &overrides]);
+            }
+            command.arg("-");
         }
         AgentProvider::Claude => {
             isolate_claude(&mut command);
@@ -93,6 +116,7 @@ async fn generate_with_agent(
             ]);
             // Like OpenCode's utility calls, replace the coding system prompt.
             command.arg("--system-prompt").arg(&request.system);
+            command.args(["--json-schema", &schema, "--disable-slash-commands"]);
             if let Some(model) = nonempty(settings.agent.model.as_deref()) {
                 command.args(["--model", model]);
             }
@@ -110,6 +134,7 @@ async fn generate_with_agent(
             }
             command.args(&settings.agent.args);
         }
+        AgentProvider::Antigravity => unreachable!("ACP requests use the Antigravity adapter"),
         AgentProvider::Custom => {
             command.args(configured_args).args(&settings.agent.args);
         }
@@ -134,8 +159,28 @@ async fn generate_with_agent(
         drop(stdin);
         result
     };
-    let (input_result, output) = tokio::join!(input, child.wait_with_output());
-    let output = output?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("agent output was unavailable")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("agent diagnostics were unavailable")?;
+    let output = async {
+        let (stdout, stderr, status) = tokio::try_join!(
+            read_capped(stdout, 1_048_576),
+            read_capped(stderr, 1_048_576),
+            child.wait()
+        )?;
+        Ok::<_, anyhow::Error>(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        })
+    };
+    let (input_result, output) =
+        tokio::try_join!(async { Ok::<_, anyhow::Error>(input.await) }, output)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     if settings.agent.provider == AgentProvider::Opencode {
         // OpenCode can report provider errors as JSON even with an empty stderr.
@@ -170,11 +215,83 @@ async fn generate_with_agent(
     }
     input_result.context("failed to send generation context to agent")?;
     if settings.agent.provider == AgentProvider::Codex {
-        return tokio::fs::read_to_string(&final_message)
+        let file = tokio::fs::File::open(&final_message)
             .await
-            .context("Codex did not produce a final message; check its login and model");
+            .context("Codex did not produce a final message; check its login and model")?;
+        return String::from_utf8(read_capped(file, 128_000).await?)
+            .context("Codex returned non-UTF-8 output");
     }
     Ok(stdout.into_owned())
+}
+
+async fn read_capped(reader: impl AsyncRead + Unpin, limit: usize) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() > limit {
+        return Err(std::io::Error::other(
+            "AI provider exceeded the output limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+// Port of T3's named-MCP disabling: an empty table merges rather than clears.
+async fn codex_mcp_override(program: &str, root: &Path, args: &[String]) -> Result<Option<String>> {
+    let mut configs = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if matches!(arg.as_str(), "-c" | "--config") {
+            if let Some(value) = iter.next() {
+                configs.extend([arg.clone(), value.clone()]);
+            }
+        } else if arg.starts_with("--config=") {
+            configs.push(arg.clone());
+        }
+    }
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        Command::new(program)
+            .args(configs)
+            .args([
+                "--config",
+                "features.plugins=false",
+                "--config",
+                "features.apps=false",
+                "mcp",
+                "list",
+                "--json",
+            ])
+            .current_dir(root)
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .context("Codex MCP configuration check timed out")??;
+    if !output.status.success() {
+        bail!("Could not inspect Codex MCP configuration; check the CLI version and configuration");
+    }
+    let servers: Value =
+        serde_json::from_slice(&output.stdout).context("Codex MCP list returned invalid JSON")?;
+    let servers = servers
+        .as_array()
+        .context("Codex MCP list did not return a server list")?;
+    let mut disabled = Vec::new();
+    for server in servers {
+        if server["enabled"] == true {
+            let name = server["name"]
+                .as_str()
+                .context("Codex MCP server had no name")?;
+            disabled.push(format!(
+                "{}={{enabled=false}}",
+                toml::Value::String(name.to_owned())
+            ));
+        }
+    }
+    Ok((!disabled.is_empty()).then(|| format!("mcp_servers={{{}}}", disabled.join(","))))
 }
 
 // OpenCode's standalone utility pattern: a task system prompt, no tools,
@@ -238,7 +355,18 @@ fn isolate_claude(command: &mut Command) {
 }
 
 pub(super) fn parse_claude_response(output: &str) -> Result<String> {
-    let value: Value = serde_json::from_str(output).context("Claude Code returned invalid JSON")?;
+    let parsed: Value =
+        serde_json::from_str(output).context("Claude Code returned invalid JSON")?;
+    // T3 accepts both normal envelopes and verbose message arrays.
+    let value = if let Some(messages) = parsed.as_array() {
+        messages
+            .iter()
+            .rev()
+            .find(|message| message["type"] == "result")
+            .context("Claude Code returned no result event")?
+    } else {
+        &parsed
+    };
     if value["is_error"] == true {
         let errors = value["errors"].as_array().map(|errors| {
             errors
@@ -257,6 +385,12 @@ pub(super) fn parse_claude_response(output: &str) -> Result<String> {
                 300
             )
         );
+    }
+    if let Some(structured) = value
+        .get("structured_output")
+        .filter(|value| !value.is_null())
+    {
+        return Ok(structured.to_string());
     }
     value["result"]
         .as_str()
@@ -344,13 +478,17 @@ async fn generate_with_api(
                 .await?
         }
         ApiProvider::Openai | ApiProvider::Openrouter | ApiProvider::Compatible => {
-            let mut request = client.post(endpoint).json(&json!({
+            let mut body = json!({
                 "model": model,
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": prompt}
                 ]
-            }));
+            });
+            if settings.api.provider == ApiProvider::Openai {
+                body["response_format"] = json!({"type":"json_schema","json_schema":{"name":"commit_message","strict":true,"schema":commit::schema()}});
+            }
+            let mut request = client.post(endpoint).json(&body);
             if let Some(key) = key.as_deref() {
                 request = request.bearer_auth(key);
             }
@@ -457,6 +595,13 @@ pub(super) fn agent_program(settings: &AiSettings) -> String {
             AgentProvider::Codex => "codex".into(),
             AgentProvider::Claude => "claude".into(),
             AgentProvider::Opencode => "opencode".into(),
+            AgentProvider::Antigravity => {
+                if cfg!(windows) {
+                    "agy_acp_server.exe".into()
+                } else {
+                    "agy_acp_server.par".into()
+                }
+            }
             AgentProvider::Custom => "commit-message-generator".into(),
         })
 }
@@ -500,5 +645,28 @@ fn is_executable(path: &Path) -> bool {
     #[cfg(not(unix))]
     {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn claude_verbose_output_uses_the_final_structured_result() {
+        let value = parse_claude_response(r#"[{"type":"system"},{"type":"assistant","message":"progress"},{"type":"result","structured_output":{"subject":"Fix parsing","body":""}}]"#).unwrap();
+        assert_eq!(commit::decode(&value).unwrap(), "Fix parsing");
+        assert!(
+            parse_claude_response(
+                r#"[{"type":"result","is_error":true,"result":"Account limit"}]"#
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("Account limit")
+        );
+    }
+    #[tokio::test]
+    async fn process_output_is_bounded() {
+        assert!(read_capped(&b"too much data"[..], 4).await.is_err());
+        assert_eq!(read_capped(&b"safe"[..], 4).await.unwrap(), b"safe");
     }
 }

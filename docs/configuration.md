@@ -86,20 +86,22 @@ max_diff_bytes = 32000
 
 This mode invokes an already authenticated Codex, Claude Code, or OpenCode CLI
 non-interactively. Gitside supplies the diff on stdin and extracts the final
-message using Codex's output file, Claude's JSON result, or OpenCode's JSON
-text events. Progress, reasoning, and tool events do not become commit text.
+message using Codex’s schema-constrained output file, Claude’s structured JSON
+result (including verbose message arrays), or OpenCode’s JSON text events. Progress, reasoning, and tool events do not become commit text.
 The model is optional; leaving it blank keeps the CLI's own default.
 
-Generation follows OpenCode's standalone utility-call strategy. Gitside owns
-the commit task and supplies it as the native system prompt, with Git context
-as user input. Claude's built-in tools, hooks, MCP servers, memory, and project
-settings are disabled. Codex uses a temporary replacement instructions file,
-disables shell tools and repository instructions, and runs read-only. OpenCode
-uses a temporary `gitside-commit` agent with tools denied and one step; its
-provider/model configuration is preserved. These overrides apply only to the
-launched process. CLI logins remain available; no new login flow is required.
-Custom commands retain your user permissions and receive the combined prompt.
-Depending on the chosen CLI, the diff may be sent to its configured provider.
+Generation ports T3 Code’s shared commit prompt and `{subject, body}` output
+contract. Every built-in AI provider must return valid structured output before
+Gitside creates a draft. Subjects are reduced to one line, lose trailing periods,
+and are capped at 72 characters without splitting a grapheme. Malformed, empty,
+or oversized replies leave your draft intact.
+
+Claude uses its native JSON-schema option with tools, hooks, and external MCP
+configuration disabled. Codex uses its native output-schema option, read-only
+sandbox, and a temporary instructions file. Apps/plugins and named MCP servers
+are disabled for that request; a failed MCP inspection stops generation.
+OpenCode uses a process-local tool-denied commit agent. Overrides apply only
+to launched processes; the CLI logins remain available.
 
 ```toml
 [ai]
@@ -109,14 +111,14 @@ instructions = "Use conventional commit subjects."
 timeout_secs = 120
 
 [ai.agent]
-provider = "codex" # codex, claude, opencode, or custom
+provider = "codex" # codex, claude, opencode, antigravity, or custom
 # model = "your-model"
 # args = ["additional", "arguments"]
 ```
 
 For a custom generator, set `provider = "custom"` and `command` to a trusted
 command line. It runs with your user permissions, receives the generation
-prompt on standard input, and must print only the proposed commit message to
+prompt on standard input, and may print either a plain commit message or the shared JSON object to
 standard output. For example, Codex can be used with
 `codex exec --sandbox read-only -`.
 
@@ -136,6 +138,59 @@ previous CLI's custom executable and extra arguments.
 MCP is not needed for this direction of control: Gitside initiates generation,
 so it calls the agent's non-interactive CLI. Agents can continue controlling
 repository state through ordinary Git commands.
+
+### Google Antigravity
+
+Antigravity uses Google’s official **ACP runtime**, as in T3 Code. Its sign-in is
+separate from the Antigravity IDE and `agy` CLI; Gitside does not copy their tokens.
+Gitside supplies an ACP v1 client using its own client identity.
+
+1. Download your platform’s archive from the
+   [official ACP Registry entry](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json).
+   Verify its SHA-256 using the registry value and extract the complete archive;
+   keep `agy_acp_server.par` (Windows: `agy_acp_server.exe`) and the
+   `localharness_external` helper together. Make both files executable on macOS
+   and Linux.
+2. In `Y` → Agent → Configure, choose **Antigravity**, enter the ACP executable’s
+   absolute path, and save. You can also place the executable on `PATH`.
+3. From a normal terminal, run `gitside antigravity-login`. Open the Google link
+   printed by that command and wait for the success message. If you use a custom
+   config file, run `gitside --config /path/config.toml antigravity-login`.
+4. Generate a commit draft. Leave the model blank for the runtime default, or
+   enter a model ID advertised to Gitside by the runtime. Availability depends on
+   Google’s account and client eligibility. Gitside reports unavailable
+   selections instead of silently switching models.
+
+```toml
+[ai]
+enabled = true
+mode = "agent"
+
+[ai.agent]
+provider = "antigravity"
+command = "/absolute/path/to/agy_acp_server.par"
+# model = "a-model-id-available-to-your-account"
+# antigravity_home = "/optional/private/gitside-antigravity-profile"
+```
+
+The default profile is under the platform’s local data directory at
+`gitside/antigravity`. Google’s runtime owns credential storage there. Gitside
+uses a private profile, removes ambient Google credential overrides from its
+child process, and keeps runtime extraction in a temporary directory. Generation
+does not open a login browser; an expired login asks you to run the login command.
+
+The helper runs in a temporary workspace, advertises no client filesystem or
+terminal access, rejects tool/permission/input requests and tool-call updates,
+bounds its output, and validates the common commit JSON. It rejects profiles
+with global hooks or MCP servers and reports unexpected workspace files.
+Processes and owned temporary session files are cleaned up afterward. These
+checks do not create a native filesystem sandbox; Gitside does not offer
+Antigravity as a general coding agent.
+
+The runtime must be installed separately. Gitside neither bundles nor updates
+Google’s proprietary binaries. This integration supports Google personal-account
+sign-in; enterprise/Vertex setup and managed runtime installation are outside
+this commit-drafting flow.
 
 ### Direct API
 

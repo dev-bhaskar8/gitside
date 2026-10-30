@@ -135,7 +135,7 @@ pub struct AiSetupDraft {
     pub mode: AiMode,
     pub step: AiSetupStep,
     pub agent_provider: AgentProvider,
-    pub available_agents: [bool; 3],
+    pub available_agents: [bool; 4],
     pub generate_after_save: bool,
     pub api_provider: ApiProvider,
     pub command: String,
@@ -1836,20 +1836,27 @@ impl App {
                     return;
                 }
                 draft.step = if draft.mode == AiMode::Agent
-                    && draft.agent_provider == AgentProvider::Custom
-                {
+                    && matches!(
+                        draft.agent_provider,
+                        AgentProvider::Custom | AgentProvider::Antigravity
+                    ) {
                     AiSetupStep::Command
                 } else {
                     AiSetupStep::Model
                 };
             }
             AiSetupStep::Command => {
-                if draft.command.trim().is_empty() {
+                if draft.agent_provider == AgentProvider::Custom && draft.command.trim().is_empty()
+                {
                     self.status_line = "A custom agent command is required".into();
                     self.overlay = Some(Overlay::AiSetup(draft));
                     return;
                 }
-                draft.step = AiSetupStep::Instructions;
+                draft.step = if draft.agent_provider == AgentProvider::Antigravity {
+                    AiSetupStep::Model
+                } else {
+                    AiSetupStep::Instructions
+                };
             }
             AiSetupStep::Model => {
                 if draft.mode == AiMode::Api && draft.model.trim().is_empty() {
@@ -1900,6 +1907,12 @@ impl App {
             AiSetupStep::Provider => {
                 self.overlay = None;
                 return;
+            }
+            AiSetupStep::Model
+                if draft.mode == AiMode::Agent
+                    && draft.agent_provider == AgentProvider::Antigravity =>
+            {
+                AiSetupStep::Command
             }
             AiSetupStep::Command | AiSetupStep::Model => AiSetupStep::Provider,
             AiSetupStep::ApiKey => AiSetupStep::Model,
@@ -2634,6 +2647,9 @@ impl App {
                     settings.ai.agent.command = nonempty_owned(draft.command);
                     settings.ai.agent.model = None;
                 } else {
+                    if draft.agent_provider == AgentProvider::Antigravity {
+                        settings.ai.agent.command = nonempty_owned(draft.command);
+                    }
                     settings.ai.agent.model = nonempty_owned(draft.model);
                 }
             }
@@ -3773,7 +3789,7 @@ enum RemoteAction {
 
 fn provider_count(mode: AiMode) -> usize {
     match mode {
-        AiMode::Agent => 4,
+        AiMode::Agent => 5,
         AiMode::Api => 5,
         AiMode::Local => 1,
     }
@@ -3785,7 +3801,8 @@ fn setup_provider_index(draft: &AiSetupDraft) -> usize {
             AgentProvider::Codex => 0,
             AgentProvider::Claude => 1,
             AgentProvider::Opencode => 2,
-            AgentProvider::Custom => 3,
+            AgentProvider::Antigravity => 3,
+            AgentProvider::Custom => 4,
         },
         AiMode::Api => match draft.api_provider {
             ApiProvider::Openai => 0,
@@ -3804,7 +3821,8 @@ fn set_setup_provider(draft: &mut AiSetupDraft, index: usize) {
             let provider = match index {
                 1 => AgentProvider::Claude,
                 2 => AgentProvider::Opencode,
-                3 => AgentProvider::Custom,
+                3 => AgentProvider::Antigravity,
+                4 => AgentProvider::Custom,
                 _ => AgentProvider::Codex,
             };
             if draft.agent_provider != provider {
@@ -4358,7 +4376,7 @@ mod tests {
         ));
 
         app.open_ai_setup(AiMode::Agent);
-        app.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE))
             .await;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
@@ -4485,7 +4503,7 @@ mod tests {
         assert_eq!(draft.mode, AiMode::Agent);
         assert!(draft.generate_after_save);
         // Installation detection never claims the user is authenticated.
-        draft.available_agents = [false; 3];
+        draft.available_agents = [false; 4];
         draft.agent_provider = AgentProvider::Codex;
         app.advance_ai_setup().await;
         assert!(app.status_line.contains("Install this CLI"));
@@ -4501,12 +4519,13 @@ mod tests {
         fs::write(
             &script,
             r##"#!/bin/sh
+case " $* " in *' mcp list --json '*) printf '[]'; exit 0 ;; esac
 while [ "$#" -gt 0 ]; do
   if [ "$1" = '--output-last-message' ]; then shift; output=$1; fi
   shift
 done
 cat >/dev/null
-printf 'Add feature' > "$output"
+printf '%s' '{"subject":"Add feature","body":""}' > "$output"
 "##,
         )
         .unwrap();
@@ -4890,6 +4909,50 @@ printf 'Add feature' > "$output"
     }
 
     #[tokio::test]
+    async fn antigravity_setup_saves_the_acp_executable_and_model() {
+        let directory = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            config_path: Some(directory.path().join("config.toml")),
+            ..Settings::default()
+        };
+        let mut app = App::isolated_test(settings).await;
+        app.open_ai_setup(AiMode::Agent);
+        app.choose_ai_setup_provider(3);
+        app.advance_ai_setup().await;
+        let Some(Overlay::AiSetup(draft)) = &mut app.overlay else {
+            panic!("expected setup")
+        };
+        assert_eq!(draft.step, AiSetupStep::Command);
+        draft.command = "/opt/antigravity/agy_acp_server.par".into();
+        app.advance_ai_setup().await;
+        let Some(Overlay::AiSetup(draft)) = &mut app.overlay else {
+            panic!("expected setup")
+        };
+        assert_eq!(draft.step, AiSetupStep::Model);
+        draft.model = "account-model-id".into();
+        app.advance_ai_setup().await;
+        app.advance_ai_setup().await;
+        app.save_ai_setup();
+        while !app
+            .background_task
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            tokio::task::yield_now().await;
+        }
+        app.poll_background().await;
+        assert_eq!(app.settings.ai.agent.provider, AgentProvider::Antigravity);
+        assert_eq!(
+            app.settings.ai.agent.command.as_deref(),
+            Some("/opt/antigravity/agy_acp_server.par")
+        );
+        assert_eq!(
+            app.settings.ai.agent.model.as_deref(),
+            Some("account-model-id")
+        );
+    }
+
+    #[tokio::test]
     async fn agent_setup_wizard_supports_an_other_command() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.toml");
@@ -4903,7 +4966,7 @@ printf 'Add feature' > "$output"
 
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
             .await;
-        app.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE))
             .await;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;

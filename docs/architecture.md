@@ -82,29 +82,38 @@ Claude JSON results, and OpenCode JSON text events are normalized into the same
 editable draft result. A snapshot of the starting draft prevents a late result
 from overwriting edits. Provider errors remain errors rather than draft text.
 
-Generation follows OpenCode's standalone utility strategy: build a system
-prompt and user input, resolve the chosen provider, make one text-generation
-request, and return its text. `src/ai.rs` owns Git context and draft cleanup;
-`src/ai/provider.rs` owns the shared `TextRequest` and provider transports.
-Repository data stays in user input; configured instructions stay in the
-system prompt.
+The generation boundary now ports T3 Code’s dedicated text-generation pattern.
+`src/ai.rs` builds bounded Git context; `src/ai/commit.rs` owns the shared
+`{subject, body}` schema, instructions, JSON extraction, and subject sanitization.
+Provider transports return structured data, which must validate before the
+editor is updated. Offline rules and trusted custom commands retain their
+existing plain-text contract (custom commands may also return the JSON shape).
 
-Like OpenCode's utility calls, Claude gets a replacement system prompt and no
-built-in tools, hooks, memory, or external MCP configuration. Codex gets a
-temporary replacement instructions file, disables shell tools and repository
-instruction loading, and retains its read-only sandbox. OpenCode gets a
-process-local `gitside-commit` agent with the task prompt, all tool permissions
-denied, and one step. Its inherited inline JSON/JSONC provider and model
-settings are preserved. Custom generators receive the combined prompt on stdin.
-CLI authentication and model defaults stay with the CLI.
+Codex receives a schema file and output file; its named MCP entries are inspected
+and disabled individually, since an empty MCP table merges instead of clearing.
+Claude receives the native JSON-schema option and supports both ordinary result
+envelopes and verbose event arrays. The existing process-local OpenCode commit
+agent remains available. CLI pipes and Codex output files have byte limits.
 
-The Rust adaptation follows OpenCode's
-[Generate.text boundary](https://github.com/anomalyco/opencode/blob/bf5d12c588911a35ec56ad991c3b83cf937f424a/packages/core/src/generate.ts),
-[standalone Claude request](https://github.com/anomalyco/opencode/blob/bf5d12c588911a35ec56ad991c3b83cf937f424a/packages/core/src/plugin/provider/claude-agent/language-model/claude-agent-language-model.ts),
-[utility system prompt](https://github.com/anomalyco/opencode/blob/bf5d12c588911a35ec56ad991c3b83cf937f424a/packages/core/src/plugin/provider/claude-agent/language-model/system-prompt.ts),
-and [isolation options](https://github.com/anomalyco/opencode/blob/bf5d12c588911a35ec56ad991c3b83cf937f424a/packages/core/src/plugin/provider/claude-agent/claude/query-options.ts).
-It uses native CLI interfaces without requiring a Node/Agent SDK runtime.
-See the [third-party notice](third-party-notices.md).
+`src/ai/provider/antigravity.rs` ports the dedicated Antigravity helper using
+ACP v1 JSON-RPC over stdio. It performs initialization, native personal-account
+authentication, session creation, advertised-model selection, and one prompt.
+The client identifies itself as Gitside. It offers no file or terminal capability,
+rejects tools, permissions, and user-input requests, and bounds frames and text.
+It preserves partial-line buffers when a diagnostic interrupts a read. A private
+profile isolates Google sign-in, hooks, MCP configuration, and ambient credentials.
+Sign-in is an explicit CLI command; generation never opens a login browser.
+
+A canonical temporary workspace keeps native session metadata consistent on
+symlinked paths such as macOS `/var`. Cleanup removes only session files whose
+metadata proves ownership by that workspace. Child processes are killed on drop;
+on Unix the dedicated process group includes the native harness. The protocol
+checks are not a native sandbox. The runtime remains a separately installed,
+Google-owned executable rather than a vendored dependency.
+
+See the [configuration guide](configuration.md#google-antigravity) for installation
+and sign-in, and the [third-party notices](third-party-notices.md) for pinned T3
+Code and OpenCode source references and licenses.
 
 The AI setup wizard persists only non-secret settings in the TOML document and
 preserves unrelated configuration. API keys use the native OS credential store

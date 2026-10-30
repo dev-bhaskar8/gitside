@@ -33,6 +33,7 @@ pub enum AgentProvider {
     Codex,
     Claude,
     Opencode,
+    Antigravity,
     Custom,
 }
 
@@ -80,6 +81,10 @@ pub struct Cli {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum CliCommand {
+    /// Sign in to the Antigravity ACP runtime used for commit generation.
+    AntigravityLogin,
+    #[command(name = "__antigravity-browser", hide = true)]
+    AntigravityBrowser { url: String },
     /// Initialize a Git repository and open it.
     Init {
         #[arg(default_value = ".")]
@@ -135,6 +140,7 @@ pub struct AgentSettings {
     pub command: Option<String>,
     pub args: Vec<String>,
     pub model: Option<String>,
+    pub antigravity_home: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +171,7 @@ impl Default for AiSettings {
 impl Default for AgentSettings {
     fn default() -> Self {
         Self {
+            antigravity_home: None,
             provider: AgentProvider::Codex,
             command: None,
             args: Vec::new(),

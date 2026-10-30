@@ -97,16 +97,19 @@ gitside /path/to/repository
 - **GitHub when you need it.** Publish a repository, browse pull requests and issues, check out PRs, and inspect checks through the authenticated `gh` CLI.
 - **Your terminal, your colors.** Gitside inherits the terminal background instead of painting an opaque theme over it.
 - **Responsive and non-blocking.** Network work runs in the background and filesystem notifications keep repository state fresh.
-- **Optional commit drafts.** Configure offline rules, an existing Codex/Claude Code/OpenCode or other command, or a direct API inside the clickable AI panel. API keys stay in the OS keychain.
+- **Optional commit drafts.** Configure offline rules, Codex/Claude Code/OpenCode, Antigravity ACP, a custom command, or a direct API inside the clickable AI panel. API keys stay in the OS keychain.
 
 ### AI commit drafts (optional)
 
-Click Generate or press `Ctrl+G` to choose an installed Codex, Claude Code, or
-OpenCode CLI. Gitside reuses that CLI's login and default model, remembers your
-choice, and generates an editable commit draft. No separate API key is required
-for this route. Generation follows OpenCode’s standalone text-task approach.
-Sign in through the CLI first; installation detection does not
-verify your account.
+Click Generate or press `Ctrl+G` to choose Codex, Claude Code, OpenCode, or
+Google’s Antigravity ACP runtime. Gitside remembers your choice and returns an
+editable commit draft using T3 Code’s shared structured generation approach.
+Codex, Claude, and OpenCode reuse their existing CLI login and model default;
+installation detection does not verify your account.
+
+Antigravity uses a separate Gitside profile: install the official ACP runtime,
+configure its path, then run `gitside antigravity-login`. No separate API key is
+required for these account-based routes.
 
 Press `Y` to change the CLI, set an optional model or instructions, or explicitly
 choose offline rules or a direct API. Generation uses staged changes, falling
@@ -196,7 +199,8 @@ model requests. Generation only returns text to the editor. See the detailed
 | Path | Responsibility |
 | --- | --- |
 | `src/app.rs`, `src/ui.rs`, `src/terminal.rs` | Actions, rendering, event loop |
-| `src/ai.rs`, `src/ai/provider.rs` | Git context and standalone text-provider adapters |
+| `src/ai.rs`, `src/ai/commit.rs` | Git context, shared commit schema, and message cleanup |
+| `src/ai/provider.rs`, `src/ai/provider/antigravity.rs` | CLI/API adapters and Antigravity ACP integration |
 | `src/git.rs`, `src/github.rs` | Git and GitHub CLI operations |
 | `src/config.rs`, `src/credentials.rs` | Settings and OS credential storage |
 | `docs/` | Configuration, architecture, platform and distribution guides |

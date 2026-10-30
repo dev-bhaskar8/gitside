@@ -8,7 +8,7 @@ mod model;
 mod terminal;
 mod ui;
 
-use std::{path::PathBuf, process::Stdio};
+use std::{io::Write, path::PathBuf, process::Stdio};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -23,7 +23,23 @@ use crate::{
 async fn main() -> Result<()> {
     let mut cli = Cli::parse();
     if let Some(command) = cli.command.take() {
-        cli.paths = vec![run_setup_command(command).await?];
+        match command {
+            CliCommand::AntigravityLogin => {
+                let settings = config::Settings::load(cli.config.as_deref())?.merge_cli(&cli);
+                return ai::antigravity_login(&settings.ai).await;
+            }
+            CliCommand::AntigravityBrowser { url } => {
+                // Exit successfully even on EPIPE: native browser fallback must
+                // not open a browser after the parent generation was cancelled.
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "GITSIDE_ANTIGRAVITY_AUTH_URL={}",
+                    serde_json::to_string(&url)?
+                );
+                return Ok(());
+            }
+            command => cli.paths = vec![run_setup_command(command).await?],
+        }
     }
     let settings = config::Settings::load(cli.config.as_deref())?.merge_cli(&cli);
     let mut app = App::new(cli, settings).await?;
@@ -32,6 +48,9 @@ async fn main() -> Result<()> {
 
 async fn run_setup_command(command: CliCommand) -> Result<PathBuf> {
     match command {
+        CliCommand::AntigravityLogin | CliCommand::AntigravityBrowser { .. } => {
+            bail!("authentication commands do not initialize a repository")
+        }
         CliCommand::Init { path } => {
             let status = Command::new("git")
                 .arg("init")
