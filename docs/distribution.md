@@ -18,7 +18,7 @@ Registry acceptance and store listing remain separate from the GitHub release.
 | Scoop | `scoop bucket add gitside https://github.com/dev-bhaskar8/scoop-bucket`, then `scoop install gitside` | 0.2.0; Windows x64/ARM64 |
 | AUR | `paru -S gitside-bin` | 0.2.0-1; x64/ARM64 |
 | Nix | `nix run github:dev-bhaskar8/gitside` | 0.2.0 source package; CI builds the default package |
-| Direct | [GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases/tag/v0.2.0) | 0.2.0; six archives, shell/PowerShell installers, .deb/.rpm and .nupkg |
+| Direct | [GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases/tag/v0.2.0) | 0.2.0; six archives, shell/PowerShell installers, .deb/.rpm/.snap and .nupkg |
 
 The npm package is a native-binary installer. AUR, Nix, and the Homebrew tap are
 independent channels, not inclusion in Arch, Nixpkgs, or Homebrew's core repositories.
@@ -30,9 +30,10 @@ independent channels, not inclusion in Arch, Nixpkgs, or Homebrew's core reposit
 - **Snap:** no public store release is available. The initial 0.2.0 builds failed
   because the pinned Rust 1.85 compiler cannot compile a dependency's newer
   syntax. Both architectures then built successfully with stable Rust, but the
-  store rejected obsolete Candid credentials. A [final packaging retry](https://github.com/dev-bhaskar8/gitside/actions/runs/41134726622)
-  adds automatic ELF patching, installed-package execution checks and retention
-  of the built snaps before store publication. Refresh SNAPCRAFT_STORE_CREDENTIALS
+  store rejected obsolete Candid credentials. The [final packaging retry](https://github.com/dev-bhaskar8/gitside/actions/runs/41134726622)
+  passed automatic ELF patching, installed-package execution and provenance checks
+  on both architectures. Both `.snap` files and checksums are attached to GitHub;
+  the store again rejected its credentials. Refresh SNAPCRAFT_STORE_CREDENTIALS
   using modern `snapcraft export-login` with SNAPCRAFT_STORE_AUTH unset. Store
   review and classic-confinement approval remain separate requirements.
 - **WinGet:** [0.2.0 submission](https://github.com/microsoft/winget-pkgs/pull/466584)

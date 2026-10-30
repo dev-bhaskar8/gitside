@@ -82,7 +82,7 @@ nix run github:dev-bhaskar8/gitside
 
 ### Direct downloads
 
-macOS, Linux, and Windows installers, portable archives, `.deb`, and `.rpm`
+macOS, Linux, and Windows installers, portable archives, `.deb`, `.rpm`, and `.snap`
 packages are available from
 [GitHub Releases](https://github.com/dev-bhaskar8/gitside/releases/latest).
 Native archives and Linux packages carry GitHub provenance attestations.

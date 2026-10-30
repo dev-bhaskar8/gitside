@@ -25,7 +25,7 @@ is published. Availability in each package registry is tracked separately below.
 | Scoop | [Bucket update](https://github.com/dev-bhaskar8/scoop-bucket/commit/728bab3) | Published 0.2.0 for both Windows architectures after recovering from rejected CI credentials |
 | AUR | [Package](https://aur.archlinux.org/packages/gitside-bin), [publisher](https://github.com/dev-bhaskar8/gitside/actions/runs/41131024871/job/124328052361) | Published 0.2.0-1; the earlier maintenance blocker did not recur |
 | Chocolatey | [Publisher](https://github.com/dev-bhaskar8/gitside/actions/runs/41131024871/job/124328052446) | Upload accepted and .nupkg attached to GitHub; anonymous public feed still returned no listed package |
-| Snap | [Packaging retry](https://github.com/dev-bhaskar8/gitside/actions/runs/41134726622), [store rejection](https://github.com/dev-bhaskar8/gitside/actions/runs/41133657516) | Both architectures compiled with stable Rust; store rejected obsolete Candid credentials. Final retry adds ELF patching, runtime execution checks and retained release assets; refresh SNAPCRAFT_STORE_CREDENTIALS |
+| Snap | [Packaging retry](https://github.com/dev-bhaskar8/gitside/actions/runs/41134726622), [store rejection](https://github.com/dev-bhaskar8/gitside/actions/runs/41133657516) | Both architectures compiled with stable Rust; store rejected obsolete Candid credentials. Final retry passed ELF patching, runtime execution and provenance checks on both architectures, and published .snap files/checksums to GitHub; store credentials still require renewal |
 | WinGet | [0.2.0 submission](https://github.com/microsoft/winget-pkgs/pull/466584) | Submitted; Microsoft requires the maintainer's CLA signature before merge, plus package validation and upstream acceptance |
 | Nix | [CI](https://github.com/dev-bhaskar8/gitside/actions/runs/41131020699), [source definition](../flake.nix) | Default 0.2.0 source package built successfully in CI |
 | Website | [Pages deployment](https://github.com/dev-bhaskar8/gitside/actions/runs/41129782931), [live website](https://dev-bhaskar8.github.io/gitside/) | Deployed; homepage and setup documentation returned HTTP 200 and contain the new Google sign-in instructions |
@@ -58,7 +58,10 @@ corrected packaging metadata for version 0.2.0, with the Rust application source
 unchanged. Commit `088fbe4` removes the retired Candid authentication override,
 enables automatic ELF patching and retains verified Snap builds before store
 upload. Both architectures compiled successfully in the earlier retry, but the
-store rejected its obsolete credentials. Source builds should use current stable Rust: a dependency uses syntax
+store rejected its obsolete credentials. The final retry also passed installed
+Snap execution and provenance verification on both architectures, and retained
+both packages and their checksums in the GitHub release before the store again
+rejected its credentials. Source builds should use current stable Rust: a dependency uses syntax
 that Rust 1.85 cannot compile, despite the older lower bound in the tagged metadata.
 
 ## Validation
@@ -72,6 +75,10 @@ that Rust 1.85 cannot compile, despite the older lower bound in the tagged metad
 - The generated npm installer was installed into a disposable local prefix and
   executed `gitside 0.2.0`; this verifies the installer artifact, not npm acceptance.
 - GitHub provenance verification passed for the hosted macOS ARM64 archive.
+- Both Snap packages passed an actual local installation and `--version` execution
+  on their native Linux runners, followed by attestation and release attachment.
+- One intermediate CI job hit a temporary Linux ETXTBSY error while executing a
+  generated ACP test fixture; its rerun and the latest complete CI run passed.
 - Homebrew's four native hashes and Scoop's two Windows hashes match the hosted
   release checksums. Both Windows ZIP executable paths match the WinGet manifests.
 - Debian/RPM fixtures and production packages built for both architectures;
