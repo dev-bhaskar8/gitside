@@ -26,6 +26,7 @@ on:
         type: choice
         options:
           - all
+          - artifacts
           - chocolatey
           - scoop
           - aur

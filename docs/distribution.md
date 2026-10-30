@@ -192,7 +192,9 @@ gh workflow run packages.yml --ref main \
   -f tag=v0.2.0 -f source_ref=main -f target=aur
 ```
 
-Other targets are `scoop`, `chocolatey`, `winget`, `snap`, and `all`. Resolve external
+Other targets are `scoop`, `chocolatey`, `winget`, `snap`, `artifacts`, and `all`.
+The `artifacts` target refreshes attested packages and manifests without submitting
+to stores; use it for corrected packaging metadata after a release. Resolve external
 store blockers before retrying them. Scoop and AUR updates skip an unchanged
 manifest; WinGet submissions retain prior versions. Do not treat a submission
 attempt as a successful public release.
