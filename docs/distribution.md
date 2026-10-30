@@ -13,7 +13,7 @@ in this checkout and has not been published yet.
 | Channel | Install | Verified public state |
 | --- | --- | --- |
 | Homebrew | `brew install dev-bhaskar8/tap/gitside` | 0.1.2; macOS and Linux, x64/ARM64 |
-| Cargo | `cargo install gitside --locked` | 0.1.2; builds from source with Rust 1.85+ |
+| Cargo | `cargo install gitside --locked` | 0.1.2; builds from source with current stable Rust |
 | npm | `npm install --global gitside` | 0.1.2; downloads the matching native binary |
 | Scoop | `scoop bucket add gitside https://github.com/dev-bhaskar8/scoop-bucket`, then `scoop install gitside` | 0.1.2; Windows x64/ARM64 |
 | AUR | `paru -S gitside-bin` | 0.1.0-1; last update was blocked by AUR maintenance |
@@ -62,7 +62,7 @@ Release and registry reviewer protections remain enabled.
 
 macOS builders are pinned to supported macOS 15 images. If infrastructure breaks
 an existing tag before it is hosted, dispatch the current release workflow with
-`-f tag=vMAJOR.MINOR.PATCH`. Both publishing environments accept only `v*` tag
+`-f tag=vMAJOR.MINOR.PATCH`. The release hosting environment accepts only `v*` tag
 refs, so use a separate orchestration tag such as `v-release-recovery-20261031`
 on the reviewed workflow commit, rather than dispatching from main. This tag
 does not match the version-tag push trigger. The workflow checks out the original

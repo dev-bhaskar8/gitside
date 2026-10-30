@@ -14,7 +14,7 @@
 <p align="center">
   <a href="https://github.com/dev-bhaskar8/gitside/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/dev-bhaskar8/gitside/ci.yml?branch=main&style=flat-square&label=build" /></a>
   <a href="https://github.com/dev-bhaskar8/gitside/blob/main/LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-58a6ff?style=flat-square" /></a>
-  <a href="https://www.rust-lang.org"><img alt="Rust 1.85+" src="https://img.shields.io/badge/rust-1.85%2B-f7931e?style=flat-square" /></a>
+  <a href="https://www.rust-lang.org"><img alt="Rust stable" src="https://img.shields.io/badge/rust-stable-f7931e?style=flat-square" /></a>
   <a href="https://github.com/dev-bhaskar8/gitside/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/dev-bhaskar8/gitside?style=flat-square" /></a>
 </p>
 
@@ -47,7 +47,7 @@ The npm package installs the matching native binary.
 cargo install gitside --locked
 ```
 
-Cargo builds Gitside from source and requires Rust 1.85 or newer. Linux builds
+Cargo builds Gitside from source. Use the current stable Rust toolchain. Linux builds
 also need `pkg-config` and D-Bus development headers (`libdbus-1-dev` on Debian/
 Ubuntu, `dbus-devel` on Fedora).
 

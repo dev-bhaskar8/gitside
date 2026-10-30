@@ -27,7 +27,7 @@ parts:
   gitside:
     plugin: rust
     source: .
-    rust-channel: '1.85'
+    rust-channel: stable
     build-packages:
       - pkg-config
       - libdbus-1-dev
